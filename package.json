@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@seontechnologies/playwright-utils": "^3.10.1"
+  }
+}

@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # The Hive Memory
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - red_net
+
+  # The Titans (Execution Containers)
+  kali-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.kali
+    deploy:
+      replicas: 10  # The Scale of the Swarm
+    volumes:
+      - ./logs:/workspace/logs
+    depends_on:
+      - redis
+    networks:
+      - red_net
+    # We share the host network for scanning (or use bridge if isolated)
+    # Host network is better for Nmap accuracy but dangerous. 
+    # For now, we use bridge to keep it contained, but expose ports if needed.
+
+  # TARGET: Metasploitable 2 (Vulnerable)
+  metasploitable:
+    image: tleemcjr/metasploitable2
+    command: sh -c "/bin/services.sh && tail -f /dev/null"
+    networks:
+      - red_net
+    healthcheck:
+      test: ["CMD", "netstat", "-an", "|", "grep", "80"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Expose ports just in case we want to verify from host
+    ports:
+      - "2121:21"
+      - "2222:22"
+      - "8080:80"
+
+networks:
+  red_net:
+    driver: bridge
+
+volumes:
+  redis_data:

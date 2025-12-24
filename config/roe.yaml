@@ -1,0 +1,6 @@
+allowed_ips:
+  - "172.20.0.3" # Internal Metasploitable
+  - "45.33.32.156" # scanme.nmap.org
+forbidden_ports:
+  - 21
+aggression_level: "HIGH"

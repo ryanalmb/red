@@ -1,0 +1,46 @@
+project: Cyber-Red
+sprint: 5
+status: active
+goals:
+  - "Implement War Room (Sequential Chain of Thought)"
+  - "Implement God Mode Governance"
+  - "Upgrade TUI to Matrix View"
+
+stories:
+  # --- COMPLETED SPRINT 4 ---
+  - id: NLP-02
+    title: "Intent Parser"
+    status: "done"
+  - id: OMNI-01
+    title: "Generic Tool Adapter"
+    status: "done"
+  - id: ORCH-01
+    title: "Ghost Agent Class"
+    status: "done"
+  - id: ORCH-02
+    title: "Swarm Manager Loop"
+    status: "done"
+
+  # --- SPRINT 5 TASKS ---
+  - id: WAR-01
+    title: "War Room Logic"
+    status: "done"
+  - id: GOV-01
+    title: "God Mode Governance"
+    status: "done"
+  - id: TUI-02
+    title: "Matrix View (Streams)"
+    status: "done"
+
+  # --- SPRINT 6 TASKS (The Dragon) ---
+  - id: DRAGON-01
+    title: "Dragon Council Implementation"
+    epic: "Cognitive Core"
+    status: "todo"
+    file: "src/core/war_room.py"
+    
+  - id: DRAGON-02
+    title: "Thinking Stream UI"
+    epic: "Command Center"
+    status: "todo"
+    file: "src/ui/widgets.py"

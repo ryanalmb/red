@@ -1,0 +1,31 @@
+FROM kalilinux/kali-rolling
+
+# Non-interactive mode to prevent prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update and install "Top 10" + Essential Tools
+# Note: We don't install 'kali-linux-everything' because it's 20GB+.
+# We select the specific tools from the PRD.
+RUN apt-get update && apt-get install -y \
+    metasploit-framework \
+    nmap \
+    sqlmap \
+    hydra \
+    whatweb \
+    nuclei \
+    naabu \
+    ffuf \
+    python3 \
+    python3-pip \
+    iputils-ping \
+    curl \
+    wget \
+    jq \
+    && apt-get clean
+
+# Create a workspace directory
+WORKDIR /workspace
+
+# Keep the container alive (it's a worker, not a script)
+CMD ["tail", "-f", "/dev/null"]
+

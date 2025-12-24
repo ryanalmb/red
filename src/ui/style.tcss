@@ -1,0 +1,48 @@
+Screen {
+    layout: vertical;
+}
+
+.pane-title {
+    background: $accent;
+    color: $text;
+    text-align: center;
+    text-style: bold;
+}
+
+#pane-tree {
+    width: 20%;
+    border: solid green;
+}
+
+#pane-grid {
+    width: 50%;
+    border: solid green;
+}
+
+#pane-logs {
+    width: 30%;
+    border: solid green;
+}
+
+HiveGrid {
+    layout: grid;
+    grid-size: 10 10;  /* 10 columns */
+    grid-gutter: 1;
+    padding: 1;
+}
+
+.agent-block {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    border: solid white;
+    background: $surface;
+}
+
+/* Status Colors */
+.status-idle { background: $surface; }
+.status-scanning { background: blue; }
+.status-thinking { background: yellow; color: black; }
+.status-attacking { background: red; }
+.status-paused { background: orange; color: black; }
+.status-exploited { background: green; }
