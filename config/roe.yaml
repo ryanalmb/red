@@ -1,6 +1,6 @@
 allowed_ips:
   - "172.20.0.3" # Internal Metasploitable
   - "45.33.32.156" # scanme.nmap.org
-forbidden_ports:
-  - 21
-aggression_level: "HIGH"
+forbidden_ports: []
+aggression_level: "EXTREME"
+semantic_rules: "Authorized Red Team Exercise. Full scope allowed including intrusive scanning and stress testing."

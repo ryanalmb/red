@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import yaml
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from src.core.throttler import SwarmBrain
@@ -10,12 +11,20 @@ from src.core.war_room import WarRoom
 # Load environment variables
 load_dotenv()
 
+# Model configuration
+DEFAULT_CRITIC_MODEL = "meta/llama-3.3-70b-instruct"
+DEFAULT_DISPATCHER_MODEL = "meta/llama-3.3-70b-instruct"
+
 class CouncilOfExperts:
-    def __init__(self, brain: SwarmBrain, roe_config: dict, event_bus=None):
+    def __init__(self, brain: SwarmBrain, roe_config: dict, event_bus=None, roe_loader=None):
         self.brain = brain
         self.roe = roe_config
         self.bus = event_bus
+        self.roe_loader = roe_loader  # For dynamic authorization
         self.logger = logging.getLogger("Council")
+        
+        # Pending authorization requests
+        self._pending_auth = {}
         
         # Initialize NVIDIA NIM Client
         self.client = AsyncOpenAI(
@@ -25,12 +34,75 @@ class CouncilOfExperts:
         
         # Initialize War Room
         self.war_room = WarRoom(self.client, self.bus)
+        
+        # Subscribe to authorization responses
+        if self.bus:
+            asyncio.create_task(self._subscribe_auth_response())
+
+    async def _subscribe_auth_response(self):
+        """Subscribe to HITL authorization responses."""
+        await self.bus.subscribe("hitl:auth_response", self._handle_auth_response)
+
+    async def _handle_auth_response(self, data: dict):
+        """Handle authorization response from TUI."""
+        target = data.get("target")
+        approved = data.get("approved", False)
+        persist = data.get("persist", False)
+        
+        if target in self._pending_auth:
+            future = self._pending_auth[target]
+            
+            if approved and self.roe_loader:
+                self.roe_loader.authorize_target(target, persist=persist)
+            
+            future.set_result(approved)
+            del self._pending_auth[target]
+
+    async def request_target_authorization(self, target: str) -> bool:
+        """Request HITL authorization for a target. Returns True if approved."""
+        if not self.bus:
+            self.logger.warning("No EventBus - cannot request authorization")
+            return False
+        
+        # Create a future to wait for response
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self._pending_auth[target] = future
+        
+        # Publish authorization request to TUI
+        await self.bus.publish("hitl:request_auth", {
+            "target": target,
+            "message": f"Target '{target}' is not in allowed list. Authorize engagement?"
+        })
+        
+        self.logger.info(f"Awaiting authorization for target: {target}")
+        
+        # Wait for response (with timeout)
+        try:
+            result = await asyncio.wait_for(future, timeout=300)  # 5 minute timeout
+            return result
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Authorization timeout for {target}")
+            if target in self._pending_auth:
+                del self._pending_auth[target]
+            return False
 
     async def decide_attack(self, target_context: dict):
         """
         Decides the attack strategy using the War Room Protocol.
         Governance is applied based on Ownership Verification.
         """
+        target = target_context.get("target", "")
+        
+        # 0. Check if target is authorized (HITL Gate)
+        if self.roe_loader and not self.roe_loader.is_target_allowed(target):
+            self.logger.warning(f"Target {target} not in allowed list. Requesting authorization...")
+            
+            # Request HITL authorization
+            approved = await self.request_target_authorization(target)
+            
+            if not approved:
+                return {"status": "VETOED", "reason": f"Target '{target}' not authorized by operator."}
         
         # 1. Develop Strategy (The War Room)
         # Uses Chain of Thought: Architect -> Ghost -> Engineer
@@ -102,7 +174,7 @@ class CouncilOfExperts:
         }}
         """
         response = await self.client.chat.completions.create(
-            model="meta/llama-3.1-70b-instruct",
+            model=DEFAULT_CRITIC_MODEL,  # Upgraded from 3.1 to 3.3
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=200
@@ -115,18 +187,27 @@ class CouncilOfExperts:
         User Input: "{user_input}"
         
         Extract: Target, Action, Scope, Constraints.
-        Output JSON ONLY.
+        Output JSON ONLY with lowercase keys: {{"target": "...", "action": "...", "scope": "...", "constraints": "..."}}
         """
-        response = await self.client.chat.completions.create(
-            model="meta/llama-3.1-70b-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=150
-        )
         try:
+            response = await self.client.chat.completions.create(
+                model=DEFAULT_DISPATCHER_MODEL,  # Upgraded from 3.1 to 3.3
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=150
+            )
             content = response.choices[0].message.content
+            self.logger.info(f"Parse intent response: {content}")
+            
             start = content.find('{')
             end = content.rfind('}') + 1
-            return json.loads(content[start:end])
-        except:
-            return {"error": "Failed to parse intent"}
+            if start == -1 or end == 0:
+                return {"error": "No JSON in response"}
+            
+            parsed = json.loads(content[start:end])
+            # Normalize keys to lowercase
+            normalized = {k.lower(): v for k, v in parsed.items()}
+            return normalized
+        except Exception as e:
+            self.logger.error(f"Failed to parse intent: {e}")
+            return {"error": f"Failed to parse intent: {str(e)}"}

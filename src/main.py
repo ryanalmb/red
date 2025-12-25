@@ -1,7 +1,18 @@
 import asyncio
+import logging
 from src.ui.app import CyberRedApp
 from src.core.event_bus import EventBus
 from src.core.orchestrator import Orchestrator
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("cyber-red.log"),
+        logging.StreamHandler()
+    ]
+)
 
 async def run_app():
     # 1. Initialize Bus
