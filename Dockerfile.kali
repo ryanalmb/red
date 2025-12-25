@@ -1,31 +1,165 @@
 FROM kalilinux/kali-rolling
 
-# Non-interactive mode to prevent prompts during build
+# =============================================================================
+# CYBER-RED ENHANCED KALI WORKER
+# Comprehensive offensive security toolset
+# =============================================================================
+
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Update and install "Top 10" + Essential Tools
-# Note: We don't install 'kali-linux-everything' because it's 20GB+.
-# We select the specific tools from the PRD.
+# Configure direct Kali mirror (bypass broken mirrors)
+RUN echo "deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list
+
+# Core system updates
+RUN apt-get update && apt-get upgrade -y && apt-get clean
+
+# =============================================================================
+# RECONNAISSANCE TOOLS
+# =============================================================================
 RUN apt-get update && apt-get install -y \
-    metasploit-framework \
     nmap \
-    sqlmap \
-    hydra \
+    masscan \
+    amass \
+    subfinder \
+    theharvester \
+    fierce \
+    dnsenum \
+    dnsrecon \
+    whois \
+    wafw00f \
     whatweb \
+    dmitry \
+    recon-ng \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# VULNERABILITY SCANNING
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    nikto \
+    wpscan \
     nuclei \
     naabu \
+    sslscan \
+    testssl.sh \
+    exploitdb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# WEB APPLICATION TESTING
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    sqlmap \
     ffuf \
+    dirb \
+    gobuster \
+    feroxbuster \
+    wfuzz \
+    arjun \
+    httpx-toolkit \
+    commix \
+    xsser \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# EXPLOITATION FRAMEWORKS
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    metasploit-framework \
+    crackmapexec \
+    enum4linux-ng \
+    smbclient \
+    smbmap \
+    impacket-scripts \
+    responder \
+    evil-winrm \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# PASSWORD & BRUTE FORCE
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    hydra \
+    john \
+    hashcat \
+    crunch \
+    cewl \
+    medusa \
+    hashid \
+    hash-identifier \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# NETWORK UTILITIES
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    netcat-traditional \
+    ncat \
+    socat \
+    proxychains4 \
+    tcpdump \
+    tshark \
+    ettercap-common \
+    arpwatch \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# POST-EXPLOITATION
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    seclists \
+    wordlists \
+    webshells \
+    windows-binaries \
+    pspy \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# WIRELESS TOOLS
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    aircrack-ng \
+    reaver \
+    bully \
+    wifite \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-venv \
     iputils-ping \
     curl \
     wget \
     jq \
-    && apt-get clean
+    git \
+    vim-tiny \
+    dnsutils \
+    net-tools \
+    iproute2 \
+    openssh-client \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Create a workspace directory
+# =============================================================================
+# PYTHON TOOLS
+# =============================================================================
+RUN pip3 install --break-system-packages --no-cache-dir \
+    requests \
+    beautifulsoup4 \
+    lxml \
+    pycryptodomex \
+    impacket \
+    bloodhound \
+    mitm6 || true
+
+# Update tool databases (allow failures)
+RUN nuclei -update-templates 2>/dev/null || true
+RUN searchsploit -u 2>/dev/null || true
+
 WORKDIR /workspace
+RUN mkdir -p /workspace/logs /workspace/output /workspace/loot
 
-# Keep the container alive (it's a worker, not a script)
 CMD ["tail", "-f", "/dev/null"]
-

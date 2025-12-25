@@ -49,9 +49,16 @@
 ## 🎮 Usage
 
 **Launch the War Room:**
+
+The easiest way is to use the startup script (automates virtual env and permissions):
+```bash
+./start.sh
+```
+
+Alternatively, run manually (requires sudo):
 ```bash
 source venv/bin/activate
-python3 -m src.main
+sudo env PATH=$PATH python3 -m src.main
 ```
 
 ### Controls
