@@ -27,10 +27,10 @@ class NmapAdapter(BaseToolAdapter):
         return "Network exploration and security auditing tool"
     
     def build_command(self, target: str,
-                      ports: str = "1-1000",
+                      ports: str = "--top-ports 100",
                       scan_type: str = "-sV",
-                      scripts: bool = True,
-                      timing: int = 4,
+                      scripts: bool = False,
+                      timing: int = 5,
                       os_detect: bool = False,
                       aggressive: bool = False,
                       xml_output: bool = True) -> str:
@@ -50,7 +50,12 @@ class NmapAdapter(BaseToolAdapter):
         cmd = f"nmap {scan_type}"
         
         if ports:
-            cmd += f" -p {ports}"
+            # --top-ports is its own flag, numeric ranges need -p
+            if ports.startswith("--"):
+                cmd += f" {ports}"
+            else:
+                cmd += f" -p {ports}"
+
         
         if scripts and "-sC" not in scan_type:
             cmd += " -sC"

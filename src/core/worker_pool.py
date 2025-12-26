@@ -194,7 +194,8 @@ class WorkerPool:
                         timeout=timeout
                     )
                     
-                    if "ERROR" not in result:
+                    # strict check for execution error prefix
+                    if not result.startswith("ERROR:"):
                         # Success - log output summary
                         source = container_id.split("-")[-1]
                         if self.bus:
@@ -221,7 +222,7 @@ class WorkerPool:
                     if self.bus:
                         await self.bus.publish("swarm:terminal", {
                             "source": source,
-                            "text": f"✗ [{tool}] Error: {result[:200]}"
+                            "text": f"✗ [{tool}] Attempt {attempt+1} failed: {result[:200]}"
                         })
 
                     
@@ -244,7 +245,7 @@ class WorkerPool:
                 if attempt < retries - 1:
                     await asyncio.sleep(1)
             
-            return f"ERROR: Task failed after {retries} retries"
+            return f"ERROR: Task failed after {retries} retries. Last error: {result if 'result' in locals() else 'Unknown'}"
             
         finally:
             # Always release the worker

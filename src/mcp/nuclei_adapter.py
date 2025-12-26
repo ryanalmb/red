@@ -58,7 +58,7 @@ class NucleiAdapter(BaseToolAdapter):
         cmd += f" -timeout {timeout_per_template}"
         
         if json_output:
-            cmd += " -json -silent"
+            cmd += " -jsonl -silent"
         
         return cmd
     

@@ -140,8 +140,10 @@ class Orchestrator:
         await self.handle_new_job({
             "target": target,
             "action": action,
-            "full_attack": action.lower() in ["attack", "exploit", "hack", "pwn"]
+            # ALWAYS use full War Room attack flow
+            "full_attack": True
         })
+
 
     async def handle_quick_command(self, data: dict):
         """Handle quick scan commands (no full kill chain)."""

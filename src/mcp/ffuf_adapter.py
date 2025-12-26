@@ -77,11 +77,10 @@ class FfufAdapter(BaseToolAdapter):
         if rate > 0:
             cmd += f" -rate {rate}"
         
+        # Output to stdout (not file) for capture
+        # Using -json flag sends JSON to stdout
         if json_output:
-            cmd += " -o /tmp/ffuf_output.json -of json"
-        
-        # Silent mode for cleaner output
-        cmd += " -s"
+            cmd += " -of json"
         
         return cmd
     

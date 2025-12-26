@@ -80,8 +80,8 @@ class NiktoAdapter(BaseToolAdapter):
         if plugins:
             cmd += f" -Plugins {plugins}"
         
-        # Output to file for parsing
-        cmd += f" -output /tmp/nikto_output.{output_format} -Format {output_format}"
+        # Don't output to file - let stdout be captured
+        # The parse_output method handles text format
         
         return cmd
     

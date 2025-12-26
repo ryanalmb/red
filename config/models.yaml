@@ -9,10 +9,10 @@
 # BRAIN - Strategic Reasoning Models
 # -----------------------------------------------------------------------------
 brain:
-  # Primary strategic reasoning with Chain of Thought
-  # Kimi K2 Thinking: 1T total params, 32B active MoE, 256K context
-  # Supports <thinking> tags for visible reasoning
-  architect: "moonshotai/kimi-k2-thinking"
+  # Primary strategic reasoning
+  # Kimi K2 Instruct: Working version (kimi-k2-thinking returns None)
+  architect: "moonshotai/kimi-k2-instruct"
+
   
   # Deep analysis and multi-step planning
   # DeepSeek v3.2: 685B reasoning LLM, sparse attention, agentic tools

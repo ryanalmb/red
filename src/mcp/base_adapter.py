@@ -168,9 +168,17 @@ class BaseToolAdapter(ABC):
         command = self.build_command(target, **options)
         start_time = time.time()
         
-        # Log start
+        # Log start to terminal stream
         self.logger.info(f"Executing: {command}")
         if self.bus:
+            await self.bus.publish("swarm:terminal", {
+                "source": self.tool_name.upper(),
+                "text": f"⚡ Starting {self.tool_name} → {target}"
+            })
+            await self.bus.publish("swarm:terminal", {
+                "source": self.tool_name.upper(),
+                "text": f"$ {command[:100]}{'...' if len(command) > 100 else ''}"
+            })
             await self.bus.publish("swarm:tool", {
                 "tool": self.tool_name,
                 "status": "started",
@@ -186,8 +194,19 @@ class BaseToolAdapter(ABC):
                 parsed = self.parse_output(result)
                 findings = self.extract_findings(parsed)
                 
-                # Log completion
+                # Log completion to terminal stream
                 if self.bus:
+                    await self.bus.publish("swarm:terminal", {
+                        "source": self.tool_name.upper(),
+                        "text": f"✓ {self.tool_name} complete ({len(findings)} findings, {execution_time:.1f}s)"
+                    })
+                    # Show brief output preview
+                    if len(result) > 0:
+                        preview = result[:200].replace('\n', ' ')
+                        await self.bus.publish("swarm:terminal", {
+                            "source": self.tool_name.upper(),
+                            "text": f"  Output: {preview}{'...' if len(result) > 200 else ''}"
+                        })
                     await self.bus.publish("swarm:tool", {
                         "tool": self.tool_name,
                         "status": "complete",
@@ -217,8 +236,16 @@ class BaseToolAdapter(ABC):
                     command=command
                 )
         
-        # Command failed
+        # Command failed - log to terminal
         if self.bus:
+            await self.bus.publish("swarm:terminal", {
+                "source": self.tool_name.upper(),
+                "text": f"✗ {self.tool_name} FAILED ({execution_time:.1f}s)"
+            })
+            await self.bus.publish("swarm:terminal", {
+                "source": self.tool_name.upper(),
+                "text": f"  Error: {result[:150]}"
+            })
             await self.bus.publish("swarm:tool", {
                 "tool": self.tool_name,
                 "status": "failed",
@@ -235,6 +262,7 @@ class BaseToolAdapter(ABC):
             execution_time=execution_time,
             command=command
         )
+
     
     async def _execute_with_retry(self, command: str) -> str:
         """Execute command with retry logic."""

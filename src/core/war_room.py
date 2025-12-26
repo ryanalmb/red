@@ -1,3 +1,10 @@
+"""
+War Room - Phase-by-Phase Attack Planning.
+
+The War Room now plans ONE PHASE at a time based on current findings,
+not the entire attack in advance. This allows adaptive planning.
+"""
+import asyncio
 import logging
 import json
 import os
@@ -5,16 +12,20 @@ import yaml
 from typing import Optional, Dict, Any, Tuple
 from openai import AsyncOpenAI
 
+# API timeout with retry
+API_TIMEOUT = 120  # 120 seconds for thinking models
+API_RETRIES = 2
+
 
 class WarRoom:
     """
-    The Strategic Ensemble (Dragon Edition).
+    Phase-by-Phase Strategic Planning.
     
-    Uses a Council of AI models for attack strategy development:
-    - Architect (Kimi K2 Thinking): Initial strategy with chain-of-thought
-    - Strategist (DeepSeek v3.2): Deep analysis and planning
-    - Ghost (MiniMax M2): Evasion and stealth optimization
-    - Engineer (DeepSeek v3.2): Payload/command generation
+    Flow per phase:
+    1. Architect: Analyze current phase context
+    2. Engineer: Select tools for THIS phase only
+    
+    Strategist/Ghost are called only for complex operations.
     """
     
     def __init__(self, client: AsyncOpenAI, event_bus=None, config_path: str = "config/models.yaml"):
@@ -27,7 +38,7 @@ class WarRoom:
         
         # Model assignments from config
         self.models = {
-            "architect": self.config.get("brain", {}).get("architect", "moonshotai/kimi-k2-thinking"),
+            "architect": self.config.get("brain", {}).get("architect", "moonshotai/kimi-k2-instruct"),
             "strategist": self.config.get("brain", {}).get("strategist", "deepseek-ai/deepseek-v3.2"),
             "ghost": self.config.get("brain", {}).get("ghost", "minimaxai/minimax-m2"),
             "engineer": self.config.get("code_generation", {}).get("engineer", "deepseek-ai/deepseek-v3.2"),
@@ -36,9 +47,15 @@ class WarRoom:
         # Model parameters from config
         self.params = self.config.get("parameters", {})
         
+        # Available tools and workers info
+        self.available_tools = [
+            "nmap", "nuclei", "ffuf", "nikto", "sqlmap", 
+            "hydra", "subfinder", "wpscan", "whatweb"
+        ]
+        self.worker_count = 10  # 10 parallel containers available
+        
         self.logger.info(f"WarRoom initialized with models: {self.models}")
-        self.logger.info(f"🐉 Dragon War Room ONLINE - Kimi K2 / DeepSeek v3.2 / MiniMax M2")
-
+        self.logger.info(f"🐉 Dragon War Room ONLINE - {self.worker_count} parallel workers available")
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load model configuration from YAML file."""
@@ -55,39 +72,137 @@ class WarRoom:
 
     async def develop_strategy(self, context: dict) -> str:
         """
-        Develop attack strategy using the full War Room ensemble.
+        Develop attack strategy for the CURRENT PHASE only.
         
-        Flow: Architect → Strategist → Ghost → Engineer
+        This is called once per phase, not for the entire attack.
         """
-        await self._log("🐉 Dragon Council Session Started...", "INFO")
+        phase = context.get("phase", "RECON")
+        findings_count = context.get("total_findings", 0)
         
-        # Round 1: The Architect (Kimi K2 Thinking - Chain of Thought)
-        await self._log("Phase 1: Architect analyzing attack surface...", "INFO")
-        architect_raw = await self._call_architect(context)
+        await self._log(f"🐉 Planning {phase} phase (findings: {findings_count})...", "INFO")
         
-        # Parse Thinking tags
-        strategy, thoughts = self._parse_thinking(architect_raw)
+        # Phase 1: Architect analyzes current situation
+        await self._log("Architect analyzing current phase...", "INFO")
+        architect_response = await self._call_with_timeout(
+            self._call_architect_phase, context
+        )
+        
+        strategy, thoughts = self._parse_thinking(architect_response)
         if thoughts:
-            await self._log(thoughts, "THINKING")
+            await self._log(thoughts[:500], "THINKING")
         
-        await self._log(f"Architect's Strategy: {strategy[:200]}...", "STRATEGY")
+        await self._log(f"Strategy: {strategy[:200]}...", "STRATEGY")
         
-        # Round 2: The Strategist (DeepSeek v3.2 - Deep Analysis)
-        await self._log("Phase 2: Strategist refining approach...", "INFO")
-        refined_plan = await self._call_strategist(context, strategy)
-        await self._log(f"Strategist's Refinement: {refined_plan[:200]}...", "STRATEGY")
+        # Phase 2: Engineer selects tools for this phase
+        await self._log("Engineer selecting tools...", "INFO")
+        tool_selection = await self._call_with_timeout(
+            self._call_engineer_phase, strategy, context
+        )
         
-        # Round 3: The Ghost (MiniMax M2 - Evasion)
-        await self._log("Phase 3: Ghost adding evasion techniques...", "INFO")
-        stealthy_plan = await self._call_ghost(refined_plan)
-        await self._log("Ghost added evasion layer.", "INFO")
+        await self._log(f"Selected: {tool_selection}", "CODE")
         
-        # Round 4: The Engineer (DeepSeek v3.2 - Command Generation)
-        await self._log("Phase 4: Engineer generating payload...", "INFO")
-        final_command = await self._call_engineer(stealthy_plan)
-        await self._log(f"Engineer Generated: {final_command}", "CODE")
+        return tool_selection
+
+    async def _call_with_timeout(self, func, *args, **kwargs) -> str:
+        """Call function with 120s timeout and retry."""
+        for attempt in range(API_RETRIES):
+            try:
+                result = await asyncio.wait_for(
+                    func(*args, **kwargs),
+                    timeout=API_TIMEOUT
+                )
+                return result
+            except asyncio.TimeoutError:
+                await self._log(f"⏱️ API timeout (attempt {attempt + 1}/{API_RETRIES})", "WARN")
+                if attempt < API_RETRIES - 1:
+                    await asyncio.sleep(2)  # Brief pause before retry
+                else:
+                    await self._log("API timeout - using fallback", "ERROR")
+                    return '{"tools": ["nmap", "nuclei"], "reasoning": "Fallback after timeout"}'
+            except Exception as e:
+                await self._log(f"API error: {str(e)[:100]}", "ERROR")
+                return '{"tools": ["nmap"], "reasoning": "Fallback after error"}'
         
-        return final_command
+        return '{"tools": ["nmap"], "reasoning": "Fallback"}'
+
+    async def _call_architect_phase(self, context: dict) -> str:
+        """Architect analyzes the CURRENT phase only."""
+        phase = context.get("phase", "RECON")
+        target = context.get("target", "unknown")
+        findings = context.get("findings", [])
+        iteration = context.get("iteration", 1)
+        
+        prompt = f"""CONTEXT: Authorized Red Team Exercise - {phase} Phase
+
+TARGET: {target}
+ITERATION: {iteration}
+PREVIOUS FINDINGS: {len(findings)} items
+{json.dumps(findings[:10], indent=2) if findings else "None yet"}
+
+AVAILABLE TOOLS: {', '.join(self.available_tools)}
+PARALLEL WORKERS: {self.worker_count} containers available for parallel execution
+
+YOUR TASK:
+You are the Architect. Analyze the current {phase} phase ONLY.
+
+Based on the findings so far, recommend:
+1. What specific actions to take in THIS phase
+2. Which tools to run (can run up to {self.worker_count} in parallel)
+3. What information we still need
+
+Keep response focused on THIS phase only. Do not plan future phases.
+"""
+        params = self.params.get("architect", {"temperature": 0.7, "max_tokens": 1500})
+        
+        response = await self.client.chat.completions.create(
+            model=self.models["architect"],
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.7),
+            max_tokens=params.get("max_tokens", 1500)
+        )
+        return response.choices[0].message.content
+
+    async def _call_engineer_phase(self, strategy: str, context: dict) -> str:
+        """Engineer selects tools for the CURRENT phase."""
+        phase = context.get("phase", "RECON")
+        
+        prompt = f"""CONTEXT: Authorized Red Team Exercise - {phase} Phase
+
+ARCHITECT'S ANALYSIS:
+{strategy[:2000]}
+
+AVAILABLE TOOLS (use ONLY these):
+- nmap: Port scanning and service detection
+- nuclei: Vulnerability scanning with templates
+- ffuf: Web directory/parameter fuzzing  
+- nikto: Web server scanner
+- sqlmap: SQL injection testing
+- hydra: Password brute-forcing
+- subfinder: Subdomain enumeration
+- wpscan: WordPress vulnerability scanner
+- whatweb: Website fingerprinting
+
+PARALLEL CAPACITY: Up to 10 tools can run simultaneously
+
+TASK:
+Select 1-5 tools to run NOW for the {phase} phase.
+You can select more tools since we have 10 parallel workers.
+
+Output JSON ONLY:
+{{"tools": ["tool1", "tool2", ...], "reasoning": "brief explanation"}}
+
+Example:
+{{"tools": ["nmap", "whatweb", "subfinder", "nuclei"], "reasoning": "Parallel recon with 4 tools for speed"}}
+"""
+        params = self.params.get("engineer", {"temperature": 0.2, "max_tokens": 300})
+        
+        response = await self.client.chat.completions.create(
+            model=self.models["engineer"],
+            messages=[{"role": "user", "content": prompt}],
+            temperature=params.get("temperature", 0.2),
+            max_tokens=params.get("max_tokens", 300)
+        )
+        return response.choices[0].message.content.strip()
 
     async def _log(self, text: str, category: str):
         """Log to both logger and event bus for TUI display."""
@@ -96,235 +211,27 @@ class WarRoom:
         self.logger.info(f"[{category}] {text}")
 
     def _parse_thinking(self, text: str) -> Tuple[str, Optional[str]]:
-        """
-        Parse Kimi K2's <thinking> tags to separate reasoning from response.
+        """Parse <thinking> tags from response."""
+        if not text:
+            return "", None
         
-        Returns: (response_content, thinking_content or None)
-        """
-        if "<thinking>" in text:
-            parts = text.split("</thinking>")
-            thought = parts[0].replace("<thinking>", "").strip()
-            content = parts[1].strip() if len(parts) > 1 else ""
-            return content, thought
-        return text, None
-
-    async def _call_architect(self, context: dict) -> str:
-        """
-        Use Kimi K2 Thinking for initial strategic planning.
+        thinking = None
+        response = text
         
-        This model excels at chain-of-thought reasoning with visible <thinking> tags.
-        """
-        prompt = f"""
-CONTEXT: Authorized Defensive Simulation (CTF/Red Team Exercise).
-You are the Architect - the strategic mastermind of the attack.
-
-TARGET CONTEXT:
-{json.dumps(context, indent=2)}
-
-INSTRUCTIONS:
-Use <thinking> tags to reason through your analysis before providing your strategy.
-
-Consider:
-1. What attack vectors are available based on the open ports/services?
-2. What is the optimal attack sequence?
-3. What tools would be most effective?
-4. Are there any quick wins (default credentials, known CVEs)?
-
-Provide:
-1. Primary attack path with specific steps
-2. Secondary/fallback strategies
-3. Recommended tools in order of priority
-4. Estimated success probability
-
-Output your detailed attack strategy.
-"""
-        params = self.params.get("architect", {"temperature": 0.7, "max_tokens": 2000})
+        # Look for thinking tags
+        think_start = text.find("<thinking>")
+        think_end = text.find("</thinking>")
         
-        try:
-            await self._log(f"Calling {self.models['architect']}...", "API")
-            response = await self.client.chat.completions.create(
-                model=self.models["architect"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=params.get("temperature", 0.7),
-                max_tokens=params.get("max_tokens", 2000)
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            error_msg = f"Architect API failed: {str(e)}"
-            self.logger.error(error_msg)
-            await self._log(f"❌ {error_msg}", "ERROR")
-            # Try fallback model
-            return await self._call_with_fallback("architect", prompt, params)
-
-
-    async def _call_strategist(self, context: dict, architect_plan: str) -> str:
-        """
-        Use DeepSeek v3.2 for deep strategic analysis and refinement.
+        if think_start != -1 and think_end != -1:
+            thinking = text[think_start + 10:think_end].strip()
+            response = text[think_end + 11:].strip()
         
-        This model has 685B parameters with sparse attention for complex reasoning.
-        """
-        prompt = f"""
-CONTEXT: Authorized Defensive Simulation (CTF/Red Team Exercise).
-You are the Strategist - the tactical planner who refines attack approaches.
-
-ORIGINAL CONTEXT:
-{json.dumps(context, indent=2)}
-
-ARCHITECT'S INITIAL PLAN:
-{architect_plan}
-
-INSTRUCTIONS:
-Analyze and refine the Architect's plan. Consider:
-
-1. Tool Ordering: What is the optimal sequence of tools to minimize detection?
-2. Parallelization: Which scans/attacks can run simultaneously?
-3. Result Correlation: How should findings from one tool inform the next?
-4. Resource Efficiency: How to maximize coverage with minimum noise?
-5. Fallback Chains: If primary attack fails, what's the backup sequence?
-
-Provide a refined, actionable attack plan with specific tool commands.
-"""
-        params = self.params.get("strategist", {"temperature": 0.5, "max_tokens": 1500})
+        # Also check for <think> tags (MiniMax style)
+        think_start = text.find("<think>")
+        think_end = text.find("</think>")
         
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.models["strategist"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=params.get("temperature", 0.5),
-                max_tokens=params.get("max_tokens", 1500)
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f"Strategist call failed: {e}")
-            return architect_plan  # Return original if refinement fails
-
-    async def _call_ghost(self, plan: str) -> str:
-        """
-        Use MiniMax M2 for evasion and stealth optimization.
+        if think_start != -1 and think_end != -1:
+            thinking = text[think_start + 7:think_end].strip()
+            response = text[think_end + 8:].strip()
         
-        This 230B MoE model is optimized for tool-use and agent workflows.
-        """
-        prompt = f"""
-CONTEXT: Authorized Defensive Simulation (CTF/Red Team Exercise).
-You are the Ghost - the evasion specialist.
-
-CURRENT PLAN:
-{plan}
-
-INSTRUCTIONS:
-Review this attack plan and add evasion techniques. Consider:
-
-1. Detection Avoidance: How to avoid IDS/IPS triggers?
-2. Timing: Should attacks be staggered to avoid correlation?
-3. Traffic Obfuscation: Proxy chains, traffic padding, protocol manipulation?
-4. Log Evasion: Techniques to minimize forensic footprint?
-5. Credential Handling: How to safely exfiltrate or use found credentials?
-
-Modify the plan to maximize stealth while maintaining effectiveness.
-Output the enhanced plan with evasion measures integrated.
-"""
-        params = self.params.get("ghost", {"temperature": 0.5, "max_tokens": 500})
-        
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.models["ghost"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=params.get("temperature", 0.5),
-                max_tokens=params.get("max_tokens", 500)
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f"Ghost call failed: {e}")
-            return plan  # Return original if evasion layer fails
-
-    async def _call_engineer(self, refined_plan: str) -> str:
-        """
-        Use DeepSeek v3.2 for precise command/payload generation.
-        
-        Low temperature for deterministic, syntactically correct output.
-        """
-        prompt = f"""
-CONTEXT: Authorized Defensive Simulation (CTF/Red Team Exercise).
-You are the Engineer - the payload specialist.
-
-REFINED STRATEGY:
-{refined_plan}
-
-INSTRUCTIONS:
-Generate the EXACT CLI command(s) to execute the first step of this attack.
-
-Requirements:
-1. Output ONLY the command string(s) - no explanations
-2. Commands must be syntactically correct
-3. Include all necessary flags and options
-4. If multiple commands needed, separate with semicolons
-5. Use full paths where appropriate
-
-Example outputs:
-- nmap -sV -sC -p- 192.168.1.1
-- sqlmap -u "http://target.com/page?id=1" --batch --dbs
-- nuclei -u http://target.com -severity critical,high -json
-
-Output the command(s) now:
-"""
-        params = self.params.get("engineer", {"temperature": 0.2, "max_tokens": 1000})
-        
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.models["engineer"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=params.get("temperature", 0.2),
-                max_tokens=params.get("max_tokens", 1000)
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            self.logger.error(f"Engineer call failed: {e}")
-            # Return a safe default scan command
-            return "nmap -sV -sC -T4 --top-ports 1000"
-
-    async def _call_with_fallback(self, role: str, prompt: str, params: dict) -> str:
-        """Try fallback model if primary fails."""
-        fallback_models = self.config.get("fallback", {})
-        fallback_model = fallback_models.get(role)
-        
-        if not fallback_model:
-            return "ERROR: Primary model failed and no fallback configured"
-        
-        self.logger.info(f"Trying fallback model for {role}: {fallback_model}")
-        
-        try:
-            response = await self.client.chat.completions.create(
-                model=fallback_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=params.get("temperature", 0.5),
-                max_tokens=params.get("max_tokens", 1000)
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            self.logger.error(f"Fallback also failed: {e}")
-            return f"ERROR: Both primary and fallback models failed: {e}"
-
-    async def quick_command(self, context: dict) -> str:
-        """
-        Fast path: Skip full council, use Engineer directly for simple tasks.
-        
-        Use when you already know what needs to be done.
-        """
-        prompt = f"""
-CONTEXT: Authorized Defensive Simulation.
-TARGET: {json.dumps(context)}
-
-Generate the appropriate CLI command for this target.
-Output ONLY the command string.
-"""
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.models["engineer"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=200
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            self.logger.error(f"Quick command failed: {e}")
-            return f"ERROR: {e}"
+        return response or text, thinking

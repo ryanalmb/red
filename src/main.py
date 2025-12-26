@@ -4,15 +4,16 @@ from src.ui.app import CyberRedApp
 from src.core.event_bus import EventBus
 from src.core.orchestrator import Orchestrator
 
-# Configure logging
+# Configure logging - FILE ONLY (stdout breaks TUI layout)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("cyber-red.log"),
-        logging.StreamHandler()
+        logging.FileHandler("cyber-red.log")
+        # NO StreamHandler - stdout breaks the TUI
     ]
 )
+
 
 async def run_app():
     # 1. Initialize Bus
