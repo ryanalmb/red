@@ -1,7 +1,7 @@
 import pytest
 import asyncio
-from src.core.council import CouncilOfExperts
-from src.core.throttler import SwarmBrain
+from cyberred.core.council import CouncilOfExperts
+from cyberred.core.throttler import SwarmBrain
 
 # Mock the Brain to avoid burning tokens on CI/CD
 # Or we can use the Real Brain if we want to test the Prompts.

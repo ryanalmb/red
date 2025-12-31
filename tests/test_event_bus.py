@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from src.core.event_bus import EventBus
+from cyberred.core.event_bus import EventBus
 
 @pytest.mark.asyncio
 async def test_event_bus_publish_subscribe():

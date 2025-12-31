@@ -1,0 +1,8 @@
+{
+    "id": "find-001",
+    "type": "sqli",
+    "severity": "high",
+    "cwe": "CWE-89",
+    "location": "param id",
+    "evidence": "id=1' OR '1'='1"
+}

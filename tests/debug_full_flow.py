@@ -1,10 +1,10 @@
 import asyncio
 import logging
-from src.core.event_bus import EventBus
-from src.core.orchestrator import Orchestrator
-from src.core.council import CouncilOfExperts
-from src.core.throttler import SwarmBrain
-from src.core.roe_loader import RoELoader
+from cyberred.core.event_bus import EventBus
+from cyberred.core.orchestrator import Orchestrator
+from cyberred.core.council import CouncilOfExperts
+from cyberred.core.throttler import SwarmBrain
+from cyberred.core.roe_loader import RoELoader
 
 # Configure Logging to Console
 logging.basicConfig(level=logging.INFO)

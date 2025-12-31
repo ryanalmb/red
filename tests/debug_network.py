@@ -1,5 +1,5 @@
 import asyncio
-from src.core.worker_pool import WorkerPool
+from cyberred.core.worker_pool import WorkerPool
 
 async def main():
     pool = WorkerPool(pool_size=1, container_prefix="red-kali-worker")

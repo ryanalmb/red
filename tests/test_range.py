@@ -1,7 +1,7 @@
 import pytest
 import asyncio
-from src.core.worker_pool import WorkerPool
-from src.mcp.nmap_adapter import NmapAdapter
+from cyberred.core.worker_pool import WorkerPool
+from cyberred.mcp.nmap_adapter import NmapAdapter
 
 @pytest.mark.asyncio
 async def test_range_connectivity_and_scan():

@@ -1,7 +1,7 @@
 import asyncio
 import os
-from src.core.council import CouncilOfExperts
-from src.core.throttler import SwarmBrain
+from cyberred.core.council import CouncilOfExperts
+from cyberred.core.throttler import SwarmBrain
 
 # Mock RoE for test
 MOCK_ROE = {

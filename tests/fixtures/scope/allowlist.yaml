@@ -1,0 +1,5 @@
+allowed_hosts:
+  - 127.0.0.1
+  - localhost
+excluded_hosts:
+  - 10.0.0.1

@@ -1,0 +1,10 @@
+{
+    "id": "eng-001",
+    "name": "Sample Engagement",
+    "target": "127.0.0.1",
+    "port": 80,
+    "config": {
+        "intensity": "low",
+        "stealth": "high"
+    }
+}

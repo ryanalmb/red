@@ -1,5 +1,5 @@
 import asyncio
-from src.core.worker_pool import WorkerPool
+from cyberred.core.worker_pool import WorkerPool
 
 async def main():
     print("--- Starting Integration Check ---")

@@ -1,8 +1,8 @@
 import pytest
 import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch
-from src.core.orchestrator import Orchestrator
-from src.core.event_bus import EventBus
+from cyberred.core.orchestrator import Orchestrator
+from cyberred.core.event_bus import EventBus
 
 # Valid XML for Nmap Adapter
 MOCK_XML = """<?xml version="1.0"?>
