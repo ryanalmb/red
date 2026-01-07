@@ -1,5 +1,10 @@
 # 🔴 Cyber-Red: HAMAS for Offensive Security
 
+> [!IMPORTANT]
+> **ARCHITECTURAL OVERHAUL IN PROGRESS (v2.0)**
+> This codebase is currently undergoing a fundamental architectural refactoring to transition from single-agent operations to a **massively distributed stigmergic swarm architecture**. The objective is to enable the coordinated orchestration of thousands of autonomous agents capable of executing complex, multi-stage offensive campaigns with adaptive decision-making until strategic objectives are achieved.
+
+
 **Cyber-Red** is a Hierarchical Autonomous Multi-Agent System (HAMAS) designed to simulate nation-state level cyber attacks for defensive hardening.
 
 ![Status](https://img.shields.io/badge/Status-Operational-green)
