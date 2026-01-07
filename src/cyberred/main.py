@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from cyberred.ui.app import CyberRedApp
+from cyberred.tui.app import CyberRedApp
 from cyberred.core.event_bus import EventBus
 from cyberred.core.orchestrator import Orchestrator
 

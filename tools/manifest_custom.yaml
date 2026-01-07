@@ -1,0 +1,1284 @@
+version: '1.0'
+generated: '2026-01-06T00:17:19.938771Z'
+tool_count: 210
+categories:
+  reconnaissance:
+    description: Network and host discovery tools
+    tools: []
+  web_application:
+    description: Web application testing tools
+    tools: []
+  exploitation:
+    description: Exploitation and vulnerability assessment
+    tools:
+    - &id002
+      name: add-shell
+      description: 'Auto-detected tool: add-shell'
+      common_flags: []
+      output_format: stdout
+    - &id136
+      name: remove-shell
+      description: 'Auto-detected tool: remove-shell'
+      common_flags: []
+      output_format: stdout
+    - &id192
+      name: update-shells
+      description: 'Auto-detected tool: update-shells'
+      common_flags: []
+      output_format: stdout
+  post_exploitation:
+    description: Post-exploitation and privilege escalation
+    tools:
+    - &id015
+      name: chgpasswd
+      description: 'Auto-detected tool: chgpasswd'
+      common_flags: []
+      output_format: stdout
+    - &id017
+      name: chpasswd
+      description: 'Auto-detected tool: chpasswd'
+      common_flags: []
+      output_format: stdout
+    - &id062
+      name: gpasswd
+      description: 'Auto-detected tool: gpasswd'
+      common_flags: []
+      output_format: stdout
+    - &id190
+      name: update-passwd
+      description: 'Auto-detected tool: update-passwd'
+      common_flags: []
+      output_format: stdout
+  wireless:
+    description: Wireless network testing tools
+    tools: []
+  other:
+    description: Uncategorized tools
+    tools:
+    - &id001
+      name: '['
+      description: 'Auto-detected tool: ['
+      common_flags: []
+      output_format: stdout
+    - &id003
+      name: agetty
+      description: 'Auto-detected tool: agetty'
+      common_flags: []
+      output_format: stdout
+    - &id004
+      name: arch
+      description: 'Auto-detected tool: arch'
+      common_flags: []
+      output_format: stdout
+    - &id005
+      name: b2sum
+      description: 'Auto-detected tool: b2sum'
+      common_flags: []
+      output_format: stdout
+    - &id006
+      name: base32
+      description: 'Auto-detected tool: base32'
+      common_flags: []
+      output_format: stdout
+    - &id007
+      name: basenc
+      description: 'Auto-detected tool: basenc'
+      common_flags: []
+      output_format: stdout
+    - &id008
+      name: bashbug
+      description: 'Auto-detected tool: bashbug'
+      common_flags: []
+      output_format: stdout
+    - &id009
+      name: blkdiscard
+      description: 'Auto-detected tool: blkdiscard'
+      common_flags: []
+      output_format: stdout
+    - &id010
+      name: blkid
+      description: 'Auto-detected tool: blkid'
+      common_flags: []
+      output_format: stdout
+    - &id011
+      name: blockdev
+      description: 'Auto-detected tool: blockdev'
+      common_flags: []
+      output_format: stdout
+    - &id012
+      name: chage
+      description: 'Auto-detected tool: chage'
+      common_flags: []
+      output_format: stdout
+    - &id013
+      name: chcon
+      description: 'Auto-detected tool: chcon'
+      common_flags: []
+      output_format: stdout
+    - &id014
+      name: chfn
+      description: 'Auto-detected tool: chfn'
+      common_flags: []
+      output_format: stdout
+    - &id016
+      name: choom
+      description: 'Auto-detected tool: choom'
+      common_flags: []
+      output_format: stdout
+    - &id018
+      name: chrt
+      description: 'Auto-detected tool: chrt'
+      common_flags: []
+      output_format: stdout
+    - &id019
+      name: chsh
+      description: 'Auto-detected tool: chsh'
+      common_flags: []
+      output_format: stdout
+    - &id020
+      name: cksum
+      description: 'Auto-detected tool: cksum'
+      common_flags: []
+      output_format: stdout
+    - &id021
+      name: clear_console
+      description: 'Auto-detected tool: clear_console'
+      common_flags: []
+      output_format: stdout
+    - &id022
+      name: cmp
+      description: 'Auto-detected tool: cmp'
+      common_flags: []
+      output_format: stdout
+    - &id023
+      name: comm
+      description: 'Auto-detected tool: comm'
+      common_flags: []
+      output_format: stdout
+    - &id024
+      name: csplit
+      description: 'Auto-detected tool: csplit'
+      common_flags: []
+      output_format: stdout
+    - &id025
+      name: custom-hacker-tool
+      description: 'Auto-detected tool: custom-hacker-tool'
+      common_flags: []
+      output_format: stdout
+    - &id026
+      name: cut
+      description: 'Auto-detected tool: cut'
+      common_flags: []
+      output_format: stdout
+    - &id027
+      name: dash
+      description: 'Auto-detected tool: dash'
+      common_flags: []
+      output_format: stdout
+    - &id028
+      name: deb-systemd-helper
+      description: 'Auto-detected tool: deb-systemd-helper'
+      common_flags: []
+      output_format: stdout
+    - &id029
+      name: deb-systemd-invoke
+      description: 'Auto-detected tool: deb-systemd-invoke'
+      common_flags: []
+      output_format: stdout
+    - &id030
+      name: debconf
+      description: 'Auto-detected tool: debconf'
+      common_flags: []
+      output_format: stdout
+    - &id031
+      name: debconf-apt-progress
+      description: 'Auto-detected tool: debconf-apt-progress'
+      common_flags: []
+      output_format: stdout
+    - &id032
+      name: debconf-communicate
+      description: 'Auto-detected tool: debconf-communicate'
+      common_flags: []
+      output_format: stdout
+    - &id033
+      name: debconf-copydb
+      description: 'Auto-detected tool: debconf-copydb'
+      common_flags: []
+      output_format: stdout
+    - &id034
+      name: debconf-escape
+      description: 'Auto-detected tool: debconf-escape'
+      common_flags: []
+      output_format: stdout
+    - &id035
+      name: debconf-set-selections
+      description: 'Auto-detected tool: debconf-set-selections'
+      common_flags: []
+      output_format: stdout
+    - &id036
+      name: debconf-show
+      description: 'Auto-detected tool: debconf-show'
+      common_flags: []
+      output_format: stdout
+    - &id037
+      name: debian-update-rc.d
+      description: 'Auto-detected tool: debian-update-rc.d'
+      common_flags: []
+      output_format: stdout
+    - &id038
+      name: diff3
+      description: 'Auto-detected tool: diff3'
+      common_flags: []
+      output_format: stdout
+    - &id039
+      name: dir
+      description: 'Auto-detected tool: dir'
+      common_flags: []
+      output_format: stdout
+    - &id040
+      name: dircolors
+      description: 'Auto-detected tool: dircolors'
+      common_flags: []
+      output_format: stdout
+    - &id041
+      name: du
+      description: 'Auto-detected tool: du'
+      common_flags: []
+      output_format: stdout
+    - &id042
+      name: egrep
+      description: 'Auto-detected tool: egrep'
+      common_flags: []
+      output_format: stdout
+    - &id043
+      name: expand
+      description: 'Auto-detected tool: expand'
+      common_flags: []
+      output_format: stdout
+    - &id044
+      name: expiry
+      description: 'Auto-detected tool: expiry'
+      common_flags: []
+      output_format: stdout
+    - &id045
+      name: expr
+      description: 'Auto-detected tool: expr'
+      common_flags: []
+      output_format: stdout
+    - &id046
+      name: factor
+      description: 'Auto-detected tool: factor'
+      common_flags: []
+      output_format: stdout
+    - &id047
+      name: faillock
+      description: 'Auto-detected tool: faillock'
+      common_flags: []
+      output_format: stdout
+    - &id048
+      name: fallocate
+      description: 'Auto-detected tool: fallocate'
+      common_flags: []
+      output_format: stdout
+    - &id049
+      name: fgrep
+      description: 'Auto-detected tool: fgrep'
+      common_flags: []
+      output_format: stdout
+    - &id050
+      name: findfs
+      description: 'Auto-detected tool: findfs'
+      common_flags: []
+      output_format: stdout
+    - &id051
+      name: findmnt
+      description: 'Auto-detected tool: findmnt'
+      common_flags: []
+      output_format: stdout
+    - &id052
+      name: flock
+      description: 'Auto-detected tool: flock'
+      common_flags: []
+      output_format: stdout
+    - &id053
+      name: fmt
+      description: 'Auto-detected tool: fmt'
+      common_flags: []
+      output_format: stdout
+    - &id054
+      name: fold
+      description: 'Auto-detected tool: fold'
+      common_flags: []
+      output_format: stdout
+    - &id055
+      name: fsck
+      description: 'Auto-detected tool: fsck'
+      common_flags: []
+      output_format: stdout
+    - &id056
+      name: fsfreeze
+      description: 'Auto-detected tool: fsfreeze'
+      common_flags: []
+      output_format: stdout
+    - &id057
+      name: fstab-decode
+      description: 'Auto-detected tool: fstab-decode'
+      common_flags: []
+      output_format: stdout
+    - &id058
+      name: fstrim
+      description: 'Auto-detected tool: fstrim'
+      common_flags: []
+      output_format: stdout
+    - &id059
+      name: getconf
+      description: 'Auto-detected tool: getconf'
+      common_flags: []
+      output_format: stdout
+    - &id060
+      name: getent
+      description: 'Auto-detected tool: getent'
+      common_flags: []
+      output_format: stdout
+    - &id061
+      name: getopt
+      description: 'Auto-detected tool: getopt'
+      common_flags: []
+      output_format: stdout
+    - &id063
+      name: groupadd
+      description: 'Auto-detected tool: groupadd'
+      common_flags: []
+      output_format: stdout
+    - &id064
+      name: groupdel
+      description: 'Auto-detected tool: groupdel'
+      common_flags: []
+      output_format: stdout
+    - &id065
+      name: groupmod
+      description: 'Auto-detected tool: groupmod'
+      common_flags: []
+      output_format: stdout
+    - &id066
+      name: grpck
+      description: 'Auto-detected tool: grpck'
+      common_flags: []
+      output_format: stdout
+    - &id067
+      name: grpconv
+      description: 'Auto-detected tool: grpconv'
+      common_flags: []
+      output_format: stdout
+    - &id068
+      name: grpunconv
+      description: 'Auto-detected tool: grpunconv'
+      common_flags: []
+      output_format: stdout
+    - &id069
+      name: gunzip
+      description: 'Auto-detected tool: gunzip'
+      common_flags: []
+      output_format: stdout
+    - &id070
+      name: gzexe
+      description: 'Auto-detected tool: gzexe'
+      common_flags: []
+      output_format: stdout
+    - &id071
+      name: hardlink
+      description: 'Auto-detected tool: hardlink'
+      common_flags: []
+      output_format: stdout
+    - &id072
+      name: hostid
+      description: 'Auto-detected tool: hostid'
+      common_flags: []
+      output_format: stdout
+    - &id073
+      name: iconv
+      description: 'Auto-detected tool: iconv'
+      common_flags: []
+      output_format: stdout
+    - &id074
+      name: iconvconfig
+      description: 'Auto-detected tool: iconvconfig'
+      common_flags: []
+      output_format: stdout
+    - &id075
+      name: infocmp
+      description: 'Auto-detected tool: infocmp'
+      common_flags: []
+      output_format: stdout
+    - &id076
+      name: installkernel
+      description: 'Auto-detected tool: installkernel'
+      common_flags: []
+      output_format: stdout
+    - &id077
+      name: invoke-rc.d
+      description: 'Auto-detected tool: invoke-rc.d'
+      common_flags: []
+      output_format: stdout
+    - &id078
+      name: ionice
+      description: 'Auto-detected tool: ionice'
+      common_flags: []
+      output_format: stdout
+    - &id079
+      name: ipcmk
+      description: 'Auto-detected tool: ipcmk'
+      common_flags: []
+      output_format: stdout
+    - &id080
+      name: ipcrm
+      description: 'Auto-detected tool: ipcrm'
+      common_flags: []
+      output_format: stdout
+    - &id081
+      name: ipcs
+      description: 'Auto-detected tool: ipcs'
+      common_flags: []
+      output_format: stdout
+    - &id082
+      name: ischroot
+      description: 'Auto-detected tool: ischroot'
+      common_flags: []
+      output_format: stdout
+    - &id083
+      name: join
+      description: 'Auto-detected tool: join'
+      common_flags: []
+      output_format: stdout
+    - &id084
+      name: kali-check-apt-sources
+      description: 'Auto-detected tool: kali-check-apt-sources'
+      common_flags: []
+      output_format: stdout
+    - &id085
+      name: kali-deprecated
+      description: 'Auto-detected tool: kali-deprecated'
+      common_flags: []
+      output_format: stdout
+    - &id086
+      name: kali-motd
+      description: 'Auto-detected tool: kali-motd'
+      common_flags: []
+      output_format: stdout
+    - &id087
+      name: kali-setup
+      description: 'Auto-detected tool: kali-setup'
+      common_flags: []
+      output_format: stdout
+    - &id088
+      name: kali-treecd
+      description: 'Auto-detected tool: kali-treecd'
+      common_flags: []
+      output_format: stdout
+    - &id089
+      name: kali-winexec
+      description: 'Auto-detected tool: kali-winexec'
+      common_flags: []
+      output_format: stdout
+    - &id090
+      name: killall5
+      description: 'Auto-detected tool: killall5'
+      common_flags: []
+      output_format: stdout
+    - &id091
+      name: ldconfig
+      description: 'Auto-detected tool: ldconfig'
+      common_flags: []
+      output_format: stdout
+    - &id092
+      name: ldd
+      description: 'Auto-detected tool: ldd'
+      common_flags: []
+      output_format: stdout
+    - &id093
+      name: locale
+      description: 'Auto-detected tool: locale'
+      common_flags: []
+      output_format: stdout
+    - &id094
+      name: localedef
+      description: 'Auto-detected tool: localedef'
+      common_flags: []
+      output_format: stdout
+    - &id095
+      name: logger
+      description: 'Auto-detected tool: logger'
+      common_flags: []
+      output_format: stdout
+    - &id096
+      name: login
+      description: 'Auto-detected tool: login'
+      common_flags: []
+      output_format: stdout
+    - &id097
+      name: losetup
+      description: 'Auto-detected tool: losetup'
+      common_flags: []
+      output_format: stdout
+    - &id098
+      name: lsblk
+      description: 'Auto-detected tool: lsblk'
+      common_flags: []
+      output_format: stdout
+    - &id099
+      name: lscpu
+      description: 'Auto-detected tool: lscpu'
+      common_flags: []
+      output_format: stdout
+    - &id100
+      name: lsipc
+      description: 'Auto-detected tool: lsipc'
+      common_flags: []
+      output_format: stdout
+    - &id101
+      name: lslocks
+      description: 'Auto-detected tool: lslocks'
+      common_flags: []
+      output_format: stdout
+    - &id102
+      name: lsns
+      description: 'Auto-detected tool: lsns'
+      common_flags: []
+      output_format: stdout
+    - &id103
+      name: mcookie
+      description: 'Auto-detected tool: mcookie'
+      common_flags: []
+      output_format: stdout
+    - &id104
+      name: md5sum
+      description: 'Auto-detected tool: md5sum'
+      common_flags: []
+      output_format: stdout
+    - &id105
+      name: mkfifo
+      description: 'Auto-detected tool: mkfifo'
+      common_flags: []
+      output_format: stdout
+    - &id106
+      name: mkfs
+      description: 'Auto-detected tool: mkfs'
+      common_flags: []
+      output_format: stdout
+    - &id107
+      name: mkhomedir_helper
+      description: 'Auto-detected tool: mkhomedir_helper'
+      common_flags: []
+      output_format: stdout
+    - &id108
+      name: mknod
+      description: 'Auto-detected tool: mknod'
+      common_flags: []
+      output_format: stdout
+    - &id109
+      name: mkswap
+      description: 'Auto-detected tool: mkswap'
+      common_flags: []
+      output_format: stdout
+    - &id110
+      name: mountpoint
+      description: 'Auto-detected tool: mountpoint'
+      common_flags: []
+      output_format: stdout
+    - &id111
+      name: namei
+      description: 'Auto-detected tool: namei'
+      common_flags: []
+      output_format: stdout
+    - &id112
+      name: newusers
+      description: 'Auto-detected tool: newusers'
+      common_flags: []
+      output_format: stdout
+    - &id113
+      name: nl
+      description: 'Auto-detected tool: nl'
+      common_flags: []
+      output_format: stdout
+    - &id114
+      name: nologin
+      description: 'Auto-detected tool: nologin'
+      common_flags: []
+      output_format: stdout
+    - &id115
+      name: nproc
+      description: 'Auto-detected tool: nproc'
+      common_flags: []
+      output_format: stdout
+    - &id116
+      name: nsenter
+      description: 'Auto-detected tool: nsenter'
+      common_flags: []
+      output_format: stdout
+    - &id117
+      name: numfmt
+      description: 'Auto-detected tool: numfmt'
+      common_flags: []
+      output_format: stdout
+    - &id118
+      name: pam-auth-update
+      description: 'Auto-detected tool: pam-auth-update'
+      common_flags: []
+      output_format: stdout
+    - &id119
+      name: pam_getenv
+      description: 'Auto-detected tool: pam_getenv'
+      common_flags: []
+      output_format: stdout
+    - &id120
+      name: pam_namespace_helper
+      description: 'Auto-detected tool: pam_namespace_helper'
+      common_flags: []
+      output_format: stdout
+    - &id121
+      name: pam_timestamp_check
+      description: 'Auto-detected tool: pam_timestamp_check'
+      common_flags: []
+      output_format: stdout
+    - &id122
+      name: partx
+      description: 'Auto-detected tool: partx'
+      common_flags: []
+      output_format: stdout
+    - &id123
+      name: pathchk
+      description: 'Auto-detected tool: pathchk'
+      common_flags: []
+      output_format: stdout
+    - &id124
+      name: perl5.40.1
+      description: 'Auto-detected tool: perl5.40.1'
+      common_flags: []
+      output_format: stdout
+    - &id125
+      name: pinky
+      description: 'Auto-detected tool: pinky'
+      common_flags: []
+      output_format: stdout
+    - &id126
+      name: pldd
+      description: 'Auto-detected tool: pldd'
+      common_flags: []
+      output_format: stdout
+    - &id127
+      name: policy-rc.d
+      description: 'Auto-detected tool: policy-rc.d'
+      common_flags: []
+      output_format: stdout
+    - &id128
+      name: prlimit
+      description: 'Auto-detected tool: prlimit'
+      common_flags: []
+      output_format: stdout
+    - &id129
+      name: ptx
+      description: 'Auto-detected tool: ptx'
+      common_flags: []
+      output_format: stdout
+    - &id130
+      name: pwck
+      description: 'Auto-detected tool: pwck'
+      common_flags: []
+      output_format: stdout
+    - &id131
+      name: pwconv
+      description: 'Auto-detected tool: pwconv'
+      common_flags: []
+      output_format: stdout
+    - &id132
+      name: pwhistory_helper
+      description: 'Auto-detected tool: pwhistory_helper'
+      common_flags: []
+      output_format: stdout
+    - &id133
+      name: pwunconv
+      description: 'Auto-detected tool: pwunconv'
+      common_flags: []
+      output_format: stdout
+    - &id134
+      name: readprofile
+      description: 'Auto-detected tool: readprofile'
+      common_flags: []
+      output_format: stdout
+    - &id135
+      name: realpath
+      description: 'Auto-detected tool: realpath'
+      common_flags: []
+      output_format: stdout
+    - &id137
+      name: renice
+      description: 'Auto-detected tool: renice'
+      common_flags: []
+      output_format: stdout
+    - &id138
+      name: rgrep
+      description: 'Auto-detected tool: rgrep'
+      common_flags: []
+      output_format: stdout
+    - &id139
+      name: rmt-tar
+      description: 'Auto-detected tool: rmt-tar'
+      common_flags: []
+      output_format: stdout
+    - &id140
+      name: rtcwake
+      description: 'Auto-detected tool: rtcwake'
+      common_flags: []
+      output_format: stdout
+    - &id141
+      name: runcon
+      description: 'Auto-detected tool: runcon'
+      common_flags: []
+      output_format: stdout
+    - &id142
+      name: runuser
+      description: 'Auto-detected tool: runuser'
+      common_flags: []
+      output_format: stdout
+    - &id143
+      name: savelog
+      description: 'Auto-detected tool: savelog'
+      common_flags: []
+      output_format: stdout
+    - &id144
+      name: script
+      description: 'Auto-detected tool: script'
+      common_flags: []
+      output_format: stdout
+    - &id145
+      name: scriptlive
+      description: 'Auto-detected tool: scriptlive'
+      common_flags: []
+      output_format: stdout
+    - &id146
+      name: scriptreplay
+      description: 'Auto-detected tool: scriptreplay'
+      common_flags: []
+      output_format: stdout
+    - &id147
+      name: sdiff
+      description: 'Auto-detected tool: sdiff'
+      common_flags: []
+      output_format: stdout
+    - &id148
+      name: seq
+      description: 'Auto-detected tool: seq'
+      common_flags: []
+      output_format: stdout
+    - &id149
+      name: service
+      description: 'Auto-detected tool: service'
+      common_flags: []
+      output_format: stdout
+    - &id150
+      name: setarch
+      description: 'Auto-detected tool: setarch'
+      common_flags: []
+      output_format: stdout
+    - &id151
+      name: setpriv
+      description: 'Auto-detected tool: setpriv'
+      common_flags: []
+      output_format: stdout
+    - &id152
+      name: setsid
+      description: 'Auto-detected tool: setsid'
+      common_flags: []
+      output_format: stdout
+    - &id153
+      name: setterm
+      description: 'Auto-detected tool: setterm'
+      common_flags: []
+      output_format: stdout
+    - &id154
+      name: sha1sum
+      description: 'Auto-detected tool: sha1sum'
+      common_flags: []
+      output_format: stdout
+    - &id155
+      name: sha224sum
+      description: 'Auto-detected tool: sha224sum'
+      common_flags: []
+      output_format: stdout
+    - &id156
+      name: sha256sum
+      description: 'Auto-detected tool: sha256sum'
+      common_flags: []
+      output_format: stdout
+    - &id157
+      name: sha384sum
+      description: 'Auto-detected tool: sha384sum'
+      common_flags: []
+      output_format: stdout
+    - &id158
+      name: sha512sum
+      description: 'Auto-detected tool: sha512sum'
+      common_flags: []
+      output_format: stdout
+    - &id159
+      name: shadowconfig
+      description: 'Auto-detected tool: shadowconfig'
+      common_flags: []
+      output_format: stdout
+    - &id160
+      name: shred
+      description: 'Auto-detected tool: shred'
+      common_flags: []
+      output_format: stdout
+    - &id161
+      name: shuf
+      description: 'Auto-detected tool: shuf'
+      common_flags: []
+      output_format: stdout
+    - &id162
+      name: split
+      description: 'Auto-detected tool: split'
+      common_flags: []
+      output_format: stdout
+    - &id163
+      name: sqv
+      description: 'Auto-detected tool: sqv'
+      common_flags: []
+      output_format: stdout
+    - &id164
+      name: start-stop-daemon
+      description: 'Auto-detected tool: start-stop-daemon'
+      common_flags: []
+      output_format: stdout
+    - &id165
+      name: stdbuf
+      description: 'Auto-detected tool: stdbuf'
+      common_flags: []
+      output_format: stdout
+    - &id166
+      name: stty
+      description: 'Auto-detected tool: stty'
+      common_flags: []
+      output_format: stdout
+    - &id167
+      name: sulogin
+      description: 'Auto-detected tool: sulogin'
+      common_flags: []
+      output_format: stdout
+    - &id168
+      name: sum
+      description: 'Auto-detected tool: sum'
+      common_flags: []
+      output_format: stdout
+    - &id169
+      name: swaplabel
+      description: 'Auto-detected tool: swaplabel'
+      common_flags: []
+      output_format: stdout
+    - &id170
+      name: swapoff
+      description: 'Auto-detected tool: swapoff'
+      common_flags: []
+      output_format: stdout
+    - &id171
+      name: swapon
+      description: 'Auto-detected tool: swapon'
+      common_flags: []
+      output_format: stdout
+    - &id172
+      name: sync
+      description: 'Auto-detected tool: sync'
+      common_flags: []
+      output_format: stdout
+    - &id173
+      name: tabs
+      description: 'Auto-detected tool: tabs'
+      common_flags: []
+      output_format: stdout
+    - &id174
+      name: tac
+      description: 'Auto-detected tool: tac'
+      common_flags: []
+      output_format: stdout
+    - &id175
+      name: tarcat
+      description: 'Auto-detected tool: tarcat'
+      common_flags: []
+      output_format: stdout
+    - &id176
+      name: taskset
+      description: 'Auto-detected tool: taskset'
+      common_flags: []
+      output_format: stdout
+    - &id177
+      name: tic
+      description: 'Auto-detected tool: tic'
+      common_flags: []
+      output_format: stdout
+    - &id178
+      name: timeout
+      description: 'Auto-detected tool: timeout'
+      common_flags: []
+      output_format: stdout
+    - &id179
+      name: toe
+      description: 'Auto-detected tool: toe'
+      common_flags: []
+      output_format: stdout
+    - &id180
+      name: tput
+      description: 'Auto-detected tool: tput'
+      common_flags: []
+      output_format: stdout
+    - &id181
+      name: truncate
+      description: 'Auto-detected tool: truncate'
+      common_flags: []
+      output_format: stdout
+    - &id182
+      name: tset
+      description: 'Auto-detected tool: tset'
+      common_flags: []
+      output_format: stdout
+    - &id183
+      name: tzselect
+      description: 'Auto-detected tool: tzselect'
+      common_flags: []
+      output_format: stdout
+    - &id184
+      name: uclampset
+      description: 'Auto-detected tool: uclampset'
+      common_flags: []
+      output_format: stdout
+    - &id185
+      name: unexpand
+      description: 'Auto-detected tool: unexpand'
+      common_flags: []
+      output_format: stdout
+    - &id186
+      name: unix_chkpwd
+      description: 'Auto-detected tool: unix_chkpwd'
+      common_flags: []
+      output_format: stdout
+    - &id187
+      name: unix_update
+      description: 'Auto-detected tool: unix_update'
+      common_flags: []
+      output_format: stdout
+    - &id188
+      name: unshare
+      description: 'Auto-detected tool: unshare'
+      common_flags: []
+      output_format: stdout
+    - &id189
+      name: update-alternatives
+      description: 'Auto-detected tool: update-alternatives'
+      common_flags: []
+      output_format: stdout
+    - &id191
+      name: update-rc.d
+      description: 'Auto-detected tool: update-rc.d'
+      common_flags: []
+      output_format: stdout
+    - &id193
+      name: useradd
+      description: 'Auto-detected tool: useradd'
+      common_flags: []
+      output_format: stdout
+    - &id194
+      name: userdel
+      description: 'Auto-detected tool: userdel'
+      common_flags: []
+      output_format: stdout
+    - &id195
+      name: usermod
+      description: 'Auto-detected tool: usermod'
+      common_flags: []
+      output_format: stdout
+    - &id196
+      name: vdir
+      description: 'Auto-detected tool: vdir'
+      common_flags: []
+      output_format: stdout
+    - &id197
+      name: vipw
+      description: 'Auto-detected tool: vipw'
+      common_flags: []
+      output_format: stdout
+    - &id198
+      name: wall
+      description: 'Auto-detected tool: wall'
+      common_flags: []
+      output_format: stdout
+    - &id199
+      name: whereis
+      description: 'Auto-detected tool: whereis'
+      common_flags: []
+      output_format: stdout
+    - &id200
+      name: which.debianutils
+      description: 'Auto-detected tool: which.debianutils'
+      common_flags: []
+      output_format: stdout
+    - &id201
+      name: wipefs
+      description: 'Auto-detected tool: wipefs'
+      common_flags: []
+      output_format: stdout
+    - &id202
+      name: zcmp
+      description: 'Auto-detected tool: zcmp'
+      common_flags: []
+      output_format: stdout
+    - &id203
+      name: zdiff
+      description: 'Auto-detected tool: zdiff'
+      common_flags: []
+      output_format: stdout
+    - &id204
+      name: zdump
+      description: 'Auto-detected tool: zdump'
+      common_flags: []
+      output_format: stdout
+    - &id205
+      name: zegrep
+      description: 'Auto-detected tool: zegrep'
+      common_flags: []
+      output_format: stdout
+    - &id206
+      name: zfgrep
+      description: 'Auto-detected tool: zfgrep'
+      common_flags: []
+      output_format: stdout
+    - &id207
+      name: zforce
+      description: 'Auto-detected tool: zforce'
+      common_flags: []
+      output_format: stdout
+    - &id208
+      name: zic
+      description: 'Auto-detected tool: zic'
+      common_flags: []
+      output_format: stdout
+    - &id209
+      name: znew
+      description: 'Auto-detected tool: znew'
+      common_flags: []
+      output_format: stdout
+    - &id210
+      name: zramctl
+      description: 'Auto-detected tool: zramctl'
+      common_flags: []
+      output_format: stdout
+tools:
+- *id001
+- *id002
+- *id003
+- *id004
+- *id005
+- *id006
+- *id007
+- *id008
+- *id009
+- *id010
+- *id011
+- *id012
+- *id013
+- *id014
+- *id015
+- *id016
+- *id017
+- *id018
+- *id019
+- *id020
+- *id021
+- *id022
+- *id023
+- *id024
+- *id025
+- *id026
+- *id027
+- *id028
+- *id029
+- *id030
+- *id031
+- *id032
+- *id033
+- *id034
+- *id035
+- *id036
+- *id037
+- *id038
+- *id039
+- *id040
+- *id041
+- *id042
+- *id043
+- *id044
+- *id045
+- *id046
+- *id047
+- *id048
+- *id049
+- *id050
+- *id051
+- *id052
+- *id053
+- *id054
+- *id055
+- *id056
+- *id057
+- *id058
+- *id059
+- *id060
+- *id061
+- *id062
+- *id063
+- *id064
+- *id065
+- *id066
+- *id067
+- *id068
+- *id069
+- *id070
+- *id071
+- *id072
+- *id073
+- *id074
+- *id075
+- *id076
+- *id077
+- *id078
+- *id079
+- *id080
+- *id081
+- *id082
+- *id083
+- *id084
+- *id085
+- *id086
+- *id087
+- *id088
+- *id089
+- *id090
+- *id091
+- *id092
+- *id093
+- *id094
+- *id095
+- *id096
+- *id097
+- *id098
+- *id099
+- *id100
+- *id101
+- *id102
+- *id103
+- *id104
+- *id105
+- *id106
+- *id107
+- *id108
+- *id109
+- *id110
+- *id111
+- *id112
+- *id113
+- *id114
+- *id115
+- *id116
+- *id117
+- *id118
+- *id119
+- *id120
+- *id121
+- *id122
+- *id123
+- *id124
+- *id125
+- *id126
+- *id127
+- *id128
+- *id129
+- *id130
+- *id131
+- *id132
+- *id133
+- *id134
+- *id135
+- *id136
+- *id137
+- *id138
+- *id139
+- *id140
+- *id141
+- *id142
+- *id143
+- *id144
+- *id145
+- *id146
+- *id147
+- *id148
+- *id149
+- *id150
+- *id151
+- *id152
+- *id153
+- *id154
+- *id155
+- *id156
+- *id157
+- *id158
+- *id159
+- *id160
+- *id161
+- *id162
+- *id163
+- *id164
+- *id165
+- *id166
+- *id167
+- *id168
+- *id169
+- *id170
+- *id171
+- *id172
+- *id173
+- *id174
+- *id175
+- *id176
+- *id177
+- *id178
+- *id179
+- *id180
+- *id181
+- *id182
+- *id183
+- *id184
+- *id185
+- *id186
+- *id187
+- *id188
+- *id189
+- *id190
+- *id191
+- *id192
+- *id193
+- *id194
+- *id195
+- *id196
+- *id197
+- *id198
+- *id199
+- *id200
+- *id201
+- *id202
+- *id203
+- *id204
+- *id205
+- *id206
+- *id207
+- *id208
+- *id209
+- *id210
+

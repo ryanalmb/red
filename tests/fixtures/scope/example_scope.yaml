@@ -1,0 +1,18 @@
+scope:
+  allowed_targets:
+    - "192.168.1.0/24"       # CIDR range
+    - "10.0.0.5"             # Single IP
+    - "example.com"          # Hostname
+    - "*.target.com"         # Wildcard hostname
+  
+  allowed_ports:
+    - 80                     # Single port
+    - 443
+    - [8000, 8100]           # Port range
+  
+  allowed_protocols:
+    - "tcp"
+    - "udp"
+  
+  allow_private: true        # Allow RFC 1918 private IPs
+  allow_loopback: false      # Block loopback (default)

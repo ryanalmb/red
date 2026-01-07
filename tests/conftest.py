@@ -13,6 +13,14 @@ from typing import Any, Generator
 
 import pytest
 import structlog
+from dotenv import load_dotenv
+
+# Load environment variables from .env file at the project root
+# This ensures API keys and other configuration are available during tests
+_project_root = Path(__file__).parent.parent
+_env_file = _project_root / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file)
 
 
 # Configure pytest collection

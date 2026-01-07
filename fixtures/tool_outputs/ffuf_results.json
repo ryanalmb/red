@@ -1,0 +1,32 @@
+{
+    "commandline": "ffuf -u http://10.10.10.10/FUZZ -w wordlist.txt",
+    "time": "2021-01-01T00:00:00Z",
+    "results": [
+        {
+            "input": {
+                "FUZZ": "admin"
+            },
+            "position": 1,
+            "status": 301,
+            "length": 123,
+            "words": 20,
+            "lines": 5,
+            "content_type": "text/html",
+            "redirectlocation": "http://10.10.10.10/admin/",
+            "resultfile": "",
+            "url": "http://10.10.10.10/admin",
+            "host": "10.10.10.10"
+        },
+        {
+            "input": {
+                "FUZZ": "uploads/"
+            },
+            "status": 403,
+            "length": 0,
+            "words": 0,
+            "lines": 0,
+            "url": "http://10.10.10.10/uploads/",
+            "host": "10.10.10.10"
+        }
+    ]
+}

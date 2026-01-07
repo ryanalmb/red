@@ -1,0 +1,4 @@
+# Nmap 7.94 scan initiated Mon Jan  6 02:49:00 2026 as: nmap -oG - 192.168.1.100
+Host: 192.168.1.100 ()	Status: Up
+Host: 192.168.1.100 ()	Ports: 22/open/tcp//ssh//OpenSSH 8.9p1/, 80/open/tcp//http//Apache httpd 2.4.52/, 443/closed/tcp//https//
+# Nmap done at Mon Jan  6 02:49:05 2026 -- 1 IP address (1 host up) scanned in 5.00 seconds

@@ -1,0 +1,18 @@
+version: "1.0"
+generated: "2026-01-01T00:00:00Z"
+tool_count: 5
+
+categories:
+  reconnaissance:
+    description: "Network discovery"
+    tools:
+      - name: nmap
+        description: "Port scanner"
+        common_flags: ["-sV"]
+      - name: masscan
+        description: "Fast scanner"
+  exploitation:
+    description: "Exploitation tools"
+    tools:
+      - name: sqlmap
+        description: "SQL injection"

@@ -1,0 +1,1 @@
+{"template-id": "CVE-2021-44228", "info": {"severity": "critical", "classification": {"cve-id": "CVE-2021-44228", "cvss-score": 10.0}, "tags": ["cve", "rce"]}, "matched-at": "http://192.168.1.1:8080/", "extracted-results": ["${jndi:ldap://...}"]}

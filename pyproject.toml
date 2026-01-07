@@ -21,7 +21,24 @@ dependencies = [
     "pyyaml>=6.0.0",
     "structlog>=24.1.0",
     "swarms>=8.0.0",
+    "pydantic>=2.5.0,<3.0.0",
+    "pydantic-settings>=2.1.0,<3.0.0",
+    "ntplib>=0.4.0",
+    "cryptography>=42.0.0",
+    "docker>=7.0.0",
+    "typer[all]>=0.9.0",
+    "psutil>=5.9.0",
+    "httpx>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "watchdog>=4.0.0",
+    # Epic 5: Intelligence Layer dependencies
+    "nvdlib>=0.7.0",
+    "msgpack>=1.0.0",
 ]
+
+[project.scripts]
+cyber-red = "cyberred.cli:app"
 
 [project.optional-dependencies]
 dev = [
@@ -31,6 +48,7 @@ dev = [
     "testcontainers>=4.0.0",
     "ruff>=0.3.0",
     "mypy>=1.8.0",
+    "respx>=0.21.0",
 ]
 
 test = [
@@ -38,6 +56,7 @@ test = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=4.1.0",
     "testcontainers>=4.0.0",
+    "respx>=0.21.0",
 ]
 
 [build-system]

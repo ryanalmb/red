@@ -1,0 +1,3 @@
++ OSVDB-1234: /admin/: Potentially interesting archive/cert file found.
++ OSVDB-5678: /path/to/file: Some description.
++ CVE-2023-9999: /vulnerable: Critical vulnerability found.

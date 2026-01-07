@@ -1,0 +1,275 @@
+{
+    "version": "1.0.0",
+    "description": "Emergence baseline for comparing isolated vs stigmergic agent runs",
+    "generated": "2025-12-31",
+    "protocol": {
+        "isolated_run": {
+            "description": "100 agents with no stigmergic pub/sub coordination",
+            "agent_count": 100,
+            "stigmergic_enabled": false,
+            "record": [
+                "findings",
+                "attack_paths"
+            ]
+        },
+        "stigmergic_run": {
+            "description": "100 agents with full pub/sub coordination enabled",
+            "agent_count": 100,
+            "stigmergic_enabled": true,
+            "record": [
+                "findings",
+                "attack_paths",
+                "decision_context"
+            ]
+        },
+        "emergence_calculation": {
+            "novel_chains": "paths in stigmergic NOT in isolated",
+            "formula": "emergence_score = len(novel_chains) / len(total_stigmergic_paths)",
+            "hard_gate": 0.20,
+            "description": "Stigmergic swarm must produce >20% novel attack chains vs isolated agents"
+        }
+    },
+    "expected_isolated_paths": [
+        {
+            "path_id": "ISO-001",
+            "description": "Direct SQL injection on DVWA",
+            "chain": [
+                {
+                    "action": "port_scan",
+                    "target": "dvwa",
+                    "finding": "open_port_80"
+                },
+                {
+                    "action": "web_scan",
+                    "target": "dvwa:80",
+                    "finding": "dvwa_detected"
+                },
+                {
+                    "action": "sqli_test",
+                    "target": "dvwa/vulnerabilities/sqli",
+                    "finding": "sqli_confirmed"
+                }
+            ],
+            "depth": 3
+        },
+        {
+            "path_id": "ISO-002",
+            "description": "SSH brute force on weak credentials",
+            "chain": [
+                {
+                    "action": "port_scan",
+                    "target": "ssh-weak",
+                    "finding": "open_port_2222"
+                },
+                {
+                    "action": "service_enum",
+                    "target": "ssh-weak:2222",
+                    "finding": "ssh_detected"
+                },
+                {
+                    "action": "brute_force",
+                    "target": "ssh-weak:2222",
+                    "finding": "weak_creds_found"
+                }
+            ],
+            "depth": 3
+        },
+        {
+            "path_id": "ISO-003",
+            "description": "SMB null session enumeration",
+            "chain": [
+                {
+                    "action": "port_scan",
+                    "target": "smb-vuln",
+                    "finding": "open_port_445"
+                },
+                {
+                    "action": "smb_enum",
+                    "target": "smb-vuln:445",
+                    "finding": "shares_enumerated"
+                }
+            ],
+            "depth": 2
+        },
+        {
+            "path_id": "ISO-004",
+            "description": "FTP anonymous access",
+            "chain": [
+                {
+                    "action": "port_scan",
+                    "target": "ftp-anon",
+                    "finding": "open_port_21"
+                },
+                {
+                    "action": "ftp_anon_check",
+                    "target": "ftp-anon:21",
+                    "finding": "anon_access_confirmed"
+                }
+            ],
+            "depth": 2
+        },
+        {
+            "path_id": "ISO-005",
+            "description": "XSS discovery on DVWA",
+            "chain": [
+                {
+                    "action": "web_scan",
+                    "target": "dvwa:80",
+                    "finding": "xss_endpoint_found"
+                },
+                {
+                    "action": "xss_test",
+                    "target": "dvwa/vulnerabilities/xss_r",
+                    "finding": "reflected_xss_confirmed"
+                }
+            ],
+            "depth": 2
+        }
+    ],
+    "expected_stigmergic_novel_paths": [
+        {
+            "path_id": "STIG-001",
+            "description": "Credential reuse from SSH to SMB (emergence)",
+            "chain": [
+                {
+                    "action": "brute_force",
+                    "target": "ssh-weak:2222",
+                    "finding": "ssh_creds_found",
+                    "decision_context": []
+                },
+                {
+                    "action": "cred_reuse_test",
+                    "target": "smb-vuln:445",
+                    "finding": "smb_auth_success",
+                    "decision_context": [
+                        "f:ssh_creds_found"
+                    ]
+                }
+            ],
+            "depth": 2,
+            "emergence_type": "credential_pivoting"
+        },
+        {
+            "path_id": "STIG-002",
+            "description": "SQLi to file read to credential extraction (emergence)",
+            "chain": [
+                {
+                    "action": "sqli_test",
+                    "target": "dvwa/vulnerabilities/sqli",
+                    "finding": "sqli_confirmed",
+                    "decision_context": []
+                },
+                {
+                    "action": "sqli_file_read",
+                    "target": "dvwa",
+                    "finding": "config_file_read",
+                    "decision_context": [
+                        "f:sqli_confirmed"
+                    ]
+                },
+                {
+                    "action": "cred_extract",
+                    "target": "dvwa",
+                    "finding": "db_creds_extracted",
+                    "decision_context": [
+                        "f:config_file_read"
+                    ]
+                },
+                {
+                    "action": "lateral_move",
+                    "target": "internal_db",
+                    "finding": "db_access",
+                    "decision_context": [
+                        "f:db_creds_extracted"
+                    ]
+                }
+            ],
+            "depth": 4,
+            "emergence_type": "chained_exploitation"
+        },
+        {
+            "path_id": "STIG-003",
+            "description": "Command injection to reverse shell to lateral movement (emergence)",
+            "chain": [
+                {
+                    "action": "cmd_injection",
+                    "target": "dvwa/vulnerabilities/exec",
+                    "finding": "rce_confirmed",
+                    "decision_context": []
+                },
+                {
+                    "action": "shell_spawn",
+                    "target": "dvwa",
+                    "finding": "shell_obtained",
+                    "decision_context": [
+                        "f:rce_confirmed"
+                    ]
+                },
+                {
+                    "action": "internal_scan",
+                    "target": "172.28.0.0/16",
+                    "finding": "internal_hosts_found",
+                    "decision_context": [
+                        "f:shell_obtained"
+                    ]
+                },
+                {
+                    "action": "lateral_pivot",
+                    "target": "internal_host",
+                    "finding": "lateral_access",
+                    "decision_context": [
+                        "f:internal_hosts_found",
+                        "f:shell_obtained"
+                    ]
+                }
+            ],
+            "depth": 4,
+            "emergence_type": "kill_chain_progression"
+        },
+        {
+            "path_id": "STIG-004",
+            "description": "SMB share info leads to targeted attack",
+            "chain": [
+                {
+                    "action": "smb_enum",
+                    "target": "smb-vuln:445",
+                    "finding": "user_list_found",
+                    "decision_context": []
+                },
+                {
+                    "action": "targeted_brute",
+                    "target": "ssh-weak:2222",
+                    "finding": "targeted_creds",
+                    "decision_context": [
+                        "f:user_list_found"
+                    ]
+                }
+            ],
+            "depth": 2,
+            "emergence_type": "information_aggregation"
+        }
+    ],
+    "validation_metrics": {
+        "min_isolated_paths": 5,
+        "min_stigmergic_novel_paths": 2,
+        "min_causal_chain_depth": 3,
+        "decision_context_coverage": 1.0
+    },
+    "nfr_requirements": {
+        "NFR35": {
+            "description": "Emergence score - stigmergic swarm produces >20% novel attack chains vs isolated agents",
+            "hard_gate": true,
+            "threshold": 0.20
+        },
+        "NFR36": {
+            "description": "Causal chain depth - at least one emergence chain with 3+ hops",
+            "hard_gate": true,
+            "min_depth": 3
+        },
+        "NFR37": {
+            "description": "Emergence traceability - 100% of agent actions include decision_context",
+            "hard_gate": true,
+            "coverage": 1.0
+        }
+    }
+}

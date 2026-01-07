@@ -1,0 +1,264 @@
+{
+    "version": "1.0.0",
+    "description": "Known vulnerabilities in cyber-range environment for test validation",
+    "generated": "2025-12-31",
+    "targets": {
+        "dvwa": {
+            "host": "cyber-range-dvwa",
+            "port": 80,
+            "description": "Damn Vulnerable Web Application",
+            "vulnerabilities": [
+                {
+                    "id": "DVWA-SQLI-001",
+                    "type": "sqli",
+                    "severity": "critical",
+                    "location": "/vulnerabilities/sqli/",
+                    "description": "SQL Injection in user ID parameter",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/sqli/?id=1' OR '1'='1",
+                    "expected_evidence": "First name: admin",
+                    "attack_vector": "Parameter 'id' is vulnerable to SQL injection"
+                },
+                {
+                    "id": "DVWA-SQLI-002",
+                    "type": "sqli",
+                    "severity": "critical",
+                    "location": "/vulnerabilities/sqli_blind/",
+                    "description": "Blind SQL Injection",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/sqli_blind/?id=1' AND SLEEP(5)--",
+                    "expected_evidence": "Response time > 5 seconds",
+                    "attack_vector": "Time-based blind SQL injection"
+                },
+                {
+                    "id": "DVWA-XSS-001",
+                    "type": "xss",
+                    "severity": "high",
+                    "location": "/vulnerabilities/xss_r/",
+                    "description": "Reflected XSS in name parameter",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/xss_r/?name=<script>alert('XSS')</script>",
+                    "expected_evidence": "<script>alert('XSS')</script>",
+                    "attack_vector": "User input reflected without sanitization"
+                },
+                {
+                    "id": "DVWA-XSS-002",
+                    "type": "xss",
+                    "severity": "high",
+                    "location": "/vulnerabilities/xss_s/",
+                    "description": "Stored XSS in guestbook",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/xss_s/",
+                    "expected_evidence": "Script persisted in database and executed on page load",
+                    "attack_vector": "Stored cross-site scripting via message field"
+                },
+                {
+                    "id": "DVWA-XSS-003",
+                    "type": "xss",
+                    "severity": "medium",
+                    "location": "/vulnerabilities/xss_d/",
+                    "description": "DOM-based XSS",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/xss_d/?default=<script>alert('DOM XSS')</script>",
+                    "expected_evidence": "Script executed via DOM manipulation",
+                    "attack_vector": "DOM-based cross-site scripting"
+                },
+                {
+                    "id": "DVWA-CMD-001",
+                    "type": "command_injection",
+                    "severity": "critical",
+                    "location": "/vulnerabilities/exec/",
+                    "description": "OS Command Injection",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/exec/",
+                    "expected_evidence": "Command output in response (e.g., /etc/passwd contents)",
+                    "attack_vector": "IP parameter allows command chaining with ; or |"
+                },
+                {
+                    "id": "DVWA-FI-001",
+                    "type": "file_inclusion",
+                    "severity": "critical",
+                    "location": "/vulnerabilities/fi/",
+                    "description": "Local File Inclusion",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/fi/?page=../../../../../../etc/passwd",
+                    "expected_evidence": "root:x:0:0:root",
+                    "attack_vector": "Path traversal to access system files"
+                },
+                {
+                    "id": "DVWA-UPLOAD-001",
+                    "type": "file_upload",
+                    "severity": "critical",
+                    "location": "/vulnerabilities/upload/",
+                    "description": "Unrestricted File Upload",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/upload/",
+                    "expected_evidence": "PHP file uploaded and executed",
+                    "attack_vector": "No file type validation on upload"
+                },
+                {
+                    "id": "DVWA-CSRF-001",
+                    "type": "csrf",
+                    "severity": "medium",
+                    "location": "/vulnerabilities/csrf/",
+                    "description": "Cross-Site Request Forgery",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/csrf/",
+                    "expected_evidence": "Password changed without user confirmation",
+                    "attack_vector": "No CSRF token validation"
+                },
+                {
+                    "id": "DVWA-BRUTE-001",
+                    "type": "brute_force",
+                    "severity": "high",
+                    "location": "/vulnerabilities/brute/",
+                    "description": "Brute Force Login",
+                    "cve": null,
+                    "endpoint": "/vulnerabilities/brute/",
+                    "expected_evidence": "Login successful with admin:password",
+                    "attack_vector": "No rate limiting or account lockout"
+                }
+            ]
+        },
+        "ssh-weak": {
+            "host": "cyber-range-ssh",
+            "port": 2222,
+            "description": "SSH server with weak credentials",
+            "vulnerabilities": [
+                {
+                    "id": "SSH-WEAK-001",
+                    "type": "weak_credentials",
+                    "severity": "high",
+                    "location": "SSH service",
+                    "description": "Weak password for testuser account",
+                    "cve": null,
+                    "credentials": {
+                        "username": "testuser",
+                        "password": "password123"
+                    },
+                    "expected_evidence": "SSH authentication successful",
+                    "attack_vector": "Password brute force or dictionary attack"
+                },
+                {
+                    "id": "SSH-ENUM-001",
+                    "type": "information_disclosure",
+                    "severity": "low",
+                    "location": "SSH banner",
+                    "description": "SSH version disclosure",
+                    "cve": null,
+                    "expected_evidence": "SSH-2.0-OpenSSH version info",
+                    "attack_vector": "Banner grabbing reveals service version"
+                }
+            ]
+        },
+        "smb-vuln": {
+            "host": "cyber-range-smb",
+            "port": 445,
+            "description": "SMB server with weak configuration",
+            "vulnerabilities": [
+                {
+                    "id": "SMB-NULL-001",
+                    "type": "null_session",
+                    "severity": "medium",
+                    "location": "SMB service",
+                    "description": "SMB null session allowed",
+                    "cve": null,
+                    "expected_evidence": "Share enumeration without credentials",
+                    "attack_vector": "Null authentication to enumerate shares"
+                },
+                {
+                    "id": "SMB-SHARE-001",
+                    "type": "misconfiguration",
+                    "severity": "high",
+                    "location": "public share",
+                    "description": "World-readable share with sensitive data",
+                    "cve": null,
+                    "expected_evidence": "Access to /share/public without authentication",
+                    "attack_vector": "Anonymous access to file shares"
+                },
+                {
+                    "id": "SMB-WEAK-001",
+                    "type": "weak_credentials",
+                    "severity": "high",
+                    "location": "admin account",
+                    "description": "Weak password for admin account",
+                    "cve": null,
+                    "credentials": {
+                        "username": "admin",
+                        "password": "weakpass"
+                    },
+                    "expected_evidence": "Access to confidential share",
+                    "attack_vector": "Password brute force reveals admin credentials"
+                }
+            ]
+        },
+        "ftp-anon": {
+            "host": "cyber-range-ftp",
+            "port": 21,
+            "description": "FTP server with anonymous access",
+            "vulnerabilities": [
+                {
+                    "id": "FTP-ANON-001",
+                    "type": "anonymous_access",
+                    "severity": "high",
+                    "location": "FTP service",
+                    "description": "Anonymous FTP login allowed",
+                    "cve": null,
+                    "credentials": {
+                        "username": "anonymous",
+                        "password": "anonymous"
+                    },
+                    "expected_evidence": "FTP login successful with anonymous credentials",
+                    "attack_vector": "No authentication required for file access"
+                },
+                {
+                    "id": "FTP-WEAK-001",
+                    "type": "weak_credentials",
+                    "severity": "medium",
+                    "location": "ftpuser account",
+                    "description": "Weak password for FTP user",
+                    "cve": null,
+                    "credentials": {
+                        "username": "ftpuser",
+                        "password": "ftppass"
+                    },
+                    "expected_evidence": "FTP authentication successful",
+                    "attack_vector": "Password brute force or dictionary attack"
+                },
+                {
+                    "id": "FTP-ENUM-001",
+                    "type": "information_disclosure",
+                    "severity": "low",
+                    "location": "FTP banner",
+                    "description": "FTP version disclosure",
+                    "cve": null,
+                    "expected_evidence": "vsftpd version in banner",
+                    "attack_vector": "Banner grabbing reveals service version"
+                }
+            ]
+        }
+    },
+    "summary": {
+        "total_vulnerabilities": 20,
+        "by_severity": {
+            "critical": 5,
+            "high": 9,
+            "medium": 4,
+            "low": 2
+        },
+        "by_type": {
+            "sqli": 2,
+            "xss": 3,
+            "command_injection": 1,
+            "file_inclusion": 1,
+            "file_upload": 1,
+            "csrf": 1,
+            "brute_force": 1,
+            "weak_credentials": 4,
+            "null_session": 1,
+            "misconfiguration": 1,
+            "anonymous_access": 1,
+            "information_disclosure": 3
+        }
+    }
+}

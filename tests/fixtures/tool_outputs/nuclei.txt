@@ -1,0 +1,14 @@
+
+                     __     _
+   ____  __  _______/ /__  (_)
+  / __ \/ / / / ___/ / _ \/ /
+ / / / / /_/ / /__/ /  __/ /
+/_/ /_/\__,_/\___/_/\___/_/   v3.1.0
+
+[INF] Current nuclei version: v3.1.0
+[INF] Current nuclei-templates version: v9.6.0
+[INF] New templates added in latest release: 150
+[INF] Templates loaded for current scan: 5021
+[INF] Targets loaded for current scan: 1
+[2025-01-05 12:00:05] [CVE-2021-44228] [http] [critical] http://192.168.1.1:8080/
+[2025-01-05 12:00:05] [tech-detect] [http] [info] http://192.168.1.1:8080/ [Apache/2.4.52]

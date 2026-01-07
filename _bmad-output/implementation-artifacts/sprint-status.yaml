@@ -1,0 +1,271 @@
+generated: 2025-12-31
+project: Cyber-Red
+project_key: RED
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created
+#   - in-progress: Developer actively working
+#   - review: Ready for code review
+#   - done: Completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Finished
+
+development_status:
+  # Epic 0: Testing & CI Infrastructure
+  # SPRINT 1 - Started 2025-12-31
+  epic-0: in-progress
+  0-1-pytest-core-configuration: done
+  0-2-test-directory-structure-and-fixtures: done
+  0-3-testcontainers-kali-integration: done
+  0-4-coverage-gates-configuration: done
+  0-5-github-actions-ci-pipeline: done
+  0-6-cyber-range-test-environment: done
+  0-7-safety-and-emergence-test-framework: done
+  epic-0-retrospective: optional
+
+  # Epic 1: Core Framework & Safety Foundation
+  epic-1: in-progress
+  1-1-exception-hierarchy: done
+  1-2-core-data-models: done
+  1-3-yaml-configuration-loader: done
+  1-4-protocol-abstractions-abcs: done
+  1-5-ntp-time-synchronization: done
+  1-6-keystore-pbkdf2-key-derivation: done
+  1-7-ca-key-storage: done
+  1-8-scope-validator-hard-gate: done
+  1-9-kill-switch-core-tri-path: done
+  1-10-kill-switch-resilience-testing: done
+  epic-1-retrospective: optional
+
+  # Epic 2: Daemon & Session Management
+  epic-2: in-progress
+  2-1-cli-entry-point-and-command-structure: done
+  2-2-ipc-protocol-definition: done
+  2-3-unix-socket-server: done
+  2-4-engagement-state-machine: done
+  2-5-session-manager-multi-engagement: done
+  2-6-engagement-start-and-pre-flight-checks: done
+  2-7-pause-and-resume-hot-state: done
+  2-8-stop-and-checkpoint-cold-state: done
+  2-9-attach-and-detach-tui-client: done
+  2-10-systemd-integration: done
+  2-11-daemon-graceful-shutdown: done
+  2-12-engagement-database-schema: done
+  2-13-configuration-hot-reload: done
+  epic-2-retrospective: done
+
+  # Epic 3: Communication Infrastructure
+  epic-3: in-progress
+  3-1-redis-sentinel-client: done
+  3-2-redis-reconnection-logic: done
+  3-3-event-bus-pubsub: done
+  3-4-event-bus-streams-for-audit: done
+  3-5-llm-provider-protocol: done
+  3-6-nvidia-nim-provider: done
+  3-7-llm-rate-limiter: done
+  3-8-llm-model-router: done 
+  3-9-llm-priority-queue: done
+  3-10-llm-gateway-singleton: done
+  3-11-llm-provider-timeout-and-retry: done
+  epic-3-retrospective: done 
+
+  # Epic 4: Tool Execution Layer
+epic-4: in-progress
+  4-1-kali-container-pool-mock-mode: done
+  4-2-kali-container-pool-real-mode: done
+  4-3-kali-executor-core: done
+  4-4-tool-manifest-generation: done
+  4-5-output-processor-framework: done
+  4-6-tier-1-parser-nmap: done
+  4-7-tier-1-parser-nuclei: done
+  4-8-tier-1-parser-sqlmap: done
+  4-9-tier-1-parsers-web-fuzzing: done
+  4-10-tier-1-parsers-remaining: done
+  4-11-llm-summarization-tier-2: done
+  4-12-parser-hot-reload: done
+  4-13-tool-execution-error-handling: done
+  epic-4-retrospective: done
+
+  # Epic 5: Vulnerability Intelligence Layer
+epic-5: in-progress
+  5-1-intelligence-source-base-interface: done
+  5-2-cisa-kev-source-integration: done
+  5-3-nvd-api-source-integration: done
+  5-4-exploitdb-source-integration: backlog
+  5-5-nuclei-template-index-source: backlog
+  5-6-metasploit-rpc-source-integration: backlog
+  5-7-intelligence-aggregator: backlog
+  5-8-redis-intelligence-cache: backlog
+  5-9-offline-intelligence-mode: backlog
+  5-10-intelligence-stigmergic-publication: backlog
+  5-11-intelligence-query-error-handling: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: RAG Escalation Layer
+epic-6: backlog
+  6-1-lancedb-vector-store-setup: backlog
+  6-2-attck-bert-embedding-model: backlog
+  6-3-rag-query-interface: backlog
+  6-4-document-ingestion-pipeline: backlog
+  6-5-mitre-attck-source-integration: backlog
+  6-6-atomic-red-team-source-integration: backlog
+  6-7-hacktricks-source-integration: backlog
+  6-8-payloadsallthethings-lolbas-gtfobins-integration: backlog
+  6-9-director-ensemble-rag-integration: backlog
+  6-10-agent-rag-escalation: backlog
+  6-11-tui-rag-management-widget: backlog
+  6-12-scheduled-rag-refresh: backlog
+  6-13-rag-result-metadata-attck-mapping: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: Agent Framework & Stigmergic Coordination
+epic-7: backlog
+  7-1-stigmergic-agent-base-class: backlog
+  7-2-agent-self-throttling: backlog
+  7-3-recon-agent-implementation: backlog
+  7-4-exploit-agent-implementation: backlog
+  7-5-postex-agent-implementation: backlog
+  7-6-swarm-router-integration: backlog
+  7-7-dynamic-agent-spawner: backlog
+  7-8-decision-context-tracking: backlog
+  7-9-isolated-vs-stigmergic-comparison: backlog
+  7-10-emergence-score-calculation: backlog
+  7-11-causal-chain-depth-validation: backlog
+  7-12-agent-crash-recovery: backlog
+  7-13-stigmergic-topic-sharding: backlog
+  7-14-emergence-validation-gate-test: backlog
+  7-15-emergent-attack-strategy-triggering: backlog
+  7-16-agent-authorization-response-handling: backlog
+  7-17-director-agent-feedback-loop: backlog
+  epic-7-retrospective: optional
+
+  # Epic 8: Director Ensemble
+epic-8: backlog
+  8-1-director-ensemble-base-architecture: backlog
+  8-2-deepseek-strategist-role: backlog
+  8-3-kimi-k2-analyst-role: backlog
+  8-4-minimax-m2-creative-role: backlog
+  8-5-strategy-synthesis-engine: backlog
+  8-6-partial-model-availability-fallback: backlog
+  8-7-natural-language-mission-directive: backlog
+  8-8-replan-triggers: backlog
+  8-9-finding-aggregation-for-director-input: backlog
+  8-10-strategy-publication-to-agents: backlog
+  8-11-director-ensemble-tui-display: backlog
+  epic-8-retrospective: optional
+
+  # Epic 9: War Room TUI - Core
+epic-9: backlog
+  9-1-textual-app-foundation: backlog
+  9-2-war-room-three-pane-layout: backlog
+  9-3-virtualized-agent-list-10k-scale: backlog
+  9-4-anomaly-bubbling: backlog
+  9-5-real-time-finding-stream: backlog
+  9-6-hive-matrix-agent-grid: backlog
+  9-7-daemon-unix-socket-client: backlog
+  9-8-tui-attach-latency-2s: backlog
+  9-9-tui-detach-ctrld: backlog
+  9-10-drop-box-status-panel: backlog
+  9-11-keyboard-navigation-f-keys: backlog
+  epic-9-retrospective: optional
+
+  # Epic 10: War Room TUI - Auth & Control
+epic-10: backlog
+  10-1-authorization-request-modal: backlog
+  10-2-authorization-response-handling: backlog
+  10-3-pending-authorization-queue: backlog
+  10-4-kill-switch-tui-integration: backlog
+  10-5-runtime-scope-adjustment: backlog
+  10-6-situational-awareness-alerts: backlog
+  10-7-alert-response-and-logging: backlog
+  10-8-deputy-operator-configuration: backlog
+  10-9-external-authorization-notification: backlog
+  epic-10-retrospective: optional
+
+  # Epic 11: War Room TUI - Data & Strategy
+epic-11: backlog
+  11-1-director-ensemble-display-three-perspectives: backlog
+  11-2-exfiltrated-data-browser: backlog
+  11-3-data-export-from-tui: backlog
+  11-4-manual-data-deletion: backlog
+  11-5-rag-management-panel: backlog
+  11-6-engagement-statistics-dashboard: backlog
+  epic-11-retrospective: optional
+
+  # Epic 12: Drop Box & C2
+epic-12: backlog
+  12-1-mtls-c2-server: backlog
+  12-2-c2-message-protocol: backlog
+  12-3-certificate-manager: backlog
+  12-4-heartbeat-monitoring: backlog
+  12-5-drop-box-go-module-structure: backlog
+  12-6-drop-box-mtls-client: backlog
+  12-7-wifi-toolkit-wrapper: backlog
+  12-8-natural-language-drop-box-setup: backlog
+  12-9-pre-flight-protocol: backlog
+  12-10-drop-box-abort-and-wipe: backlog
+  12-11-drop-box-reconnection-handling: backlog
+  epic-12-retrospective: optional
+
+  # Epic 13: Evidence, Reporting & Audit
+epic-13: backlog
+  13-1-evidence-file-storage: backlog
+  13-2-append-only-audit-log: backlog
+  13-3-sqlite-checkpoint-storage: backlog
+  13-4-markdown-report-generation: backlog
+  13-5-html-report-with-screenshots: backlog
+  13-6-sarif-export: backlog
+  13-7-stix-taxii-export: backlog
+  13-8-csv-excel-export: backlog
+  13-9-pre-engagement-liability-waiver: backlog
+  13-10-timestamp-integrity: backlog
+  13-11-evidence-chain-of-custody: backlog
+  13-12-engagement-summary-statistics: backlog
+  epic-13-retrospective: optional
+
+  # Epic 14: External API & Governance
+epic-14: backlog
+  14-1-fastapi-application-foundation: backlog
+  14-2-api-token-authentication: backlog
+  14-3-engagement-crud-endpoints: backlog
+  14-4-findings-query-endpoint: backlog
+  14-5-websocket-real-time-stream: backlog
+  14-6-api-rate-limiting: backlog
+  14-7-pydantic-request-response-schemas: backlog
+  14-8-deputy-operator-api-support: backlog
+  14-9-auto-pause-after-24h-pending: backlog
+  14-10-api-health-and-metrics-endpoint: backlog
+  14-11-distributed-tracing-opentelemetry: backlog
+  epic-14-retrospective: optional
+
+  # Epic 15: End-to-End Integration & Validation
+epic-15: backlog
+  15-1-full-engagement-e2e-test: backlog
+  15-2-100-agent-scale-ci-gate: backlog
+  15-3-10k-agent-stress-test: backlog
+  15-4-kill-switch-1s-validation: backlog
+  15-5-emergence-20-percent-validation: backlog
+  15-6-causal-chain-3-hop-validation: backlog
+  15-7-100-percent-decision-context-validation: backlog
+  15-8-v1-baseline-comparison-10x-faster: backlog
+  15-9-tui-100ms-responsiveness: backlog
+  15-10-pause-resume-1s-validation: backlog
+  15-11-attach-2s-validation: backlog
+  15-12-multi-engagement-isolation: backlog
+  15-13-all-safety-tests-gate: backlog
+  15-14-100-percent-coverage-gate: backlog
+  15-15-chaos-engineering-tests: backlog
+  15-16-load-tests-redis-llm-api: backlog
+  epic-15-retrospective: optional

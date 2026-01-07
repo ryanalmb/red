@@ -1,0 +1,99 @@
+services:
+  redis-master:
+    image: redis:7-alpine
+    container_name: redis-master-sentinel
+    command: redis-server --port 6379 --slave-announce-ip 127.0.0.1 --slave-announce-port 6379
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  redis-slave-1:
+    image: redis:7-alpine
+    container_name: redis-slave-1-sentinel
+    command: redis-server --port 6380 --replicaof 127.0.0.1 6379 --slave-announce-ip 127.0.0.1 --slave-announce-port 6380
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  redis-slave-2:
+    image: redis:7-alpine
+    container_name: redis-slave-2-sentinel
+    command: redis-server --port 6381 --replicaof 127.0.0.1 6379 --slave-announce-ip 127.0.0.1 --slave-announce-port 6381
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: sentinel-1-sentinel
+    command: >
+      sh -c 'sleep 3 &&
+             echo "port 26379" > /tmp/sentinel.conf &&
+             echo "sentinel monitor mymaster 127.0.0.1 6379 2" >> /tmp/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf &&
+             echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf'
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave-1:
+        condition: service_healthy
+      redis-slave-2:
+        condition: service_healthy
+
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: sentinel-2-sentinel
+    command: >
+      sh -c 'sleep 3 &&
+             echo "port 26380" > /tmp/sentinel.conf &&
+             echo "sentinel monitor mymaster 127.0.0.1 6379 2" >> /tmp/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf &&
+             echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf'
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave-1:
+        condition: service_healthy
+      redis-slave-2:
+        condition: service_healthy
+
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: sentinel-3-sentinel
+    command: >
+      sh -c 'sleep 3 &&
+             echo "port 26381" > /tmp/sentinel.conf &&
+             echo "sentinel monitor mymaster 127.0.0.1 6379 2" >> /tmp/sentinel.conf &&
+             echo "sentinel down-after-milliseconds mymaster 5000" >> /tmp/sentinel.conf &&
+             echo "sentinel failover-timeout mymaster 10000" >> /tmp/sentinel.conf &&
+             echo "sentinel parallel-syncs mymaster 1" >> /tmp/sentinel.conf &&
+             redis-sentinel /tmp/sentinel.conf'
+    network_mode: host
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-slave-1:
+        condition: service_healthy
+      redis-slave-2:
+        condition: service_healthy

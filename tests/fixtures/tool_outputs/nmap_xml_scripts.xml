@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sC -oX - 192.168.1.12">
+  <host>
+    <status state="up"/>
+    <address addr="192.168.1.12" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <script id="ssh-hostkey" output="key data..."/>
+      </port>
+    </ports>
+    <hostscript>
+        <script id="smb-os-discovery" output="OS: Windows 10"/>
+    </hostscript>
+  </host>
+</nmaprun>

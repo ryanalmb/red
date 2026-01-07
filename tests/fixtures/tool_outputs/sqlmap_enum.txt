@@ -1,0 +1,21 @@
+[INFO] fetching database names
+available databases [2]:
+[*] information_schema
+[*] testdb
+
+[INFO] fetching tables for database: testdb
+Database: testdb
+[2 tables]
+[*] products
+[*] users
+
+[INFO] fetching columns for table 'users' in database 'testdb'
+Table: testdb.users
+[3 columns]
++----------+-------------+
+| Column   | Type        |
++----------+-------------+
+| id       | int(11)     |
+| username | varchar(50) |
+| password | varchar(50) |
++----------+-------------+

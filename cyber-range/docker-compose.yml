@@ -1,0 +1,163 @@
+# Cyber Range Test Environment
+# Standardized vulnerable targets for E2E and emergence testing
+# See: docs/3-solutioning/architecture.md#Cyber Range Test Environment
+
+services:
+  # =============================================================================
+  # Vulnerable Web Application (DVWA-like)
+  # Provides: SQLi, XSS, Command Injection, File Upload vulnerabilities
+  # =============================================================================
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: cyber-range-dvwa
+    networks:
+      - cyber-range-net
+    ports:
+      - "8080:80"
+    environment:
+      - MYSQL_HOSTNAME=dvwa-db
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USERNAME=dvwa
+      - MYSQL_PASSWORD=p@ssw0rd
+    depends_on:
+      dvwa-db:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost/login.php" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  dvwa-db:
+    image: mysql:5.7
+    container_name: cyber-range-dvwa-db
+    networks:
+      - cyber-range-net
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=p@ssw0rd
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  # =============================================================================
+  # Vulnerable SSH Service (Weak Credentials)
+  # Provides: Brute-force testing, weak password authentication
+  # Credentials: testuser:password123, admin:admin
+  # =============================================================================
+  ssh-weak:
+    image: linuxserver/openssh-server:latest
+    container_name: cyber-range-ssh
+    networks:
+      - cyber-range-net
+    ports:
+      - "2222:2222"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PASSWORD_ACCESS=true
+      - USER_PASSWORD=password123
+      - USER_NAME=testuser
+      - SUDO_ACCESS=true
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 2222 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # =============================================================================
+  # Vulnerable SMB Service (SMBv1 enabled)
+  # Provides: SMB enumeration, null session, weak shares
+  # =============================================================================
+  smb-vuln:
+    image: dperson/samba:latest
+    container_name: cyber-range-smb
+    networks:
+      - cyber-range-net
+    ports:
+      - "445:445"
+      - "139:139"
+    environment:
+      - USERID=1000
+      - GROUPID=1000
+    command: >
+      -u "guest;guest" -u "admin;weakpass" -s "public;/share/public;yes;no;yes;all;none" -s "confidential;/share/confidential;yes;no;no;admin" -p
+    healthcheck:
+      test: [ "CMD-SHELL", "smbclient -L localhost -N || exit 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # =============================================================================
+  # Vulnerable FTP Service (Anonymous Access)
+  # Provides: Anonymous login, file enumeration, weak directory permissions
+  # =============================================================================
+  ftp-anon:
+    image: fauria/vsftpd:latest
+    container_name: cyber-range-ftp
+    networks:
+      - cyber-range-net
+    ports:
+      - "21:21"
+      - "20:20"
+      - "21100-21110:21100-21110"
+    environment:
+      - FTP_USER=ftpuser
+      - FTP_PASS=ftppass
+      - PASV_ADDRESS=127.0.0.1
+      - PASV_MIN_PORT=21100
+      - PASV_MAX_PORT=21110
+    volumes:
+      - ftp-data:/home/vsftpd
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 21 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # =============================================================================
+  # Metasploit RPC Service (Epic 5: Intelligence Layer)
+  # Provides: Exploit module search, session management for msfrpcd integration
+  # Password: Set via MSF_RPC_PASSWORD env var (default: cyber_red_msf_password)
+  # =============================================================================
+  metasploit:
+    image: metasploitframework/metasploit-framework:latest
+    container_name: cyber-range-metasploit
+    networks:
+      - cyber-range-net
+    ports:
+      - "55553:55553"
+    environment:
+      - MSFDB_USER=postgres
+      - MSFDB_PASS=postgres
+    command: >
+      ./msfrpcd -P cyber_red_msf_password -S -f -a 0.0.0.0 -p 55553
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z localhost 55553 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  cyber-range-net:
+    driver: bridge
+    name: cyber-range-net
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
+
+volumes:
+  ftp-data:
+    name: cyber-range-ftp-data

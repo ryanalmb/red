@@ -1,0 +1,3 @@
+[2025-01-05 12:00:05] [CVE-2021-44228] [http] [critical] http://192.168.1.1:8080/api/vulnerable [${jndi:ldap://...}]
+[2025-01-05 12:00:10] [exposed-git] [http] [medium] http://192.168.1.1/.git/config
+[2025-01-05 12:00:15] [tech-detect] [http] [info] http://192.168.1.1:8080/ [Apache/2.4.52]

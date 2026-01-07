@@ -1,0 +1,2 @@
+{"template-id": "exposed-git", "info": {"severity": "medium", "tags": ["exposure", "git"]}, "matched-at": "http://192.168.1.1/.git/config"}
+{"template-id": "php-info", "info": {"severity": "low", "tags": ["misconfiguration", "php"]}, "matched-at": "http://192.168.1.1/info.php"}
