@@ -72,6 +72,10 @@ class IntelResult:
         confidence: Query match confidence (0.0-1.0)
         priority: Result priority for sorting (from IntelPriority)
         metadata: Additional source-specific data (CVSS scores, references, etc.)
+            Reserved keys:
+            - "stale" (bool): True if result is from stale cache
+            - "offline" (bool): True if system is in offline mode
+            - "cached_at" (str): ISO timestamp when result was cached
 
     Example:
         >>> result = IntelResult(

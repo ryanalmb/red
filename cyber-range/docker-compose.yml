@@ -141,7 +141,7 @@ services:
       - MSFDB_USER=postgres
       - MSFDB_PASS=postgres
     command: >
-      ./msfrpcd -P cyber_red_msf_password -S -f -a 0.0.0.0 -p 55553
+      ./msfrpcd -P cyber_red_msf_password -f -a 0.0.0.0 -p 55553
     healthcheck:
       test: [ "CMD-SHELL", "nc -z localhost 55553 || exit 1" ]
       interval: 30s

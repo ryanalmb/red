@@ -274,6 +274,12 @@ class RedisClient:
             salt=b"hmac-sha256"
         )
     
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attributes to the underlying Redis master client."""
+        if self._master:
+            return getattr(self._master, name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (not connected)")
+    
     @property
     def pool_size(self) -> int:
         """Maximum connections in the pool."""
@@ -850,6 +856,94 @@ class RedisClient:
                 self._is_connected = False
                 raise ConnectionError(f"Connection lost during xadd: {e}") from e
             raise
+
+
+    # ====================
+    # Task 8: Key-Value Operations (Story 5.8)
+    # ====================
+
+    async def get(self, key: str) -> Any:
+        """Get value by key.
+        
+        Args:
+            key: Redis key.
+            
+        Returns:
+            Value if key exists, None otherwise.
+            
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        return await self._master.get(key)
+
+    async def setex(self, key: str, time: int | Any, value: Any) -> Any:
+        """Set the value and expiration of a key.
+        
+        Args:
+            key: Redis key.
+            time: Seconds to expire.
+            value: Value to set.
+            
+        Returns:
+            True if successful.
+            
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        return await self._master.setex(key, time, value)
+
+    async def delete(self, *names: str) -> int:
+        """Delete one or more keys.
+        
+        Args:
+            names: Keys to delete.
+            
+        Returns:
+            Number of keys deleted.
+            
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        return await self._master.delete(*names)
+
+    async def keys(self, pattern: str) -> list:
+        """Returns a list of keys matching pattern.
+        
+        Args:
+            pattern: Glob pattern to match.
+            
+        Returns:
+            List of keys.
+            
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        return await self._master.keys(pattern)
+
+    async def exists(self, *names: str) -> int:
+        """Returns the number of keys that exist.
+        
+        Args:
+            names: Keys to check.
+            
+        Returns:
+            Number of existing keys.
+            
+        Raises:
+            ConnectionError: If not connected.
+        """
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        return await self._master.exists(*names)
+
     
     # ====================
     # Task 7b: Redis Streams xread (Story 3.4: with HMAC verification)
