@@ -1,0 +1,7 @@
+id: http-missing-security-headers
+info:
+  name: HTTP Missing Security Headers
+  author: pdteam
+  severity: low
+  tags: misconfig,headers
+  classification: {}

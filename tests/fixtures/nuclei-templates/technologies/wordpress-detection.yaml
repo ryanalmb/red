@@ -1,0 +1,8 @@
+id: wordpress-detection
+info:
+  name: WordPress Detection
+  author: pdteam
+  severity: info
+  tags: tech,wordpress
+  classification:
+    cve-id: []
