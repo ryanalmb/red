@@ -99,26 +99,26 @@ epic-4: in-progress
   epic-4-retrospective: done
 
   # Epic 5: Vulnerability Intelligence Layer
-epic-5: in-progress
+epic-5: done
   5-1-intelligence-source-base-interface: done
   5-2-cisa-kev-source-integration: done
   5-3-nvd-api-source-integration: done
-  5-4-exploitdb-source-integration: backlog
-  5-5-nuclei-template-index-source: backlog
-  5-6-metasploit-rpc-source-integration: backlog
-  5-7-intelligence-aggregator: backlog
-  5-8-redis-intelligence-cache: backlog
-  5-9-offline-intelligence-mode: backlog
-  5-10-intelligence-stigmergic-publication: backlog
-  5-11-intelligence-query-error-handling: backlog
-  epic-5-retrospective: optional
+  5-4-exploitdb-source-integration: done
+  5-5-nuclei-template-index-source: done
+  5-6-metasploit-rpc-source-integration: done
+  5-7-intelligence-aggregator: done
+  5-8-redis-intelligence-cache: done
+  5-9-offline-intelligence-mode: done
+  5-10-intelligence-stigmergic-publication: done
+  5-11-intelligence-query-error-handling: done
+  epic-5-retrospective: done
 
   # Epic 6: RAG Escalation Layer
-epic-6: backlog
-  6-1-lancedb-vector-store-setup: backlog
-  6-2-attck-bert-embedding-model: backlog
-  6-3-rag-query-interface: backlog
-  6-4-document-ingestion-pipeline: backlog
+epic-6: in-progress
+  6-1-lancedb-vector-store-setup: done
+  6-2-attck-bert-embedding-model: done
+  6-3-rag-query-interface: done
+  6-4-document-ingestion-pipeline: in-progress
   6-5-mitre-attck-source-integration: backlog
   6-6-atomic-red-team-source-integration: backlog
   6-7-hacktricks-source-integration: backlog

@@ -2425,6 +2425,7 @@ So that **methodology queries have high relevance for offensive security (FR80)*
 - **Then** fallback to `all-mpnet-base-v2` (sentence-transformers)
 - **And** log warning about fallback
 - **And** integration tests verify embedding generation
+- **And** `BenchmarkEmbeddings` test verifies CPU latency <100ms per query (Gate check)
 
 **Technical Notes:**
 - Located in `rag/embeddings.py`
@@ -2473,12 +2474,20 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 - **And** chunks are stored in LanceDB with source metadata
 - **And** existing chunks from same source are replaced (upsert)
 - **And** ingestion progress is trackable (for TUI display)
+- **And** `incremental_ingest` flag avoids re-processing unchanged files (performance gate)
 - **And** integration tests verify full ingest cycle
 
 **Technical Notes:**
 - Located in `rag/ingest.py`
 - Chunking: RecursiveCharacterTextSplitter or equivalent
 - Track `{source: {last_updated, chunk_count, document_count}}`
+
+> [!IMPORTANT]
+> **Post-Ingestion Verification:** After ingestion completes, run the production smoke tests to verify real data integrity:
+> ```bash
+> pytest tests/integration/rag/test_production_store.py -v
+> ```
+> These tests verify: health check, vector count (~70K expected), expected sources (mitre_attack, hacktricks, etc.), corpus size validation, search functionality, and data integrity.
 
 ---
 
@@ -2544,6 +2553,7 @@ So that **agents can query practical exploitation techniques (FR77)**.
 - **And** content is chunked preserving code blocks
 - **And** metadata includes: category (pentesting, cloud, mobile), last_modified
 - **And** links to external resources are preserved
+- **And** `MarkdownCodeBlockSplitter` ensures code blocks are never split mid-content
 - **And** integration tests verify HackTricks ingestion
 
 **Technical Notes:**
@@ -2686,6 +2696,7 @@ So that **I can correlate methodologies with kill chain phases (FR83, FR84)**.
 - **And** results include ATT&CK technique IDs where applicable
 - **And** technique IDs are formatted as T#### or T####.### (sub-technique)
 - **And** results can be filtered by tactic (e.g., "lateral-movement")
+- **And** results support filtering by ContentType enum (METHODOLOGY, PAYLOAD, CHEATSHEET)
 - **And** unit tests verify metadata completeness
 
 **Technical Notes:**
