@@ -1,0 +1,2 @@
+FROM kalilinux/kali-rolling
+RUN touch /usr/bin/custom-hacker-tool && chmod +x /usr/bin/custom-hacker-tool

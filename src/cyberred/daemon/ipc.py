@@ -51,6 +51,7 @@ class IPCCommand(StrEnum):
     ENGAGEMENT_STOP = "engagement.stop"
     DAEMON_STOP = "daemon.stop"
     DAEMON_CONFIG_RELOAD = "daemon.config.reload"  # Story 2.13: Trigger manual config reload
+    RAG_REFRESH = "rag.refresh"  # Story 6.12: Manual RAG refresh trigger
 
 
 @dataclass

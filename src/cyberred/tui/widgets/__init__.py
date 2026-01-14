@@ -4,6 +4,8 @@ from textual.containers import Container, Grid, Horizontal
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 
+from .rag_manager import RAGManagerWidget
+
 class HiveGrid(Grid):
     def compose(self) -> ComposeResult:
         for i in range(1, 101):

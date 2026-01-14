@@ -1,0 +1,16 @@
+                   ______
+                  /      \
+                 (  Woof! )
+                  \  ____/                      )
+                  ,,                           ) (_
+             .-. -    _______                 ( |__|
+            ()``; |==|_______)                .)|__|
+            / ('        /|\                  (  |__|
+        (  /  )        / | \                  . |__|
+         \(_)_))      /  |  \                   |__|
+
+         WAFW00F - Web Application Firewall Fingerprinting Tool
+
+[*] Checking http://192.168.1.10
+[+] The site http://192.168.1.10 is behind Cloudflare (Cloudflare Inc.) WAF.
+[~] Number of requests: 6

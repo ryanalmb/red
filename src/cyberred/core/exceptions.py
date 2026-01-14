@@ -878,3 +878,48 @@ class LLMResponseError(LLMError):
 class ContainerPoolExhausted(CyberRedError):
     """Raised when container pool is exhausted and timeout reached."""
     pass
+
+
+class ThrottleTimeoutError(CyberRedError):
+    """Agent execution throttled for too long.
+    
+    Raised when an agent is waiting in the throttle queue for longer
+    than the configured max_wait time.
+    
+    Attributes:
+        agent_id: ID of the agent that timed out.
+        wait_time: The amount of time the agent waited.
+        queue_depth: Queue depth at time of timeout.
+        threshold: The threshold that was exceeded.
+    """
+    
+    def __init__(
+        self,
+        agent_id: str,
+        wait_time: float,
+        queue_depth: Optional[int] = None,
+        threshold: Optional[float] = None,
+        message: Optional[str] = None
+    ) -> None:
+        """Initialize ThrottleTimeoutError."""
+        self.agent_id = agent_id
+        self.wait_time = wait_time
+        self.queue_depth = queue_depth
+        self.threshold = threshold
+        
+        if message is None:
+            message = (
+                f"Agent {agent_id} timed out after waiting {wait_time}s "
+                f"(throttled)"
+            )
+        super().__init__(message)
+        
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for throttle timeout."""
+        return {
+            "agent_id": self.agent_id,
+            "wait_time": self.wait_time,
+            "queue_depth": self.queue_depth,
+            "threshold": self.threshold
+        }

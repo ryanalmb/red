@@ -1,0 +1,4 @@
+Discovered open port 22/tcp on 192.168.1.10
+Discovered open port 80/tcp on 192.168.1.10
+Discovered open port 443/tcp on 192.168.1.10
+Discovered open port 8080/tcp on 192.168.1.10

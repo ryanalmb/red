@@ -25,10 +25,20 @@ class RAGStore:
         self._store_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._store_path))
         self._ensure_table()
+    
+    @property
+    def db_path(self) -> Path:
+        """Get the database path (for stats file location)."""
+        return self._store_path
         
     def _ensure_table(self) -> None:
-        """Ensure the chunks table exists with correct schema."""
+        """Ensure the chunks table exists with correct schema.
+        
+        Handles schema migration for existing tables missing the tactics column.
+        """
         if self.TABLE_NAME in self._db.table_names():
+            # Check if tactics column exists, migrate if missing
+            self._migrate_schema_if_needed()
             return
             
         schema = pa.schema([
@@ -36,12 +46,57 @@ class RAGStore:
             pa.field("text", pa.string()),
             pa.field("source", pa.string()),
             pa.field("technique_ids", pa.list_(pa.string())),
+            pa.field("tactics", pa.list_(pa.string())),  # ATT&CK kill chain phases
             pa.field("content_type", pa.string()),
-            pa.field("metadata", pa.string()), # JSON serialized
+            pa.field("metadata", pa.string()),  # JSON serialized
             pa.field("embedding", pa.list_(pa.float32(), self.embedding_dim))
         ])
         
         self._db.create_table(self.TABLE_NAME, schema=schema)
+    
+    def _migrate_schema_if_needed(self) -> None:
+        """Migrate existing table schema to add tactics column if missing."""
+        table = self._db.open_table(self.TABLE_NAME)
+        existing_cols = [f.name for f in table.schema]
+        
+        if "tactics" not in existing_cols:
+            log.info("rag_store_migrating_schema", adding_column="tactics")
+            # LanceDB doesn't support ALTER TABLE directly, so we need to:
+            # 1. Read all existing data
+            # 2. Add tactics field with empty list default
+            # 3. Recreate table with new schema
+            try:
+                # Read existing data
+                existing_data = table.to_arrow().to_pylist()
+                
+                # Add tactics field to each row
+                for row in existing_data:
+                    row["tactics"] = []
+                
+                # Drop old table and recreate with new schema
+                self._db.drop_table(self.TABLE_NAME)
+                
+                schema = pa.schema([
+                    pa.field("id", pa.string()),
+                    pa.field("text", pa.string()),
+                    pa.field("source", pa.string()),
+                    pa.field("technique_ids", pa.list_(pa.string())),
+                    pa.field("tactics", pa.list_(pa.string())),
+                    pa.field("content_type", pa.string()),
+                    pa.field("metadata", pa.string()),
+                    pa.field("embedding", pa.list_(pa.float32(), self.embedding_dim))
+                ])
+                
+                self._db.create_table(self.TABLE_NAME, schema=schema)
+                
+                if existing_data:
+                    new_table = self._db.open_table(self.TABLE_NAME)
+                    new_table.add(existing_data)
+                    
+                log.info("rag_store_migration_complete", rows_migrated=len(existing_data))
+            except Exception as e:
+                log.error("rag_store_migration_failed", error=str(e))
+                raise
 
     async def health_check(self) -> bool:
         """Verify store is accessible and valid.
@@ -98,6 +153,7 @@ class RAGStore:
         top_k: int = 5,
         filter_source: Optional[str] = None,
         filter_content_type: Optional[str] = None,
+        filter_tactic: Optional[str] = None,
     ) -> List[RAGSearchResult]:
         """Search for similar chunks.
         
@@ -106,6 +162,7 @@ class RAGStore:
             top_k: Number of results to return
             filter_source: Optional source filter
             filter_content_type: Optional content type filter
+            filter_tactic: Optional tactic/kill chain phase filter (e.g., "lateral-movement")
             
         Returns:
             List of RAGSearchResult sorted by relevance (highest first)
@@ -145,19 +202,39 @@ class RAGStore:
                     except json.JSONDecodeError:
                         meta = {}
                 
+                # Handle backward compatibility: tactics defaults to empty list
+                tactics = r.get("tactics", [])
+                if tactics is None:
+                    tactics = []
+                
+                # Apply tactic filter post-retrieval (LanceDB array_contains may not be available)
+                if filter_tactic and filter_tactic not in tactics:
+                    continue
+                
                 # _distance is returned by default for vector search
                 # For cosine metric, distance = 1 - similarity.
                 dist = r.get("_distance", 1.0)
                 score = 1.0 - dist
+                
+                # Extract last_updated from metadata if present
+                last_updated = None
+                if "last_updated" in meta:
+                    from datetime import datetime
+                    try:
+                        last_updated = datetime.fromisoformat(meta["last_updated"])
+                    except (ValueError, TypeError):
+                        pass
                  
                 output.append(RAGSearchResult(
                     id=r["id"],
                     text=r["text"],
                     source=r["source"],
                     technique_ids=r["technique_ids"],
+                    tactics=tactics,
                     content_type=r["content_type"],
                     metadata=meta,
-                    score=score
+                    score=score,
+                    last_updated=last_updated
                 ))
                 
             return output

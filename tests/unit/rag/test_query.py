@@ -3,7 +3,7 @@ from unittest.mock import Mock, AsyncMock
 from cyberred.rag.query import RAGQueryInterface
 from cyberred.rag.store import RAGStore
 from cyberred.rag.embeddings import RAGEmbeddings
-from cyberred.rag.models import RAGSearchResult, ContentType
+from cyberred.rag.models import RAGSearchResult, ContentType, Tactic
 from cyberred.rag.exceptions import RAGQueryTimeout
 import asyncio
 
@@ -126,5 +126,96 @@ class TestRAGQueryInterface:
         # Test top_k=5 limits to 5 results
         results = await query_interface.query("test", top_k=5)
         assert len(results) == 5
+
+
+@pytest.mark.unit
+class TestRAGQueryInterfaceTacticFilter:
+    """Tests for filter_tactic parameter in RAGQueryInterface (Story 6-13)."""
+    
+    @pytest.fixture
+    def store(self):
+        return Mock(spec=RAGStore)
+        
+    @pytest.fixture
+    def embeddings(self):
+        return Mock(spec=RAGEmbeddings)
+        
+    @pytest.fixture
+    def query_interface(self, store, embeddings):
+        return RAGQueryInterface(store, embeddings)
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_passed_to_store(self, query_interface, store, embeddings):
+        """query() passes filter_tactic to store.search()."""
+        embeddings.encode.return_value = [0.1]
+        store.search = AsyncMock(return_value=[])
+        
+        await query_interface.query("test", filter_tactic="lateral-movement")
+        
+        _, kwargs = store.search.call_args
+        assert kwargs["filter_tactic"] == "lateral-movement"
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_none_by_default(self, query_interface, store, embeddings):
+        """query() passes None for filter_tactic by default."""
+        embeddings.encode.return_value = [0.1]
+        store.search = AsyncMock(return_value=[])
+        
+        await query_interface.query("test")
+        
+        _, kwargs = store.search.call_args
+        assert kwargs["filter_tactic"] is None
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_invalid_raises_valueerror(self, query_interface, store, embeddings):
+        """query() raises ValueError for invalid tactic."""
+        embeddings.encode.return_value = [0.1]
+        
+        with pytest.raises(ValueError, match="Invalid tactic"):
+            await query_interface.query("test", filter_tactic="not-a-real-tactic")
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_all_valid_tactics_accepted(self, query_interface, store, embeddings):
+        """All Tactic enum values are accepted as valid filter_tactic."""
+        embeddings.encode.return_value = [0.1]
+        store.search = AsyncMock(return_value=[])
+        
+        for tactic in Tactic:
+            # Should not raise
+            await query_interface.query("test", filter_tactic=tactic.value)
+            
+            _, kwargs = store.search.call_args
+            assert kwargs["filter_tactic"] == tactic.value
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_combined_with_other_filters(self, query_interface, store, embeddings):
+        """filter_tactic can be combined with filter_source and filter_content_type."""
+        embeddings.encode.return_value = [0.1]
+        store.search = AsyncMock(return_value=[])
+        
+        await query_interface.query(
+            "test",
+            filter_source="mitre_attack",
+            filter_content_type=ContentType.METHODOLOGY,
+            filter_tactic="execution"
+        )
+        
+        _, kwargs = store.search.call_args
+        assert kwargs["filter_source"] == "mitre_attack"
+        assert kwargs["filter_content_type"] == "methodology"
+        assert kwargs["filter_tactic"] == "execution"
+
+    @pytest.mark.asyncio
+    async def test_filter_tactic_case_sensitive(self, query_interface, store, embeddings):
+        """filter_tactic validation is case-sensitive (must be lowercase)."""
+        embeddings.encode.return_value = [0.1]
+        
+        # Uppercase should fail
+        with pytest.raises(ValueError, match="Invalid tactic"):
+            await query_interface.query("test", filter_tactic="LATERAL-MOVEMENT")
+        
+        # Mixed case should fail
+        with pytest.raises(ValueError, match="Invalid tactic"):
+            await query_interface.query("test", filter_tactic="Lateral-Movement")
 
 

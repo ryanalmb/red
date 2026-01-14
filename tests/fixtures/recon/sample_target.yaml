@@ -1,0 +1,28 @@
+# Sample target configuration for ReconAgent testing
+target:
+  primary: "192.168.1.10"
+  hostname: "test.example.com"
+  
+scope:
+  allowed_targets:
+    - "192.168.1.0/24"
+    - "test.example.com"
+    - "*.example.com"
+  allowed_ports:
+    - 22
+    - 80
+    - 443
+    - [8000, 9000]
+  allow_private: true
+  allow_loopback: false
+
+expected_services:
+  - port: 22
+    service: ssh
+    version: "OpenSSH 8.2"
+  - port: 80
+    service: http
+    version: "Apache 2.4.41"
+  - port: 443
+    service: https
+    version: "Apache 2.4.41"

@@ -21,6 +21,9 @@ alembic>=1.13.0
 watchdog>=4.0.0
 nvdlib>=0.7.0
 msgpack>=1.0.0
+lancedb>=0.3.0
+sentence-transformers>=2.2.0
+stix2>=3.0.0
 
 [dev]
 pytest>=8.0.0
@@ -30,6 +33,7 @@ testcontainers>=4.0.0
 ruff>=0.3.0
 mypy>=1.8.0
 respx>=0.21.0
+aioresponses>=0.7.0
 
 [test]
 pytest>=8.0.0

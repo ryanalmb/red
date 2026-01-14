@@ -22,6 +22,7 @@ from cyberred.tui.widgets import (
     TerminalLog,
     ThinkingLog,
     AuthorizationModal,
+    RAGManagerWidget,
 )
 from cyberred.daemon.streaming import StreamEventType
 
@@ -45,6 +46,7 @@ class CyberRedApp(App):
         ("f5", "approvals", "Approvals"),
         ("p", "panic", "PANIC"),
         ("ctrl+d", "detach", "Detach"),
+        ("f6", "rag_manager", "RAG Manager"),
     ]
 
     def __init__(
@@ -280,6 +282,45 @@ class CyberRedApp(App):
             # Detach from engagement
             await self._daemon_client.detach()
         self.exit()
+
+    async def action_rag_manager(self) -> None:
+        """Open RAG Management modal."""
+        # Check if already open to toggle? Or just strict open
+        if self.query("RAGManagerWidget"):
+            # Close it if open
+            if self.screen.id == "rag-modal":
+                 self.pop_screen()
+            return
+            
+        # Create dependencies for widget
+        # Note: In real app, these should be singletons or provided by context
+        # Ideally, RAGStore and RAGIngestPipeline should be initialized once
+        # For now, we initialize them here if not available on self.
+        # But RAGStore creates connection on init.
+        
+        from cyberred.rag.store import RAGStore
+        from cyberred.rag.ingest import RAGIngestPipeline
+        from cyberred.rag.embeddings import RAGEmbeddings
+        from textual.screen import ModalScreen
+
+        # We probably want to hold these instances on the app to avoid reconnection overhead 
+        # but the request didn't specify app-level state changes for this.
+        # We'll create them fresh for the widget.
+        
+        # We need a ModalScreen to wrap the widget
+        class RAGManagerScreen(ModalScreen):
+            def compose(self) -> ComposeResult:
+                # We need to initialize components.
+                # Embedding model loading might take time (slow startup).
+                # Ideally this is done in background or already loaded.
+                # Story 6.2 implemented RAGEmbeddings lazy loading, so init is fast?
+                # Yes, "Lazy loading of model prevents startup delay".
+                store = RAGStore() 
+                embeddings = RAGEmbeddings()
+                pipeline = RAGIngestPipeline(store, embeddings)
+                yield RAGManagerWidget(store, pipeline)
+
+        self.push_screen(RAGManagerScreen(id="rag-modal"))
 
 
 if __name__ == "__main__":

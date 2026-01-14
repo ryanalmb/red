@@ -162,6 +162,25 @@ class EngagementConfig(BaseModel):
     auto_pause_hours: PositiveInt = 24
 
 
+class ThrottleConfig(BaseModel):
+    """Agent throttling configuration.
+    
+    The threshold parameter supports two modes:
+    - If threshold < 1.0: Interpreted as a percentage of max_agents (e.g., 0.8 = 80%)
+    - If threshold >= 1.0: Interpreted as a raw queue depth count (e.g., 10 = 10 pending requests)
+    """
+
+    threshold: float = Field(default=0.8, ge=0.0)  # No upper bound - allows raw counts >= 1.0
+    check_interval: float = Field(default=5.0, gt=0.0)
+    max_wait: PositiveInt = 300
+
+
+class AgentsConfig(BaseModel):
+    """Agents configuration section."""
+
+    throttle: ThrottleConfig = Field(default_factory=ThrottleConfig)
+
+
 class RuntimeConfig(BaseModel):
     """Runtime overrides (in-memory only)."""
 
@@ -202,6 +221,7 @@ class Settings(BaseSettings):
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     ntp: NTPConfig = Field(default_factory=NTPConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
 
     # Engagement config (loaded separately)
     engagement: EngagementConfig = Field(default_factory=EngagementConfig)
@@ -627,6 +647,11 @@ HOT_RELOAD_SAFE_PATHS: frozenset[str] = frozenset({
     # Engagement-specific
     "engagement.max_agents",
     "engagement.auto_pause_hours",
+    # RAG (Story 6.12)
+    "rag.update_schedule",
+    # Agents Throttling (Story 7.2)
+    "agents.throttle.threshold",
+    "agents.throttle.check_interval",
 })
 
 

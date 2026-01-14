@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -oX nmap_output_services.xml 192.168.1.10" start="1617220000" startstr="Wed Mar 31 16:13:20 2021" version="7.91" xmloutputversion="1.05">
+<host starttime="1617220000" endtime="1617220010">
+<status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.10" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="Apache httpd" version="2.4.41" extrainfo="(Ubuntu)" method="probed" conf="10"><cpe>cpe:/a:apache:http_server:2.4.41</cpe></service></port>
+</ports>
+</host>
+</nmaprun>

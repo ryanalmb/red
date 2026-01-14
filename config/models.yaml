@@ -83,3 +83,18 @@ fallback:
   ghost: "meta/llama-3.3-70b-instruct"
   critic: "nvidia/llama-3.1-nemotron-70b-instruct"
   engineer: "mistralai/devstral-2-123b-instruct-2512"
+
+# -----------------------------------------------------------------------------
+# RAG CONFIGURATION
+# Story 6.9: Director Ensemble RAG Integration
+# -----------------------------------------------------------------------------
+rag:
+  director:
+    # Query timeout in seconds - keeps Director responsive
+    query_timeout: 5.0
+    # Maximum results per query
+    max_results: 10
+    # Return empty results instead of raising on timeout
+    fallback_on_timeout: true
+    # Minimum similarity score for results (0.0-1.0)
+    min_score: 0.3

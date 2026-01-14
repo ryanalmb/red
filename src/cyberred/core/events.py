@@ -50,6 +50,7 @@ CHANNEL_PATTERNS = [
     re.compile(r"^agents:[a-zA-Z0-9_-]+:status$"),  # agents:id:status
     re.compile(r"^control:[a-zA-Z0-9_-]+$"),  # control:*
     re.compile(r"^authorization:[a-zA-Z0-9_-]+$"),  # authorization:request_id
+    re.compile(r"^strategies:[a-zA-Z0-9_-]+$"),  # strategies:engagement_id
     re.compile(r"^audit:stream$"),  # audit:stream (Story 3.4)
 ]
 
@@ -67,7 +68,7 @@ class ChannelNameError(ValueError):
         super().__init__(
             f"Invalid channel name: '{channel}'. "
             "Must match one of: findings:{{hash}}:{{type}}, agents:{{id}}:status, "
-            "control:*, authorization:{{id}}, audit:stream"
+            "control:*, authorization:{{id}}, strategies:{{id}}, audit:stream"
         )
 
 

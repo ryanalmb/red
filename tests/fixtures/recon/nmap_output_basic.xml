@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -v -oX nmap_output_basic.xml 192.168.1.10" start="1617220000" startstr="Wed Mar 31 16:13:20 2021" version="7.91" xmloutputversion="1.05">
+<host starttime="1617220000" endtime="1617220010">
+<status state="up" reason="arp-response" reason_ttl="0"/>
+<address addr="192.168.1.10" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="80"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" method="table" conf="3"/></port>
+<port protocol="tcp" portid="22"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" method="table" conf="3"/></port>
+</ports>
+</host>
+</nmaprun>

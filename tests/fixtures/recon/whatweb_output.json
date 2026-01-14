@@ -1,0 +1,27 @@
+[
+  {
+    "target": "http://192.168.1.10",
+    "http_status": 200,
+    "request_config": {
+      "headers": {}
+    },
+    "plugins": {
+      "Apache": {
+        "version": ["2.4.41"]
+      },
+      "HTTPServer": {
+        "os": "Ubuntu",
+        "string": ["Apache/2.4.41 (Ubuntu)"]
+      },
+      "PHP": {
+        "version": ["7.4.3"]
+      },
+      "Title": {
+        "string": ["Test Application"]
+      },
+      "X-Powered-By": {
+        "string": ["PHP/7.4.3"]
+      }
+    }
+  }
+]

@@ -1,6 +1,6 @@
 # Story 6.4: Document Ingestion Pipeline
 
-Status: ready-for-dev
+Status: donen
 
 > [!IMPORTANT]
 > **TDD CONSTRAINT:** Follow TDD methodology at all times. All tasks marked [RED], [GREEN], [REFACTOR] must be followed explicitly. Each task must have a failing test before implementation.
@@ -61,14 +61,14 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 ### Phase 0: Setup [BLUE]
 
-- [ ] Task 0.1: Verify dependencies
-  - [ ] Confirm Stories 6.1, 6.2, 6.3 are complete (check sprint-status.yaml)
-  - [ ] Verify: `python -c "from cyberred.rag import RAGStore, RAGEmbeddings, RAGChunk, ContentType"`
+- [x] Task 0.1: Verify dependencies
+  - [x] Confirm Stories 6.1, 6.2, 6.3 are complete (check sprint-status.yaml)
+  - [x] Verify: `python -c "from cyberred.rag import RAGStore, RAGEmbeddings, RAGChunk, ContentType"`
 
-- [ ] Task 0.2: Create module structure
-  - [ ] Create `src/cyberred/rag/ingest.py`
-  - [ ] Create `tests/unit/rag/test_ingest.py`
-  - [ ] Create `tests/integration/rag/test_ingest.py`
+- [x] Task 0.2: Create module structure
+  - [x] Create `src/cyberred/rag/ingest.py`
+  - [x] Create `tests/unit/rag/test_ingest.py`
+  - [x] Create `tests/integration/rag/test_ingest.py`
 
 ---
 
@@ -76,17 +76,17 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 1A: Define IngestionProgress Dataclass (AC: 4)
 
-- [ ] Task 1.1: Create progress tracking model
-  - [ ] **[RED]** Write failing test: `IngestionProgress` has fields: `source`, `current_doc`, `total_docs`, `chunks_processed`
-  - [ ] **[GREEN]** Implement `IngestionProgress` dataclass in `ingest.py`
-  - [ ] **[REFACTOR]** Add docstring referencing FR77
+- [x] Task 1.1: Create progress tracking model
+  - [x] **[RED]** Write failing test: `IngestionProgress` has fields: `source`, `current_doc`, `total_docs`, `chunks_processed`
+  - [x] **[GREEN]** Implement `IngestionProgress` dataclass in `ingest.py`
+  - [x] **[REFACTOR]** Add docstring referencing FR77
 
 #### 1B: Define IngestionStats Dataclass (AC: 1, 5)
 
-- [ ] Task 1.2: Create ingestion statistics model
-  - [ ] **[RED]** Write failing test: `IngestionStats` has fields: `source`, `last_updated`, `chunk_count`, `document_count`, `file_hashes`, `failed_docs` (List[str] of doc IDs)
-  - [ ] **[GREEN]** Implement `IngestionStats` dataclass
-  - [ ] **[REFACTOR]** Add `to_dict()`/`from_dict()` for persistence
+- [x] Task 1.2: Create ingestion statistics model
+  - [x] **[RED]** Write failing test: `IngestionStats` has fields: `source`, `last_updated`, `chunk_count`, `document_count`, `file_hashes`, `failed_docs` (List[str] of doc IDs)
+  - [x] **[GREEN]** Implement `IngestionStats` dataclass
+  - [x] **[REFACTOR]** Add `to_dict()`/`from_dict()` for persistence
 
 ---
 
@@ -94,11 +94,11 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 2A: Basic Text Splitter (AC: 3)
 
-- [ ] Task 2.1: Implement RecursiveCharacterTextSplitter
-  - [ ] **[RED]** Write failing test: `chunk_document(text)` returns list of chunks
-  - [ ] **[RED]** Write failing test: chunk size defaults to 512 (configurable via `config.yaml`)
-  - [ ] **[RED]** Write failing test: chunks overlap by 50 tokens
-  - [ ] **[GREEN]** Implement `DocumentChunker` class:
+- [x] Task 2.1: Implement RecursiveCharacterTextSplitter
+  - [x] **[RED]** Write failing test: `chunk_document(text)` returns list of chunks
+  - [x] **[RED]** Write failing test: chunk size defaults to 512 (configurable via `config.yaml`)
+  - [x] **[RED]** Write failing test: chunks overlap by 50 tokens
+  - [x] **[GREEN]** Implement `DocumentChunker` class:
     ```python
     class DocumentChunker:
         DEFAULT_CHUNK_SIZE = 512
@@ -112,16 +112,16 @@ So that **knowledge bases can be loaded and updated (FR77)**.
             technique_ids: Optional[List[str]] = None,
         ) -> List[RAGChunk]:
     ```
-  - [ ] **[REFACTOR]** Add structlog logging for chunk counts
+  - [x] **[REFACTOR]** Add structlog logging for chunk counts
 
 #### 2B: Markdown Code Block Preservation (AC: 6)
 
-- [ ] Task 2.2: Implement MarkdownCodeBlockSplitter
-  - [ ] **[NOTE]** optimization: Investigate `RecursiveCharacterTextSplitter.from_language(Language.MARKDOWN)` first. Only implement custom splitter if standard one fails "never split" requirement.
-  - [ ] **[RED]** Write failing test: code blocks (``` ... ```) are never split
-  - [ ] **[RED]** Write failing test: inline code (`code`) is preserved
-  - [ ] **[RED]** Write failing test: oversized code blocks are kept intact (not split)
-  - [ ] **[GREEN]** Implement `MarkdownCodeBlockSplitter`:
+- [x] Task 2.2: Implement MarkdownCodeBlockSplitter
+  - [x] **[NOTE]** optimization: Investigate `RecursiveCharacterTextSplitter.from_language(Language.MARKDOWN)` first. Only implement custom splitter if standard one fails "never split" requirement.
+  - [x] **[RED]** Write failing test: code blocks (``` ... ```) are never split
+  - [x] **[RED]** Write failing test: inline code (`code`) is preserved
+  - [x] **[RED]** Write failing test: oversized code blocks are kept intact (not split)
+  - [x] **[GREEN]** Implement `MarkdownCodeBlockSplitter`:
     ```python
     class MarkdownCodeBlockSplitter:
         def split_preserving_code_blocks(
@@ -130,7 +130,7 @@ So that **knowledge bases can be loaded and updated (FR77)**.
         ) -> List[str]:
             """Split markdown preserving code block integrity."""
     ```
-  - [ ] **[REFACTOR]** Handle nested code blocks correctly
+  - [x] **[REFACTOR]** Handle nested code blocks correctly
 
 ---
 
@@ -138,53 +138,20 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 3A: RAGIngestPipeline Class (AC: 1, 2)
 
-- [ ] Task 3.1: Implement core ingestion pipeline
-  - [ ] **[RED]** Write failing test: `RAGIngestPipeline(store, embeddings)` initializes
-  - [ ] **[RED]** Write failing test: `process(source, documents)` returns `IngestionStats`
-  - [ ] **[RED]** Write failing test: documents are chunked, embedded, and stored
-  - [ ] **[GREEN]** Implement `RAGIngestPipeline`:
-    ```python
-    class RawDocument(TypedDict):
-        text: str
-        metadata: Dict[str, Any]
-
-    class RAGIngestPipeline:
-        def __init__(
-            self,
-            store: RAGStore,
-            embeddings: RAGEmbeddings,
-        ) -> None:
-        
-        async def process(
-            self,
-            source: str,
-            documents: List[RawDocument],
-            content_type: ContentType = ContentType.METHODOLOGY,
-            incremental: bool = False,
-            progress_callback: Optional[Callable[[IngestionProgress], None]] = None,
-        ) -> IngestionStats:
-            """Process documents through ingestion pipeline.
-            
-            Args:
-                source: Source identifier (e.g., "hacktricks", "mitre_attack")
-                documents: List of {text: str, metadata: dict} documents
-                content_type: ContentType enum for these documents
-                incremental: If True, skip unchanged files based on hash
-                progress_callback: Optional callback for progress updates
-                
-            Returns:
-                IngestionStats with processing results
-            """
-    ```
-  - [ ] **[REFACTOR]** Add batch processing for large document sets
+- [x] Task 3.1: Implement core ingestion pipeline
+  - [x] **[RED]** Write failing test: `RAGIngestPipeline(store, embeddings)` initializes
+  - [x] **[RED]** Write failing test: `process(source, documents)` returns `IngestionStats`
+  - [x] **[RED]** Write failing test: documents are chunked, embedded, and stored
+  - [x] **[GREEN]** Implement `RAGIngestPipeline`
+  - [x] **[REFACTOR]** Add batch processing for large document sets
 
 #### 3B: Upsert Behavior (AC: 2)
 
-- [ ] Task 3.2: Implement source-based upsert
-  - [ ] **[RED]** Write failing test: re-ingesting same source replaces old chunks
-  - [ ] **[RED]** Write failing test: ingesting different sources doesn't affect each other
-  - [ ] **[GREEN]** Use `RAGStore.add()` with upsert behavior (merge_insert)
-  - [ ] **[REFACTOR]** Add logging for upsert operations
+- [x] Task 3.2: Implement source-based upsert
+  - [x] **[RED]** Write failing test: re-ingesting same source replaces old chunks
+  - [x] **[RED]** Write failing test: ingesting different sources doesn't affect each other
+  - [x] **[GREEN]** Use `RAGStore.add()` with upsert behavior (merge_insert)
+  - [x] **[REFACTOR]** Add logging for upsert operations
 
 ---
 
@@ -192,12 +159,12 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 4A: Progress Callback (AC: 4)
 
-- [ ] Task 4.1: Implement progress callback
-  - [ ] **[RED]** Write failing test: `progress_callback` is called for each document
-  - [ ] **[RED]** Write failing test: callback receives `IngestionProgress` with correct counts
-  - [ ] **[RED]** Write failing test: callback works with async pipeline
-  - [ ] **[GREEN]** Integrate callback into `process()` method
-  - [ ] **[REFACTOR]** Rate-limit callbacks (every 10 documents OR every 100 chunks)
+- [x] Task 4.1: Implement progress callback
+  - [x] **[RED]** Write failing test: `progress_callback` is called for each document
+  - [x] **[RED]** Write failing test: callback receives `IngestionProgress` with correct counts
+  - [x] **[RED]** Write failing test: callback works with async pipeline
+  - [x] **[GREEN]** Integrate callback into `process()` method
+  - [x] **[REFACTOR]** Rate-limit callbacks (every 10 documents OR every 100 chunks)
 
 ---
 
@@ -205,22 +172,12 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 5A: File Hash Tracking (AC: 5)
 
-- [ ] Task 5.1: Implement incremental ingestion
-  - [ ] **[RED]** Write failing test: `incremental=True` skips unchanged documents
-  - [ ] **[RED]** Write failing test: changed documents are re-processed
-  - [ ] **[RED]** Write failing test: file hashes are computed and stored
-  - [ ] **[GREEN]** Implement hash-based change detection:
-    ```python
-    def _compute_hash(self, text: str) -> str:
-        """Compute SHA-256 hash of document text."""
-        
-    def _load_stats(self, source: str) -> Optional[IngestionStats]:
-        """Load previous ingestion stats for source."""
-        
-    def _save_stats(self, stats: IngestionStats) -> None:
-        """Persist ingestion stats for incremental support."""
-    ```
-  - [ ] **[REFACTOR]** Store stats in JSON file alongside LanceDB
+- [x] Task 5.1: Implement incremental ingestion
+  - [x] **[RED]** Write failing test: `incremental=True` skips unchanged documents
+  - [x] **[RED]** Write failing test: changed documents are re-processed
+  - [x] **[RED]** Write failing test: file hashes are computed and stored
+  - [x] **[GREEN]** Implement hash-based change detection (`_compute_hash`, `_load_stats`, `_save_stats`)
+  - [x] **[REFACTOR]** Store stats in JSON file alongside LanceDB
 
 ---
 
@@ -228,53 +185,47 @@ So that **knowledge bases can be loaded and updated (FR77)**.
 
 #### 6A: Configure Module Exports (AC: 7)
 
-- [ ] Task 6.1: Update module __init__.py
-  - [ ] **[RED]** Write test: `from cyberred.rag import RAGIngestPipeline` works
-  - [ ] **[GREEN]** Update `src/cyberred/rag/__init__.py`:
-    ```python
-    from cyberred.rag.ingest import (
-        RAGIngestPipeline,
-        DocumentChunker,
-        MarkdownCodeBlockSplitter,
-        IngestionProgress,
-        IngestionStats,
-    )
-    
-    __all__ = [
-        # ... existing exports ...
-        "RAGIngestPipeline",
-        "DocumentChunker", 
-        "MarkdownCodeBlockSplitter",
-        "IngestionProgress",
-        "IngestionStats",
-    ]
-    ```
+- [x] Task 6.1: Update module __init__.py
+  - [x] **[RED]** Write test: `from cyberred.rag import RAGIngestPipeline` works
+  - [x] **[GREEN]** Update `src/cyberred/rag/__init__.py` with all exports
 
 ---
 
 ### Phase 7: Integration Tests [RED → GREEN]
 
-- [ ] Task 7.1: Create integration tests
-  - [ ] Create `tests/integration/rag/test_ingest.py`
-  - [ ] **[RED]** Write test: full ingest cycle (chunk → embed → store)
-  - [ ] **[RED]** Write test: ingested chunks are queryable via store.search()
-  - [ ] **[RED]** Write test: incremental ingest skips unchanged files
-  - [ ] **[RED]** Write test: markdown code blocks preserved after full cycle
-  - [ ] **[GREEN]** Implement tests with temporary store fixtures
-  - [ ] **[REFACTOR]** Add `@pytest.mark.integration` marker
+- [x] Task 7.1: Create integration tests
+  - [x] Create `tests/integration/rag/test_ingest.py`
+  - [x] **[RED]** Write test: full ingest cycle (chunk → embed → store)
+  - [x] **[RED]** Write test: ingested chunks are queryable via store.search()
+  - [x] **[RED]** Write test: incremental ingest skips unchanged files
+  - [x] **[RED]** Write test: markdown code blocks preserved after full cycle
+  - [x] **[GREEN]** Implement tests with temporary store fixtures
+  - [x] **[REFACTOR]** Add `@pytest.mark.integration` marker
 
 ---
 
 ### Phase 8: Coverage & Documentation [BLUE]
 
-- [ ] Task 8.1: Verify 100% coverage
-  - [ ] Run: `pytest tests/unit/rag/test_ingest.py --cov=src/cyberred/rag/ingest --cov-report=term-missing`
-  - [ ] Ensure no untested branches
+- [x] Task 8.1: Verify 100% coverage
+  - [x] Run: `pytest tests/unit/rag/test_ingest.py --cov=src/cyberred/rag/ingest --cov-report=term-missing`
+  - [x] Ensure no untested branches
 
-- [ ] Task 8.2: Update Dev Agent Record
-  - [ ] Fill in agent model and completion notes
-  - [ ] Run full test suite: `pytest tests/unit/rag/ tests/integration/rag/ -v --tb=short`
-  - [ ] Update story status to `done`
+- [x] Task 8.2: Update Dev Agent Record
+  - [x] Fill in agent model and completion notes
+  - [x] Run full test suite: `pytest tests/unit/rag/ tests/integration/rag/ -v --tb=short`
+  - [x] Update story status to `done`
+
+### Code Review (2026-01-09) [GREEN]
+
+- [x] Fix Critical: Broken Upsert Logic (AC 2 violation)
+  - [x] Implement stable chunk IDs using `doc_id`
+  - [x] Update `RAGIngestPipeline` to pass `doc_id`
+- [x] Fix Low: Memory Optimization
+  - [x] Micro-optimize `_chunk_by_words`
+- [x] Verify Fixes
+  - [x] Unit tests pass
+  - [x] Integration tests pass
+
 
 ## Dev Notes
 
@@ -428,11 +379,29 @@ pytest tests/integration/rag/test_production_store.py -v
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Gemini 2.5 Pro
 
 ### Debug Log References
 
 ### Completion Notes List
+
+- Implemented `IngestionProgress` and `IngestionStats` dataclasses with `to_dict()`/`from_dict()` serialization (Phase 1)
+- Implemented `DocumentChunker` with recursive text splitting and 512-token/50-overlap defaults (Phase 2)
+- Implemented `MarkdownCodeBlockSplitter` that preserves code block integrity - never splits code blocks (Phase 2)
+- Implemented `RAGIngestPipeline` with async `process()` method (Phase 3)
+- Added progress callback support for TUI integration (Phase 4)
+- Added incremental ingestion with SHA-256 hash-based change detection (Phase 5)
+- Updated `src/cyberred/rag/__init__.py` to export all new classes (Phase 6)
+- Integration tests validate full ingest cycle, search, incremental mode, and code block preservation (Phase 7)
+- **Code Review Fixes (2026-01-09):**
+  - Removed unused `RawDocument` class (dead code)
+  - Moved `json` and `Path` imports to module level
+  - Added 20+ unit tests for error paths and edge cases
+  - Fixed story status sync with sprint-status.yaml
+  - **Code Review Fixes (2026-01-09):**
+    - Refactored `DocumentChunker` to use stable `doc_id` for upsert correctness
+    - Optimized memory usage in word chunking
+    - Verified all fixes with unit and integration tests
 
 ### File List
 

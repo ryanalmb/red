@@ -15,7 +15,7 @@ story_location: _bmad-output/implementation-artifacts
 #   - backlog: Story only exists in epic file
 #   - ready-for-dev: Story file created
 #   - in-progress: Developer actively working
-#   - review: Ready for code review
+#   - done: Ready for code review
 #   - done: Completed
 #
 # Retrospective Status:
@@ -75,14 +75,14 @@ development_status:
   3-5-llm-provider-protocol: done
   3-6-nvidia-nim-provider: done
   3-7-llm-rate-limiter: done
-  3-8-llm-model-router: done 
+  3-8-llm-model-router: done
   3-9-llm-priority-queue: done
   3-10-llm-gateway-singleton: done
   3-11-llm-provider-timeout-and-retry: done
-  epic-3-retrospective: done 
+  epic-3-retrospective: done
 
   # Epic 4: Tool Execution Layer
-epic-4: in-progress
+  epic-4: in-progress
   4-1-kali-container-pool-mock-mode: done
   4-2-kali-container-pool-real-mode: done
   4-3-kali-executor-core: done
@@ -99,7 +99,7 @@ epic-4: in-progress
   epic-4-retrospective: done
 
   # Epic 5: Vulnerability Intelligence Layer
-epic-5: done
+  epic-5: done
   5-1-intelligence-source-base-interface: done
   5-2-cisa-kev-source-integration: done
   5-3-nvd-api-source-integration: done
@@ -114,33 +114,33 @@ epic-5: done
   epic-5-retrospective: done
 
   # Epic 6: RAG Escalation Layer
-epic-6: in-progress
+  epic-6: done
   6-1-lancedb-vector-store-setup: done
   6-2-attck-bert-embedding-model: done
   6-3-rag-query-interface: done
-  6-4-document-ingestion-pipeline: in-progress
-  6-5-mitre-attck-source-integration: backlog
-  6-6-atomic-red-team-source-integration: backlog
-  6-7-hacktricks-source-integration: backlog
-  6-8-payloadsallthethings-lolbas-gtfobins-integration: backlog
-  6-9-director-ensemble-rag-integration: backlog
-  6-10-agent-rag-escalation: backlog
-  6-11-tui-rag-management-widget: backlog
-  6-12-scheduled-rag-refresh: backlog
-  6-13-rag-result-metadata-attck-mapping: backlog
-  epic-6-retrospective: optional
+  6-4-document-ingestion-pipeline: done
+  6-5-mitre-attck-source-integration: done
+  6-6-atomic-red-team-source-integration: done
+  6-7-hacktricks-source-integration: done
+  6-8-payloadsallthethings-lolbas-gtfobins-integration: done
+  6-9-director-ensemble-rag-integration: done
+  6-10-agent-rag-escalation: done
+  6-11-tui-rag-management-widget: done
+  6-12-scheduled-rag-refresh: done
+  6-13-rag-result-metadata-attck-mapping: done
+  epic-6-retrospective: done
 
   # Epic 7: Agent Framework & Stigmergic Coordination
-epic-7: backlog
-  7-1-stigmergic-agent-base-class: backlog
-  7-2-agent-self-throttling: backlog
-  7-3-recon-agent-implementation: backlog
+  epic-7: in-progress
+  7-1-stigmergic-agent-base-class: done
+  7-2-agent-self-throttling: done
+  7-3-recon-agent-implementation: in-progress
   7-4-exploit-agent-implementation: backlog
-  7-5-postex-agent-implementation: backlog
+  7-5-post-ex-agent-implementation: backlog
   7-6-swarm-router-integration: backlog
   7-7-dynamic-agent-spawner: backlog
   7-8-decision-context-tracking: backlog
-  7-9-isolated-vs-stigmergic-comparison: backlog
+  7-9-isolated-vs-stigmergic-comparison-framework: backlog
   7-10-emergence-score-calculation: backlog
   7-11-causal-chain-depth-validation: backlog
   7-12-agent-crash-recovery: backlog
@@ -148,11 +148,11 @@ epic-7: backlog
   7-14-emergence-validation-gate-test: backlog
   7-15-emergent-attack-strategy-triggering: backlog
   7-16-agent-authorization-response-handling: backlog
-  7-17-director-agent-feedback-loop: backlog
+  7-17-director-agent-feedback-loop-integration: backlog
   epic-7-retrospective: optional
 
   # Epic 8: Director Ensemble
-epic-8: backlog
+  epic-8: backlog
   8-1-director-ensemble-base-architecture: backlog
   8-2-deepseek-strategist-role: backlog
   8-3-kimi-k2-analyst-role: backlog
@@ -167,7 +167,7 @@ epic-8: backlog
   epic-8-retrospective: optional
 
   # Epic 9: War Room TUI - Core
-epic-9: backlog
+  epic-9: backlog
   9-1-textual-app-foundation: backlog
   9-2-war-room-three-pane-layout: backlog
   9-3-virtualized-agent-list-10k-scale: backlog
@@ -182,7 +182,7 @@ epic-9: backlog
   epic-9-retrospective: optional
 
   # Epic 10: War Room TUI - Auth & Control
-epic-10: backlog
+  epic-10: backlog
   10-1-authorization-request-modal: backlog
   10-2-authorization-response-handling: backlog
   10-3-pending-authorization-queue: backlog
@@ -195,7 +195,7 @@ epic-10: backlog
   epic-10-retrospective: optional
 
   # Epic 11: War Room TUI - Data & Strategy
-epic-11: backlog
+  epic-11: backlog
   11-1-director-ensemble-display-three-perspectives: backlog
   11-2-exfiltrated-data-browser: backlog
   11-3-data-export-from-tui: backlog
@@ -205,7 +205,7 @@ epic-11: backlog
   epic-11-retrospective: optional
 
   # Epic 12: Drop Box & C2
-epic-12: backlog
+  epic-12: backlog
   12-1-mtls-c2-server: backlog
   12-2-c2-message-protocol: backlog
   12-3-certificate-manager: backlog
@@ -220,7 +220,7 @@ epic-12: backlog
   epic-12-retrospective: optional
 
   # Epic 13: Evidence, Reporting & Audit
-epic-13: backlog
+  epic-13: backlog
   13-1-evidence-file-storage: backlog
   13-2-append-only-audit-log: backlog
   13-3-sqlite-checkpoint-storage: backlog
@@ -236,7 +236,7 @@ epic-13: backlog
   epic-13-retrospective: optional
 
   # Epic 14: External API & Governance
-epic-14: backlog
+  epic-14: backlog
   14-1-fastapi-application-foundation: backlog
   14-2-api-token-authentication: backlog
   14-3-engagement-crud-endpoints: backlog
@@ -251,7 +251,7 @@ epic-14: backlog
   epic-14-retrospective: optional
 
   # Epic 15: End-to-End Integration & Validation
-epic-15: backlog
+  epic-15: backlog
   15-1-full-engagement-e2e-test: backlog
   15-2-100-agent-scale-ci-gate: backlog
   15-3-10k-agent-stress-test: backlog

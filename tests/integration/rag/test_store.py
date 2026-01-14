@@ -38,7 +38,7 @@ class TestRAGStoreIntegration:
         """Store persists across restarts."""
         # First instance
         store1 = RAGStore(store_path=store_path)
-        chunk = RAGChunk("1", "persist", "src", [], ContentType.PAYLOAD, {}, [0.5]*768)
+        chunk = RAGChunk(id="1", text="persist", source="src", technique_ids=[], content_type=ContentType.PAYLOAD, metadata={}, embedding=[0.5]*768)
         await store1.add([chunk])
         
         # Second instance same path

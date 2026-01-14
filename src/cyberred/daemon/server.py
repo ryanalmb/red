@@ -46,6 +46,7 @@ from cyberred.daemon.ipc import (
 from cyberred.daemon.session_manager import SessionManager
 from cyberred.core.event_bus import EventBus
 from cyberred.daemon.state_machine import EngagementState
+from cyberred.rag import RAGScheduler
 
 
 READ_TIMEOUT = 30.0  # seconds - prevents hung clients
@@ -132,6 +133,10 @@ class DaemonServer:
         )
         self._shutdown_callback = shutdown_callback
 
+        # Initialize RAG Scheduler (Story 6.12)
+        from cyberred.core.config import get_settings
+        self._rag_scheduler = RAGScheduler(get_settings().rag)
+
     @property
     def session_manager(self) -> SessionManager:
         """Get the session manager instance."""
@@ -183,6 +188,9 @@ class DaemonServer:
             socket=str(self._socket_path),
             pid=os.getpid(),
         )
+
+        # Start RAG Scheduler (Story 6.12)
+        await self._rag_scheduler.start()
 
     async def _handle_client(
         self,
@@ -299,6 +307,7 @@ class DaemonServer:
                 IPCCommand.ENGAGEMENT_STOP: self._handle_engagement_stop,
                 IPCCommand.DAEMON_STOP: self._handle_daemon_stop,
                 IPCCommand.DAEMON_CONFIG_RELOAD: self._handle_config_reload,
+                IPCCommand.RAG_REFRESH: self._handle_rag_refresh,
             }
 
             handler = handler_map.get(command)
@@ -487,6 +496,14 @@ class DaemonServer:
         status = get_reload_status()
         return IPCResponse.create_ok(status, request.request_id)
 
+    async def _handle_rag_refresh(self, request: IPCRequest) -> IPCResponse:
+        """Handle manual RAG refresh trigger (Story 6.12)."""
+        await self._rag_scheduler.trigger_now()
+        return IPCResponse.create_ok(
+            {"triggered": True, "message": "RAG refresh triggered in background"},
+            request.request_id
+        )
+
     async def _handle_daemon_stop(self, request: IPCRequest) -> IPCResponse:
         log.info("daemon_stop_requested", request_id=request.request_id)
         
@@ -632,6 +649,10 @@ class DaemonServer:
                 self._pid_path.unlink()
             except OSError as e:
                 log.warning("pid_cleanup_failed", error=str(e))
+
+        # Stop RAG Scheduler (Story 6.12)
+        if hasattr(self, "_rag_scheduler"):
+            await self._rag_scheduler.stop()
 
         log.info("daemon_server_stopped", exit_code=exit_code, graceful=graceful)
         return exit_code

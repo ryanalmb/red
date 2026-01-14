@@ -3,9 +3,11 @@
 Implements document chunking, embedding, and storage for the RAG escalation layer (FR77).
 """
 import hashlib
+import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import structlog
@@ -120,13 +122,19 @@ class MarkdownCodeBlockSplitter:
         chunks: List[str] = []
         current_start = 0
         
+        # Ensure overlap is less than chunk_size to guarantee progress
+        effective_overlap = min(self._overlap, self._chunk_size - 1)
+        
         while current_start < len(words):
             end = min(current_start + self._chunk_size, len(words))
             chunk = " ".join(words[current_start:end])
             chunks.append(chunk)
             
-            # Move forward with overlap
-            current_start = end - self._overlap if end < len(words) else end
+            # Move forward with overlap, ensure at least 1 word progress
+            if end < len(words):
+                current_start = end - effective_overlap
+            else:
+                break
         
         return chunks
 
@@ -156,6 +164,9 @@ class DocumentChunker:
         source: str,
         content_type: ContentType = ContentType.METHODOLOGY,
         technique_ids: Optional[List[str]] = None,
+        tactics: Optional[List[str]] = None,
+        doc_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> List[RAGChunk]:
         """Split document into chunks with metadata.
         
@@ -164,6 +175,9 @@ class DocumentChunker:
             source: Source identifier (e.g., "hacktricks", "mitre_attack")
             content_type: ContentType enum for these chunks
             technique_ids: Optional list of ATT&CK technique IDs
+            tactics: Optional list of ATT&CK tactics/kill chain phases
+            doc_id: Optional document ID for deterministic chunk IDs
+            metadata: Optional additional metadata to include in chunks
             
         Returns:
             List of RAGChunk objects ready for embedding
@@ -172,6 +186,7 @@ class DocumentChunker:
             return []
         
         technique_ids = technique_ids or []
+        tactics = tactics or []
         
         # Check if markdown (has code blocks)
         if "```" in text or "~~~" in text:
@@ -185,14 +200,18 @@ class DocumentChunker:
             if not segment.strip():
                 continue
                 
-            chunk_id = self._generate_chunk_id(source, segment, i)
+            chunk_id = self._generate_chunk_id(source, segment, i, doc_id)
             chunk = RAGChunk(
                 id=chunk_id,
                 text=segment,
                 source=source,
                 technique_ids=technique_ids.copy(),
                 content_type=content_type,
-                metadata={"chunk_index": i},
+                metadata={
+                    **({"chunk_index": i, "doc_id": doc_id} if doc_id else {"chunk_index": i}),
+                    **(metadata or {})
+                },
+                tactics=tactics.copy(),
             )
             chunks.append(chunk)
         
@@ -252,25 +271,40 @@ class DocumentChunker:
         """Chunk by word count with overlap."""
         chunks: List[str] = []
         current_start = 0
+        n_words = len(words)
         
-        while current_start < len(words):
-            end = min(current_start + self._chunk_size, len(words))
+        # Ensure overlap is less than chunk_size to guarantee progress
+        effective_overlap = min(self._overlap, self._chunk_size - 1)
+        
+        while current_start < n_words:
+            end = min(current_start + self._chunk_size, n_words)
             chunk = " ".join(words[current_start:end])
             chunks.append(chunk)
-            current_start = end - self._overlap if end < len(words) else end
+            
+            if end < n_words:
+                current_start = end - effective_overlap
+            else:
+                break
         
         return chunks
 
-    def _generate_chunk_id(self, source: str, text: str, index: int) -> str:
-        """Generate deterministic chunk ID for upsert behavior."""
-        content = f"{source}:{text[:100]}:{index}"
+    def _generate_chunk_id(self, source: str, text: str, index: int, doc_id: Optional[str] = None) -> str:
+        """Generate deterministic chunk ID for upsert behavior.
+        
+        Args:
+            source: Source system
+            text: Chunk text (fallback if doc_id missing)
+            index: Chunk index
+            doc_id: Document ID (preferred for stability)
+        """
+        if doc_id:
+            # Stable ID: source:doc_id:index - updates when content changes but ID stays same
+            content = f"{source}:{doc_id}:{index}"
+        else:
+            # Fallback (unstable): source:content_hash:index
+            content = f"{source}:{text[:100]}:{index}"
+            
         return hashlib.sha256(content.encode()).hexdigest()[:16]
-
-
-class RawDocument:
-    """Type hint for raw document input."""
-    text: str
-    metadata: Dict[str, Any]
 
 
 class RAGIngestPipeline:
@@ -358,6 +392,11 @@ class RAGIngestPipeline:
                 technique_ids = doc.get("metadata", {}).get("technique_ids", [])
                 if isinstance(technique_ids, str):
                     technique_ids = [technique_ids]
+                
+                # Extract tactics from metadata (ATT&CK kill chain phases)
+                tactics = doc.get("metadata", {}).get("tactics", [])
+                if isinstance(tactics, str):
+                    tactics = [tactics]
 
                 # Chunk the document
                 chunks = self._chunker.chunk_document(
@@ -365,6 +404,9 @@ class RAGIngestPipeline:
                     source=source,
                     content_type=content_type,
                     technique_ids=technique_ids,
+                    tactics=tactics,
+                    doc_id=doc_id,
+                    metadata=doc.get("metadata", {}),
                 )
                 all_chunks.extend(chunks)
                 processed_count += 1
@@ -421,9 +463,6 @@ class RAGIngestPipeline:
 
     def _load_stats(self, source: str) -> Optional[IngestionStats]:
         """Load previous ingestion stats for source."""
-        import json
-        from pathlib import Path
-
         stats_path = self._get_stats_path(source)
         if stats_path.exists():
             try:
@@ -436,9 +475,6 @@ class RAGIngestPipeline:
 
     def _save_stats(self, stats: IngestionStats) -> None:
         """Persist ingestion stats for incremental support."""
-        import json
-        from pathlib import Path
-
         stats_path = self._get_stats_path(stats.source)
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -448,10 +484,8 @@ class RAGIngestPipeline:
         except Exception as e:
             log.warning("rag_stats_save_failed", source=stats.source, error=str(e))
 
-    def _get_stats_path(self, source: str) -> "Path":
+    def _get_stats_path(self, source: str) -> Path:
         """Get path for stats file."""
-        from pathlib import Path
-        
         # Store alongside the LanceDB database
         if hasattr(self._store, "db_path"):
             base = Path(self._store.db_path).parent
