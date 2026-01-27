@@ -97,15 +97,15 @@ So that **I don't starve the system when many agents are active (NFR8)**.
   - [x] Add structured logging for throttle state changes
   - [x] Ensure loop cleanup on `shutdown()`
 
-- [ ] Task 10: Integrate throttling into execute() (AC: #1, #3)
-  - [ ] Add throttle check at start of `execute()`
-  - [ ] Implement wait loop with `asyncio.Event` for throttle release
-  - [ ] Add `max_throttle_wait` timeout with `ThrottleTimeoutError`
-  - [ ] Ensure status transitions are atomic (thread-safe)
+- [x] Task 10: Integrate throttling into execute() (AC: #1, #3)
+  - [x] Add throttle check at start of `execute()`
+  - [x] Implement wait loop with `asyncio.Event` for throttle release
+  - [x] Add `max_throttle_wait` timeout with `ThrottleTimeoutError`
+  - [x] Ensure status transitions are atomic (thread-safe)
 
-- [ ] Task 11: Add ThrottleTimeoutError exception (AC: #5)
-  - [ ] Add `ThrottleTimeoutError` to `src/cyberred/core/exceptions.py`
-  - [ ] Include agent_id, wait_duration, queue_depth in exception
+- [x] Task 11: Add ThrottleTimeoutError exception (AC: #5)
+  - [x] Add `ThrottleTimeoutError` to `src/cyberred/core/exceptions.py`
+  - [x] Include agent_id, wait_duration, queue_depth in exception
 
 ### Phase 3: REFACTOR - Optimize and Harden
 
@@ -161,19 +161,25 @@ def total_queue_depth(self) -> int:
         return self._director_pending + self._agent_pending
 ```
 
-**Existing Stub in StigmergicAgent (Story 7.1):**
+**Implemented in StigmergicAgent (Story 7.2 - COMPLETE):**
 ```python
-# From src/cyberred/agents/base.py (lines 217-226)
+# From src/cyberred/agents/base.py - Full implementation
 async def _check_throttle(self) -> bool:
     """Check if agent should throttle execution.
     
-    Placeholder for Story 7.2 (Self-Throttling).
+    Logic:
+    1. Get current queue depth from LLMGateway.
+    2. Get throttle configuration (threshold).
+    3. If threshold < 1.0, calculate max capacity based on `engagement.max_agents`.
+    4. If threshold >= 1.0, use as raw count.
+    5. Return True if queue_depth >= threshold.
+    
+    Fail-open: If gateway unavailable, return False.
     
     Returns:
         True if should throttle, False otherwise.
     """
-    # Default implementation: no throttling
-    return False
+    # Full implementation with gateway integration
 ```
 
 **Status Property (already exists):**

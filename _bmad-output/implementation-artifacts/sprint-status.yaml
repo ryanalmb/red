@@ -131,20 +131,42 @@ development_status:
   epic-6-retrospective: done
 
   # Epic 7: Agent Framework & Stigmergic Coordination
+  # NOTE: Stories 7.1, 7.3, 7.4, 7.5 superseded per Sprint Change Proposal 2026-01-14
+  # See: _bmad-output/planning-artifacts/sprint-change-proposal-2026-01-14.md
   epic-7: in-progress
-  7-1-stigmergic-agent-base-class: done
-  7-2-agent-self-throttling: done
-  7-3-recon-agent-implementation: in-progress
-  7-4-exploit-agent-implementation: backlog
-  7-5-post-ex-agent-implementation: backlog
-  7-6-swarm-router-integration: backlog
-  7-7-dynamic-agent-spawner: backlog
-  7-8-decision-context-tracking: backlog
-  7-9-isolated-vs-stigmergic-comparison-framework: backlog
-  7-10-emergence-score-calculation: backlog
-  7-11-causal-chain-depth-validation: backlog
-  7-12-agent-crash-recovery: backlog
-  7-13-stigmergic-topic-sharding: backlog
+
+  # Superseded stories (hardcoded tool sequences - replaced by LLM-driven versions)
+  7-1-stigmergic-agent-base-class: superseded # → 7-1-v2
+  7-2-agent-self-throttling: done # Preserved - throttling logic still valid
+  7-3-recon-agent-implementation: superseded # → 7-3-v2
+  7-4-exploit-agent-implementation: superseded # → 7-4-v2
+  7-5-post-ex-agent-implementation: superseded # → 7-5-v2
+
+  # Critical dependency - must implement first
+  7-18-agent-role-and-prompt-library: done # PRIORITY: Unblocks all refactors - Story file created 2026-01-14
+
+  # Refactored stories (LLM-driven tool selection)
+  7-1-v2-stigmergic-agent-llm-selection: done # Depends: 7-18
+  7-3-v2-recon-agent-refactor: done # Depends: 7-1-v2 | Story file created 2026-01-15
+  7-4-v2-exploit-agent-refactor: done # Depends: 7-1-v2 | Story file created 2026-01-21
+  7-5-v2-postex-agent-refactor: done # Depends: 7-1-v2 | Story file created 2026-01-21
+
+  # New agent types (can parallelize after 7.1-v2)
+  7-19-webapp-agent: review # Depends: 7-1-v2 | Completed 2026-01-21
+  7-20-wireless-agent: done # Depends: 7-1-v2 | Completed 2026-01-22
+  7-21-active-directory-agent: done # Depends: 7-1-v2 | Story file created 2026-01-26
+  7-22-credential-agent: done # Depends: 7-1-v2 | Code review fixes 2026-01-26
+  7-23-forensics-agent: review # Depends: 7-1-v2
+
+  # Integration (requires all 8 agent types)
+  7-6-swarm-router-integration: ready-for-dev # Depends: 7.3-v2 through 7.23 | Story file created 2026-01-26
+  7-7-dynamic-agent-spawner: done # Code review completed 2026-01-27
+  7-8-decision-context-tracking: done # Code review completed 2026-01-27
+  7-9-isolated-vs-stigmergic-comparison-framework: review # Story file created 2026-01-27
+  7-10-emergence-score-calculation: done # Completed 2026-01-27
+  7-11-causal-chain-depth-validation: done # Completed 2026-01-27, code review passed
+  7-12-agent-crash-recovery: ready-for-dev # Story file created 2026-01-27
+  7-13-stigmergic-topic-sharding: ready-for-dev
   7-14-emergence-validation-gate-test: backlog
   7-15-emergent-attack-strategy-triggering: backlog
   7-16-agent-authorization-response-handling: backlog

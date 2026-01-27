@@ -1,0 +1,13 @@
+{
+    "access_type": "shell",
+    "shell_data": {
+        "connection_string": "10.0.0.50",
+        "shell_type": "reverse",
+        "port": 4444,
+        "protocol": "tcp"
+    },
+    "source_exploit": "CVE-2021-44228",
+    "source_agent": "exploit-001",
+    "privilege_level": "user",
+    "os_type": "linux"
+}

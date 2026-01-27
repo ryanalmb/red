@@ -682,3 +682,110 @@ class CheckpointManager:
                     checkpoints.append((engagement_dir.name, checkpoint_path))
         
         return checkpoints
+
+    # === Agent State Methods (Story 7.12) ===
+
+    async def save_agent_state(self, engagement_id: str, agent_state: AgentState) -> None:
+        """Save individual agent state for crash recovery.
+        
+        Updates or inserts agent state into the engagement's checkpoint database.
+        
+        Args:
+            engagement_id: Engagement identifier.
+            agent_state: Agent state to save.
+        """
+        checkpoint_path = self._get_checkpoint_path(engagement_id)
+        
+        # Ensure directory exists
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure schema exists
+        if not checkpoint_path.exists():
+            self._initialize_schema(checkpoint_path)
+            # Create engagement record if needed
+            conn = self._create_connection(checkpoint_path)
+            try:
+                created_at = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO engagements
+                    (id, name, scope_hash, state, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (engagement_id, f"Engagement {engagement_id}", "", "RUNNING", created_at, created_at)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        
+        conn = self._create_connection(checkpoint_path)
+        try:
+            updated_at = datetime.now(timezone.utc).isoformat()
+            
+            # Upsert agent state
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO agents 
+                (agent_id, engagement_id, agent_type, state_json, last_action_id, decision_context, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    agent_state.agent_id,
+                    engagement_id,
+                    agent_state.agent_type,
+                    json.dumps(agent_state.state, cls=CheckpointJSONEncoder),
+                    agent_state.last_action_id,
+                    json.dumps(agent_state.decision_context, cls=CheckpointJSONEncoder),
+                    updated_at,
+                ),
+            )
+            conn.commit()
+            
+            log.debug(
+                "agent_state_saved",
+                engagement_id=engagement_id,
+                agent_id=agent_state.agent_id,
+            )
+        finally:
+            conn.close()
+
+    async def load_agent_state(self, engagement_id: str, agent_id: str) -> Optional[AgentState]:
+        """Load individual agent state from checkpoint.
+        
+        Args:
+            engagement_id: Engagement identifier.
+            agent_id: Agent identifier.
+            
+        Returns:
+            AgentState if found, None otherwise.
+        """
+        checkpoint_path = self._get_checkpoint_path(engagement_id)
+        
+        if not checkpoint_path.exists():
+            return None
+        
+        conn = self._create_connection(checkpoint_path)
+        try:
+            cursor = conn.execute(
+                "SELECT * FROM agents WHERE agent_id = ? AND engagement_id = ?",
+                (agent_id, engagement_id),
+            )
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            # Parse decision_context
+            d_context = row["decision_context"]
+            if isinstance(d_context, str):
+                d_context = json.loads(d_context)
+            
+            return AgentState(
+                agent_id=row["agent_id"],
+                agent_type=row["agent_type"],
+                state=json.loads(row["state_json"]),
+                last_action_id=row["last_action_id"],
+                decision_context=d_context,
+            )
+        finally:
+            conn.close()

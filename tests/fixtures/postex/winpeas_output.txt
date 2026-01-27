@@ -1,0 +1,73 @@
+
+     ,.=:^!^!t3Z3z.,                  
+    :tt:::tt333EE3                    
+    Et:::ztt33EEEL @Ee.,      ..,     WinPEAS-ng by @carlospolop
+   ;tt:::tt333EE7 ;EEEEEEttttt33#     
+  :Et:::zt333EEQ. SEEEEEttttt33QL     Windows Privilege Escalation
+  it:::zt333EEF @EEEEEEttttt33F      
+ ;t:::zt333EE%  %EEEEEEttttt33F       Basic System Enumeration
+ E::::t33VEEL   %EEEEEEttt33EzL       ============================
+{3]EEEEEEttttt33;:EEEEEEtttz33FL       
+ @EEEEEEttttz33FEEL@EEEE33EzL         Windows Version: 10.0.19044 (21H2)
+  $EEEEEEtttz33EzL  @EEEE33EzL        Architecture: x86_64
+   %EEEEEtttz33EzL    @@E33EzL        Hostname: WORKSTATION01
+    SEEEEtttt33EzL      @EzL          Domain: CORP.LOCAL
+      @@EttztEzL          L           Current User: CORP\jsmith
+         @@@                          
+
+====================================( Users )====================================
+
+Administrator (enabled, pwd required)
+Guest (disabled)
+DefaultAccount (disabled) 
+CORP\jsmith (Domain User)
+CORP\svc_backup (Service Account)
+
+====================================( Services )====================================
+
+spoolsv - Running - LocalSystem (Vulnerable to PrintNightmare?)
+MSSQLServer - Running - CORP\svc_sql
+Apache2.4 - Running - LocalSystem
+TeamViewer - Running - CORP\jsmith
+
+====================================( Scheduled Tasks )====================================
+
+\Microsoft\Windows\Backup\BackupScript
+  - Runs as: SYSTEM
+  - Next Run: 02:00:00
+  - Command: C:\Scripts\backup.ps1 (WRITABLE!)
+
+====================================( AlwaysInstallElevated )====================================
+
+HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated: 1
+HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer\AlwaysInstallElevated: 1
+[+] AlwaysInstallElevated is enabled! MSI files can be installed as SYSTEM
+
+====================================( Unquoted Service Paths )====================================
+
+Vulnerable Service Path: C:\Program Files\Custom App\Service.exe
+  - Service: CustomAppService
+  - StartMode: Auto
+  - Can restart: Yes
+
+====================================( Saved Credentials )====================================
+
+Found Windows Vault credentials:
+  Target: Domain:interactive=CORP\administrator
+  Type: 1
+  
+Found DPAPI Master Keys:
+  C:\Users\jsmith\AppData\Roaming\Microsoft\Protect\S-1-5-21-xxx\*
+
+====================================( Network Shares )====================================
+
+\\WORKSTATION01\C$      - Admin share
+\\WORKSTATION01\ADMIN$  - Remote Admin
+\\DC01\sysvol           - SYSVOL share
+\\FILESERVER\shared     - Public share (READ/WRITE)
+
+====================================( Interesting Files )====================================
+
+C:\Users\jsmith\Documents\passwords.txt
+C:\Program Files\Apache24\conf\httpd.conf (contains credentials)
+C:\Windows\Panther\unattend.xml (found credentials!)

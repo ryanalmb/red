@@ -2708,14 +2708,25 @@ So that **I can correlate methodologies with kill chain phases (FR83, FR84)**.
 
 ## Epic 7: Agent Framework & Stigmergic Coordination
 
-**User Outcome:** 10,000+ LLM-powered agents coordinate via P2P stigmergic signals with provable emergence (>20% novel attack chains).
+**User Outcome:** 10,000+ LLM-powered agents (8 specialized roles) coordinate via P2P stigmergic signals with provable emergence (>20% novel attack chains).
 
-**FRs Covered:** FR2, FR4, FR5, FR6, FR62
+**FRs Covered:** FR2, FR4, FR5, FR6, FR31, FR32, FR62
 **NFRs Covered:** NFR1, NFR6, NFR7, NFR8, NFR35, NFR36, NFR37
 **Errors Handled:** ERR5
 
+**Stories:** 7.1-7.25 (25 stories, ~104 story points)
+
 > [!IMPORTANT]
 > **Framework:** This epic uses [kyegomez/swarms](https://github.com/kyegomez/swarms) v8.0.0+ — the enterprise-grade multi-agent orchestration framework. This is **NOT** OpenAI's experimental "Swarm" project. All agents extend Swarms' native `Agent` class.
+
+> [!IMPORTANT]
+> **LLM-Driven Tool Selection:** All agents use LLM reasoning to select from the full 1,556+ tool manifest. NO hardcoded tool sequences. Agents have access to ANY appropriate tool based on context.
+
+> [!IMPORTANT]
+> **8 Agent Roles:** RECON, EXPLOIT, POSTEX, WEBAPP, WIRELESS, AD, CREDENTIAL, FORENSICS. Each role has a specialized system prompt and optional specialties for further focus.
+
+> [!IMPORTANT]
+> **Story Dependency:** Story 7.18 (AgentRole + PromptLibrary) MUST be completed first. Story 7.6 (SwarmRouter) MUST come AFTER all agent types (7.3-7.5, 7.19-7.23) are implemented.
 
 > [!CAUTION]
 > **HARD GATE EPIC:** NFR35-37 emergence validation MUST pass. System cannot ship without proving stigmergic coordination produces >20% novel attack chains vs isolated agents.
@@ -2725,30 +2736,67 @@ So that **I can correlate methodologies with kill chain phases (FR83, FR84)**.
 ### Story 7.1: StigmergicAgent Base Class
 
 As a **developer**,
-I want **a base agent class with stigmergic pub/sub hooks**,
-So that **all agents can participate in P2P coordination (FR4)**.
+I want **a base agent class with LLM-driven tool selection and stigmergic pub/sub hooks**,
+So that **all agents can intelligently select from 1,556+ tools and participate in P2P coordination (FR4, FR31, FR32)**.
 
 **Acceptance Criteria:**
 
-- **Given** Epic 3 (event bus) is complete
+- **Given** Epic 3 (event bus) and Story 7.18 (AgentRole + PromptLibrary) are complete
 - **When** I extend `StigmergicAgent`
 - **Then** agent has `on_finding()` lifecycle hook → publishes to Redis
 - **And** agent has `on_signal()` lifecycle hook → reacts to swarm state
 - **And** agent has `on_complete()` lifecycle hook → updates stigmergic map
 - **And** agent subscribes to relevant topic patterns on spawn
 - **And** agent includes `agent_id`, `engagement_id` in all messages
-- **And** unit tests verify lifecycle hooks fire correctly
+- **And** agent has `select_tool()` method for LLM-driven tool selection
+- **And** agent has `generate_command()` method using tool's `--help` output for LLM command generation
+- **And** agent caches `--help` output per tool per session to minimize overhead
+- **And** agent can access full tool manifest (1,556+ tools) via ManifestLoader for tool discovery
+- **And** agent loads role-specific system prompt from PromptLibrary
+- **And** agent behavior varies by `role` and optional `specialty` parameters
+- **And** unit tests verify lifecycle hooks and LLM tool selection
 
 **Technical Notes:**
 - Located in `agents/base.py`
 - **Framework:** [kyegomez/swarms](https://github.com/kyegomez/swarms) v8.0.0+ (NOT OpenAI Swarm)
+- **Dependencies:** Story 7.18 (AgentRole enum + PromptLibrary) MUST be completed first
 ```python
 from swarms import Agent  # kyegomez/swarms
+from cyberred.agents.roles import AgentRole
+from cyberred.agents.prompts import PromptLibrary
 
 class StigmergicAgent(Agent):
-    """Base agent with stigmergic pub/sub hooks."""
+    """Base agent with LLM-driven tool selection and stigmergic pub/sub hooks."""
+    
+    def __init__(self, role: AgentRole, specialty: str = None, ...):
+        self.role = role
+        self.specialty = specialty
+        self.system_prompt = PromptLibrary.get(role, specialty)
+        self.manifest = ManifestLoader()  # For tool discovery
+        self._tool_help_cache = {}  # Cache --help output
+    
+    async def select_tool(self, context: dict) -> ToolSelection:
+        """LLM selects tool from manifest based on context."""
+        ...
+    
+    async def generate_command(self, tool: str, target: str) -> str:
+        """LLM generates command using tool's --help output."""
+        help_output = await self._get_tool_help(tool)
+        # LLM uses help output to generate correct syntax
+        ...
+    
+    async def _get_tool_help(self, tool: str) -> str:
+        """Get tool help, cached per session."""
+        if tool not in self._tool_help_cache:
+            result = await self.kali_execute(f"{tool} --help 2>&1 | head -80")
+            self._tool_help_cache[tool] = result.stdout
+        return self._tool_help_cache[tool]
 ```
 - Lifecycle: spawn → subscribe → execute → on_signal → on_finding → on_complete
+- **LLM Tool Selection:** No hardcoded tool sequences - LLM decides dynamically
+- **Manifest Role:** Tool discovery, category filtering, validation, parser mapping
+- **Command Generation:** Uses tool's `--help` output (not curated manifest metadata)
+- **Help Caching:** One `--help` call per tool per session to minimize overhead
 
 ---
 
@@ -2778,14 +2826,16 @@ So that **I don't starve the system when many agents are active (NFR8)**.
 ### Story 7.3: ReconAgent Implementation
 
 As a **developer**,
-I want **a reconnaissance agent for discovery and enumeration**,
-So that **the swarm can map attack surfaces (FR2)**.
+I want **a reconnaissance agent that uses LLM-driven tool selection for discovery and enumeration**,
+So that **the swarm can adaptively map attack surfaces using any appropriate tool (FR2, FR31, FR32)**.
 
 **Acceptance Criteria:**
 
 - **Given** Story 7.1 is complete
 - **When** ReconAgent is spawned with a target
-- **Then** agent performs reconnaissance using `kali_execute()`
+- **Then** agent uses LLM to select reconnaissance tools from full manifest (not hardcoded)
+- **And** agent can use ANY reconnaissance tool if context warrants
+- **And** agent supports `specialty` parameter (network, osint, dns, subdomain)
 - **And** agent discovers: open ports, services, versions, technologies
 - **And** findings are published to `findings:{target_hash}:recon`
 - **And** agent subscribes to `strategies:*` for Director guidance
@@ -2794,22 +2844,34 @@ So that **the swarm can map attack surfaces (FR2)**.
 
 **Technical Notes:**
 - Located in `agents/recon.py`
-- Uses STANDARD tier LLM for reasoning
-- Tools: nmap, masscan, whatweb, wafw00f, subfinder
+- **Thin subclass** setting `role=AgentRole.RECON`
+- Uses STANDARD tier LLM for tool selection and reasoning
+- **LLM-Driven Tool Selection:** Agent selects from full 1,556+ tool manifest
+- **Common Tools:** nmap, masscan, whatweb, wafw00f, subfinder (not exhaustive)
+- **Specialties:** network, osint, dns, subdomain
+- **NO hardcoded tool sequences** - LLM decides based on context
+```python
+class ReconAgent(StigmergicAgent):
+    def __init__(self, specialty: str = "network", **kwargs):
+        super().__init__(role=AgentRole.RECON, specialty=specialty, **kwargs)
+```
 
 ---
 
 ### Story 7.4: ExploitAgent Implementation
 
 As a **developer**,
-I want **an exploitation agent for vulnerability attacks**,
-So that **the swarm can exploit discovered weaknesses (FR2)**.
+I want **an exploitation agent that uses LLM-driven tool selection for vulnerability attacks**,
+So that **the swarm can adaptively exploit weaknesses using any appropriate tool (FR2, FR31, FR32)**.
 
 **Acceptance Criteria:**
 
 - **Given** Story 7.1 is complete
 - **When** ExploitAgent receives a target with known vulnerabilities
-- **Then** agent queries Intelligence Layer for exploit options
+- **Then** agent uses LLM to select exploitation tools from full manifest (not hardcoded)
+- **And** agent can use ANY exploitation tool if context warrants
+- **And** agent supports `specialty` parameter (web, network, service)
+- **And** agent queries Intelligence Layer for exploit options
 - **And** agent executes exploits via `kali_execute()`
 - **And** successful exploits are published to `findings:{target_hash}:exploit`
 - **And** agent escalates to RAG after 3+ failures (per Story 6.10)
@@ -2818,22 +2880,34 @@ So that **the swarm can exploit discovered weaknesses (FR2)**.
 
 **Technical Notes:**
 - Located in `agents/exploit.py`
-- Uses COMPLEX tier LLM for chaining
-- Tools: sqlmap, nuclei, metasploit, hydra, crackmapexec
+- **Thin subclass** setting `role=AgentRole.EXPLOIT`
+- Uses COMPLEX tier LLM for tool selection and chaining
+- **LLM-Driven Tool Selection:** Agent selects from full 1,556+ tool manifest
+- **Common Tools:** sqlmap, nuclei, metasploit, hydra, crackmapexec (not exhaustive)
+- **Specialties:** web, network, service
+- **NO hardcoded tool dispatch** - LLM decides based on vulnerability context
+```python
+class ExploitAgent(StigmergicAgent):
+    def __init__(self, specialty: str = "network", **kwargs):
+        super().__init__(role=AgentRole.EXPLOIT, specialty=specialty, **kwargs)
+```
 
 ---
 
 ### Story 7.5: PostExAgent Implementation
 
 As a **developer**,
-I want **a post-exploitation agent for lateral movement and persistence**,
-So that **the swarm can achieve deeper objectives (FR2)**.
+I want **a post-exploitation agent that uses LLM-driven tool selection for lateral movement and persistence**,
+So that **the swarm can adaptively achieve deeper objectives using any appropriate tool (FR2, FR31, FR32)**.
 
 **Acceptance Criteria:**
 
 - **Given** Story 7.1 is complete
 - **When** PostExAgent receives access to a compromised system
-- **Then** agent performs post-exploitation enumeration
+- **Then** agent uses LLM to select post-exploitation tools from full manifest (not hardcoded)
+- **And** agent can use ANY post-exploitation tool if context warrants
+- **And** agent supports `specialty` parameter (windows, linux, macos)
+- **And** agent performs post-exploitation enumeration
 - **And** agent attempts privilege escalation if applicable
 - **And** agent discovers lateral movement opportunities
 - **And** findings are published to `findings:{target_hash}:postex`
@@ -2843,35 +2917,66 @@ So that **the swarm can achieve deeper objectives (FR2)**.
 
 **Technical Notes:**
 - Located in `agents/postex.py`
-- Uses COMPLEX tier LLM
-- Tools: mimikatz, bloodhound, linpeas, winpeas, impacket-*
+- **Thin subclass** setting `role=AgentRole.POSTEX`
+- Uses COMPLEX tier LLM for tool selection
+- **LLM-Driven Tool Selection:** Agent selects from full 1,556+ tool manifest
+- **Common Tools:** mimikatz, bloodhound, linpeas, winpeas, impacket-* (not exhaustive)
+- **Specialties:** windows, linux, macos
+- **NO hardcoded tool dispatch** - LLM decides based on OS and access context
+```python
+class PostExAgent(StigmergicAgent):
+    def __init__(self, specialty: str = "linux", **kwargs):
+        super().__init__(role=AgentRole.POSTEX, specialty=specialty, **kwargs)
+```
 
 ---
 
 ### Story 7.6: SwarmRouter Integration
 
 As a **developer**,
-I want **SwarmRouter to route tasks to appropriate swarm types**,
+I want **SwarmRouter to route tasks to ALL 8 agent types**,
 So that **tasks reach the right agent specialization (FR5)**.
 
 **Acceptance Criteria:**
 
-- **Given** Stories 7.3-7.5 are complete
+- **Given** Stories 7.3-7.5 AND 7.19-7.23 (all agent types) are complete
 - **When** Director assigns a task
-- **Then** SwarmRouter routes to appropriate swarm: recon, exploit, or postex
-- **And** routing considers task type and target state
+- **Then** SwarmRouter routes to appropriate swarm type from ALL 8 roles:
+  - RECON (network discovery, enumeration)
+  - EXPLOIT (vulnerability exploitation)
+  - POSTEX (post-exploitation, lateral movement)
+  - WEBAPP (web application testing)
+  - WIRELESS (wireless network attacks)
+  - AD (Active Directory attacks)
+  - CREDENTIAL (credential harvesting/cracking)
+  - FORENSICS (evidence collection)
+- **And** routing considers task type, target state, and agent specialty
 - **And** router supports ConcurrentWorkflow for parallel tasks
 - **And** router supports SequentialWorkflow for chained tasks
-- **And** integration tests verify correct routing
+- **And** router can spawn agents with specific specialties
+- **And** integration tests verify correct routing to all 8 types
 
 **Technical Notes:**
 - Located in `orchestration/router.py`
+- **Dependencies:** ALL agent types (7.3-7.5, 7.19-7.23) MUST be complete first
 - **Framework:** [kyegomez/swarms](https://github.com/kyegomez/swarms) SwarmRouter
 ```python
 from swarms import SwarmRouter  # kyegomez/swarms
-```
-- Task types: discover, enumerate, exploit, escalate, persist, exfiltrate
+from cyberred.agents.roles import AgentRole
 
+# Router knows ALL 8 agent types
+AGENT_ROUTING = {
+    AgentRole.RECON: ["discover", "enumerate", "scan"],
+    AgentRole.EXPLOIT: ["exploit", "attack"],
+    AgentRole.POSTEX: ["escalate", "persist", "lateral"],
+    AgentRole.WEBAPP: ["web_test", "injection", "auth_bypass"],
+    AgentRole.WIRELESS: ["wifi_scan", "wifi_attack"],
+    AgentRole.AD: ["domain_enum", "kerberoast", "dcsync"],
+    AgentRole.CREDENTIAL: ["crack", "spray", "harvest"],
+    AgentRole.FORENSICS: ["collect", "analyze"],
+}
+```
+- Task types: discover, enumerate, exploit, escalate, persist, exfiltrate, web_test, wifi_attack, domain_enum, crack, collect
 ---
 
 ### Story 7.7: Dynamic Agent Spawner
@@ -3134,6 +3239,263 @@ So that **agents demonstrably change behavior based on Director guidance**.
 - Critical for proving Director value
 - Test: publish "prioritize web apps" → verify agents shift from network to web
 - Located in `tests/integration/test_feedback_loop.py`
+
+---
+
+### Story 7.18: AgentRole Enum & PromptLibrary
+
+As a **developer**,
+I want **a centralized role enum and prompt library**,
+So that **agent behaviors are consistently managed and easily extended (FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** the need for diverse agent behaviors
+- **When** PromptLibrary.get(role, specialty) is called
+- **Then** it returns the appropriate system prompt from `agents/prompts/` directory
+- **And** specialty-specific prompts override role-level prompts (e.g., `recon_network.md` over `recon.md`)
+- **And** fallback to default prompt if file missing
+- **And** AgentRole enum defines all 8 roles: RECON, EXPLOIT, POSTEX, WEBAPP, WIRELESS, AD, CREDENTIAL, FORENSICS
+- **And** new roles can be added by extending enum and adding prompt files
+- **And** unit tests verify prompt loading and fallback logic
+
+**Technical Notes:**
+- **MUST be completed BEFORE Story 7.1** (dependency)
+- Located in `agents/roles.py` and `agents/prompts.py`
+- Prompt files in `agents/prompts/*.md`
+```python
+class AgentRole(Enum):
+    RECON = "recon"
+    EXPLOIT = "exploit"
+    POSTEX = "postex"
+    WEBAPP = "webapp"
+    WIRELESS = "wireless"
+    AD = "active_directory"
+    CREDENTIAL = "credential"
+    FORENSICS = "forensics"
+
+class PromptLibrary:
+    @classmethod
+    def get(cls, role: AgentRole, specialty: str = None) -> str:
+        """Load role/specialty prompt from file."""
+        ...
+```
+
+---
+
+### Story 7.19: WebAppAgent Implementation
+
+As a **developer**,
+I want **a web application testing agent that uses LLM-driven tool selection**,
+So that **web vulnerabilities are discovered with expert-level tool selection (FR2, FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** Story 7.1 is complete
+- **When** WebAppAgent is spawned with a web application target
+- **Then** agent uses LLM to select web testing tools from full manifest
+- **And** agent can test for OWASP Top 10 vulnerabilities
+- **And** agent considers WAF detection results in tool selection
+- **And** agent can handle authentication flows if credentials provided
+- **And** findings are published to `findings:{target_hash}:webapp`
+- **And** agent logs `decision_context` for all actions (FR62)
+- **And** integration tests verify web testing in cyber range
+
+**Technical Notes:**
+- Located in `agents/webapp.py`
+- **Thin subclass** setting `role=AgentRole.WEBAPP`
+- Uses COMPLEX tier LLM for tool selection
+- **Common Tools:** ffuf, sqlmap, nuclei, nikto, wfuzz, arjun, paramspider (not exhaustive)
+- Prompt emphasizes OWASP Top 10 and web-specific attack patterns
+```python
+class WebAppAgent(StigmergicAgent):
+    def __init__(self, **kwargs):
+        super().__init__(role=AgentRole.WEBAPP, **kwargs)
+```
+
+---
+
+### Story 7.20: WirelessAgent Implementation
+
+As a **developer**,
+I want **a wireless network security agent that uses LLM-driven tool selection**,
+So that **WiFi vulnerabilities are discovered with expert-level tool selection (FR2, FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** Story 7.1 is complete
+- **When** WirelessAgent is spawned with wireless interfaces available
+- **Then** agent uses LLM to select wireless testing tools from full manifest
+- **And** agent discovers nearby access points and identifies encryption types
+- **And** agent can capture handshakes for WPA/WPA2 networks
+- **And** agent integrates with CredentialAgent for hash cracking
+- **And** findings are published to `findings:{target_hash}:wireless`
+- **And** agent logs `decision_context` for all actions (FR62)
+- **And** integration tests verify wireless testing (with mock interfaces)
+
+**Technical Notes:**
+- Located in `agents/wireless.py`
+- **Thin subclass** setting `role=AgentRole.WIRELESS`
+- Uses STANDARD tier LLM for tool selection
+- **Common Tools:** aircrack-ng, wifite, kismet, bettercap, airgeddon (not exhaustive)
+- Requires wireless interface in monitor mode
+```python
+class WirelessAgent(StigmergicAgent):
+    def __init__(self, **kwargs):
+        super().__init__(role=AgentRole.WIRELESS, **kwargs)
+```
+
+---
+
+### Story 7.21: ActiveDirectoryAgent Implementation
+
+As a **developer**,
+I want **an Active Directory attack agent that uses LLM-driven tool selection**,
+So that **domain environments are tested with expert-level tool selection (FR2, FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** Story 7.1 is complete
+- **When** ActiveDirectoryAgent is spawned with domain access
+- **Then** agent uses LLM to select AD attack tools from full manifest
+- **And** agent enumerates domain structure and trusts
+- **And** agent identifies privilege escalation paths
+- **And** agent discovers kerberoastable and AS-REP roastable accounts
+- **And** agent integrates with BloodHound for path analysis
+- **And** findings are published to `findings:{target_hash}:ad`
+- **And** agent logs `decision_context` for all actions (FR62)
+- **And** integration tests verify AD testing in cyber range
+
+**Technical Notes:**
+- Located in `agents/ad.py`
+- **Thin subclass** setting `role=AgentRole.AD`
+- Uses COMPLEX tier LLM for tool selection
+- **Common Tools:** bloodhound, rubeus, kerbrute, impacket-*, crackmapexec, ldapdomaindump (not exhaustive)
+- Prompt emphasizes AD attack methodology and MITRE ATT&CK techniques
+```python
+class ActiveDirectoryAgent(StigmergicAgent):
+    def __init__(self, **kwargs):
+        super().__init__(role=AgentRole.AD, **kwargs)
+```
+
+---
+
+### Story 7.22: CredentialAgent Implementation
+
+As a **developer**,
+I want **a credential harvesting and cracking agent that uses LLM-driven tool selection**,
+So that **authentication attacks are performed with expert-level tool selection (FR2, FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** Story 7.1 is complete
+- **When** CredentialAgent receives credential-related tasks
+- **Then** agent uses LLM to select credential tools from full manifest
+- **And** agent performs intelligent password spraying (respecting lockout policies)
+- **And** agent selects appropriate cracking approach based on hash type
+- **And** agent harvests credentials from compromised systems
+- **And** findings are published to `findings:{target_hash}:credential`
+- **And** agent logs `decision_context` for all actions (FR62)
+- **And** integration tests verify credential attacks in cyber range
+
+**Technical Notes:**
+- Located in `agents/credential.py`
+- **Thin subclass** setting `role=AgentRole.CREDENTIAL`
+- Uses STANDARD tier LLM for tool selection
+- **Common Tools:** hashcat, john, hydra, mimikatz, responder, secretsdump (not exhaustive)
+- Prompt emphasizes credential attack methodology and hash identification
+```python
+class CredentialAgent(StigmergicAgent):
+    def __init__(self, **kwargs):
+        super().__init__(role=AgentRole.CREDENTIAL, **kwargs)
+```
+
+---
+
+### Story 7.23: ForensicsAgent Implementation
+
+As a **developer**,
+I want **a digital forensics agent that uses LLM-driven tool selection**,
+So that **evidence collection and analysis is performed with expert-level tool selection (FR2, FR31, FR32)**.
+
+**Acceptance Criteria:**
+
+- **Given** Story 7.1 is complete
+- **When** ForensicsAgent is spawned for evidence collection
+- **Then** agent uses LLM to select forensics tools from full manifest
+- **And** agent collects relevant artifacts from compromised systems
+- **And** agent maintains chain of custody metadata
+- **And** agent can perform memory analysis if applicable
+- **And** findings are published to `findings:{target_hash}:forensics`
+- **And** agent logs `decision_context` for all actions (FR62)
+- **And** unit tests verify forensics workflow
+
+**Technical Notes:**
+- Located in `agents/forensics.py`
+- **Thin subclass** setting `role=AgentRole.FORENSICS`
+- Uses STANDARD tier LLM for tool selection
+- **Common Tools:** volatility, autopsy, binwalk, foremost, sleuthkit (not exhaustive)
+- Lower priority than attack agents (P2)
+```python
+class ForensicsAgent(StigmergicAgent):
+    def __init__(self, **kwargs):
+        super().__init__(role=AgentRole.FORENSICS, **kwargs)
+```
+
+---
+
+### Story 7.24: Unified Agent Test Suite
+
+As a **developer**,
+I want **a unified test suite for all 8 agent types**,
+So that **agent behavior is consistently validated with one testing pattern**.
+
+**Acceptance Criteria:**
+
+- **Given** all agent types (7.3-7.5, 7.19-7.23) are complete
+- **When** test suite runs
+- **Then** all agents pass protocol compliance tests (implement AgentProtocol)
+- **And** all agents can be instantiated with role and specialty
+- **And** LLM tool selection is tested with mock LLM responses
+- **And** command generation is validated for each agent type
+- **And** parametrized tests cover all 8 roles
+- **And** integration tests verify LLM tool selection with real LLM (optional CI gate)
+
+**Technical Notes:**
+- Located in `tests/unit/agents/` and `tests/integration/agents/`
+- Use pytest parametrization for role coverage
+- Mock LLM for deterministic unit testing
+```python
+@pytest.mark.parametrize("role", list(AgentRole))
+def test_agent_protocol_compliance(role):
+    agent = create_agent(role)
+    assert isinstance(agent, AgentProtocol)
+```
+
+---
+
+### Story 7.25: Emergence Validation Update
+
+As a **developer**,
+I want **emergence validation tests updated for 8 agent types**,
+So that **NFR35-37 are properly validated with diverse agent swarms**.
+
+**Acceptance Criteria:**
+
+- **Given** all 8 agent types are implemented
+- **When** emergence comparison runs (stigmergic vs isolated)
+- **Then** swarms with 8 diverse roles are tested
+- **And** emergence score calculation considers all agent types
+- **And** causal chain tracking works across all agent types
+- **And** decision_context propagation verified for all roles
+- **And** tests verify diversity improves emergence score
+- **And** NFR35 (>20% novel chains) validated with full agent diversity
+
+**Technical Notes:**
+- Located in `tests/emergence/`
+- Compare: 3-role swarm vs 8-role swarm emergence scores
+- Hypothesis: More role diversity → higher emergence
+- Update `test_emergence_score.py` and `test_causal_chains.py`
 
 ---
 

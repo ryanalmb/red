@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from pydantic import ValidationError
 
 from cyberred.core.config import Settings, ThrottleConfig, AgentsConfig
+from cyberred.agents.roles import AgentRole
 
 @pytest.mark.unit
 class TestThrottleConfig:
@@ -60,6 +61,7 @@ class TestThrottleConfig:
         from cyberred.core.config import HOT_RELOAD_SAFE_PATHS
         assert "agents.throttle.threshold" in HOT_RELOAD_SAFE_PATHS
         assert "agents.throttle.check_interval" in HOT_RELOAD_SAFE_PATHS
+        assert "agents.throttle.max_wait" in HOT_RELOAD_SAFE_PATHS
 
 @pytest.mark.unit
 class TestAgentThrottleState:
@@ -98,9 +100,10 @@ class TestAgentThrottleState:
         import uuid
         agent = StigmergicAgent(
             agent_name="TestAgent",
-            agent_id=str(uuid.uuid4()), # Valid UUID
+            agent_id=str(uuid.uuid4()),  # Valid UUID
             engagement_id="test-engagement",
-            event_bus=mock_event_bus
+            event_bus=mock_event_bus,
+            role=AgentRole.RECON,  # Required role argument (Story 7.1.v2)
         )
         return agent
 
@@ -317,7 +320,8 @@ class TestThrottleFailOpen:
             agent_name="FailOpenTestAgent",
             agent_id=str(uuid.uuid4()),
             engagement_id="test-engagement",
-            event_bus=mock_event_bus
+            event_bus=mock_event_bus,
+            role=AgentRole.RECON,  # Required role argument (Story 7.1.v2)
         )
         return agent
 
@@ -391,7 +395,8 @@ class TestThrottleErrorPaths:
             agent_name="ErrorPathTestAgent",
             agent_id=str(uuid.uuid4()),
             engagement_id="test-engagement",
-            event_bus=mock_event_bus
+            event_bus=mock_event_bus,
+            role=AgentRole.RECON,  # Required role argument (Story 7.1.v2)
         )
         return agent
 

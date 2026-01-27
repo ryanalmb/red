@@ -652,6 +652,7 @@ HOT_RELOAD_SAFE_PATHS: frozenset[str] = frozenset({
     # Agents Throttling (Story 7.2)
     "agents.throttle.threshold",
     "agents.throttle.check_interval",
+    "agents.throttle.max_wait",
 })
 
 

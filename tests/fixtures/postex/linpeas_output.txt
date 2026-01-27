@@ -1,0 +1,61 @@
+=== linpeas v3.1.2 ===
+
+====================================( Basic System Information )====================================
+
+Hostname: webserver01
+Operative System: Ubuntu 22.04.1 LTS
+Kernel: 5.15.0-56-generic
+
+====================================( Users & Groups )====================================
+
+Current User: www-data
+Groups: www-data
+
+====================================( Interesting Files )====================================
+
+/home/admin/.ssh/id_rsa (readable)
+/etc/shadow (readable by www-data!!)
+/var/backups/mysql_backup.sql (contains credentials)
+
+====================================( SUID Files )====================================
+
+-rwsr-xr-x 1 root root 476312 /usr/bin/find
+-rwsr-xr-x 1 root root 13456 /opt/custom_binary
+
+====================================( Cronjobs )====================================
+
+CRON: /opt/scripts/backup.sh (writable!)
+Runs as: root
+Schedule: */5 * * * *
+
+====================================( Capabilities )====================================
+
+/usr/bin/python3.10 = cap_setuid+ep
+
+====================================( Sudo Privileges )====================================
+
+User www-data may run the following commands:
+    (ALL) NOPASSWD: /usr/bin/vim
+
+====================================( Listening Ports )====================================
+
+127.0.0.1:3306   mysql
+127.0.0.1:6379   redis
+0.0.0.0:22       sshd
+0.0.0.0:80       apache2
+0.0.0.0:443      apache2
+
+====================================( Docker/Container )====================================
+
+Not in a container
+
+====================================( Network Interfaces )====================================
+
+eth0: 10.0.0.50/24 (internal)
+eth1: 192.168.100.10/24 (dmz)
+
+====================================( Potential Lateral Movement Targets )====================================
+
+10.0.0.51 - database server (mysql port open)
+10.0.0.52 - backup server (smb shares available)
+192.168.100.20 - domain controller (ldap, kerberos)

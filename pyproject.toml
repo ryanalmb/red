@@ -40,6 +40,8 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     # Story 6.5: MITRE ATT&CK parsing
     "stix2>=3.0.0",
+    # Story 7.10/7.11: Prometheus metrics (OBS11/OBS12)
+    "prometheus_client>=0.20.0",
 ]
 
 [project.scripts]
@@ -98,6 +100,7 @@ markers = [
     "e2e: End-to-end tests (full engagement flows)",
     "chaos: Chaos engineering tests (resilience)",
     "load: Load and stress tests (scale validation)",
+    "slow: Slow tests (>5 minutes execution time)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -141,3 +144,6 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true

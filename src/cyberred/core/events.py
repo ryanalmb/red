@@ -101,10 +101,26 @@ class EventBus:
         self._redis = redis_client
         self._last_publish_latency_ms: float = 0.0
         self._log = log.bind(component="event_bus")
+        self._pubsub_enabled = True
 
     # =========================================================================
     # Core Publish/Subscribe (Tasks 1-2)
     # =========================================================================
+
+    def disable_pubsub(self) -> None:
+        """Disable pub/sub for isolated emergence testing."""
+        self._pubsub_enabled = False
+        self._log.info("pubsub_disabled")
+
+    def enable_pubsub(self) -> None:
+        """Enable pub/sub for stigmergic operation."""
+        self._pubsub_enabled = True
+        self._log.info("pubsub_enabled")
+
+    @property
+    def is_pubsub_enabled(self) -> bool:
+        """Check if pub/sub is currently enabled."""
+        return self._pubsub_enabled
 
     async def publish(
         self,
@@ -119,12 +135,16 @@ class EventBus:
                 auto-serialized to JSON.
 
         Returns:
-            Number of subscribers that received the message (0 if degraded).
+            Number of subscribers that received the message (0 if degraded/disabled).
 
         Raises:
             ChannelNameError: If channel doesn't match allowed patterns.
             ValueError: If message type is not str, dict, or list.
         """
+        if not self._pubsub_enabled:
+            self._log.debug("publish_skipped_disabled", channel=channel)
+            return 0
+
         # Task 2: Validate channel name
         self._validate_channel(channel)
 

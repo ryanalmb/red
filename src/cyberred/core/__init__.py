@@ -16,11 +16,15 @@ from cyberred.core.exceptions import (
     LLMRateLimitExceeded,
     LLMTimeoutError,
     LLMResponseError,
+    # Tool Selection Exceptions (Story 7.1.v2)
+    ToolSelectionError,
 )
 from cyberred.core.models import (
     Finding,
     AgentAction,
     ToolResult,
+    ToolSelectionContext,
+    ToolSelection,
 )
 from cyberred.core.config import (
     get_settings,
@@ -54,6 +58,14 @@ from cyberred.core.keystore import (
 from cyberred.core.ca_store import CAStore
 from cyberred.core.killswitch import KillSwitch
 from cyberred.core.events import EventBus, ChannelNameError
+from cyberred.core.sharding import (
+    ShardedTopic,
+    ShardedEventBus,
+    ShardAggregator,
+    AggregatedBatch,
+    DEFAULT_SHARD_COUNT,
+    AGGREGATOR_BATCH_MS,
+)
 
 __all__ = [
     # Exceptions
@@ -69,10 +81,14 @@ __all__ = [
     "LLMRateLimitExceeded",
     "LLMTimeoutError",
     "LLMResponseError",
+    # Tool Selection Exceptions (Story 7.1.v2)
+    "ToolSelectionError",
     # Data Models
     "Finding",
     "AgentAction",
     "ToolResult",
+    "ToolSelectionContext",
+    "ToolSelection",
     # Configuration
     "get_settings",
     "reset_settings",
@@ -106,4 +122,11 @@ __all__ = [
     # Event Bus (Pub/Sub)
     "EventBus",
     "ChannelNameError",
+    # Sharding (Story 7.13)
+    "ShardedTopic",
+    "ShardedEventBus",
+    "ShardAggregator",
+    "AggregatedBatch",
+    "DEFAULT_SHARD_COUNT",
+    "AGGREGATOR_BATCH_MS",
 ]

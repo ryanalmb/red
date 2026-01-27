@@ -405,3 +405,74 @@ class TestCheckpointCleanup:
         # Should only find the valid one
         assert len(checkpoints) == 1
         assert checkpoints[0][0] == "valid"
+
+
+class TestCheckpointManagerAgentState:
+    """Tests for agent state save/load methods (Story 7.12)."""
+
+    @pytest.fixture
+    def manager(self, tmp_path):
+        """Create a CheckpointManager with temp path."""
+        return CheckpointManager(base_path=tmp_path)
+
+    @pytest.fixture
+    def sample_agent_state(self):
+        """Create a sample AgentState."""
+        return AgentState(
+            agent_id="agent-test-1",
+            agent_type="recon",
+            state={"status": "active", "specialty": "network"},
+            last_action_id="action-123",
+            decision_context="ctx-1,ctx-2",
+        )
+
+    @pytest.mark.asyncio
+    async def test_save_agent_state_creates_checkpoint(self, manager, sample_agent_state):
+        """Test save_agent_state creates checkpoint file if not exists."""
+        await manager.save_agent_state("eng-1", sample_agent_state)
+
+        checkpoint_path = manager._get_checkpoint_path("eng-1")
+        assert checkpoint_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_save_agent_state_can_be_loaded(self, manager, sample_agent_state):
+        """Test saved agent state can be loaded."""
+        await manager.save_agent_state("eng-1", sample_agent_state)
+
+        loaded = await manager.load_agent_state("eng-1", "agent-test-1")
+
+        assert loaded is not None
+        assert loaded.agent_id == sample_agent_state.agent_id
+        assert loaded.agent_type == sample_agent_state.agent_type
+        assert loaded.state == sample_agent_state.state
+        assert loaded.last_action_id == sample_agent_state.last_action_id
+
+    @pytest.mark.asyncio
+    async def test_load_agent_state_returns_none_for_missing(self, manager):
+        """Test load_agent_state returns None for missing agent."""
+        result = await manager.load_agent_state("nonexistent-eng", "nonexistent-agent")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_save_agent_state_updates_existing(self, manager, sample_agent_state):
+        """Test save_agent_state updates existing state."""
+        await manager.save_agent_state("eng-1", sample_agent_state)
+
+        # Update the state
+        sample_agent_state.state["status"] = "waiting"
+        sample_agent_state.last_action_id = "action-456"
+        await manager.save_agent_state("eng-1", sample_agent_state)
+
+        loaded = await manager.load_agent_state("eng-1", "agent-test-1")
+        assert loaded.state["status"] == "waiting"
+        assert loaded.last_action_id == "action-456"
+
+    @pytest.mark.asyncio
+    async def test_load_agent_state_parses_decision_context(self, manager, sample_agent_state):
+        """Test decision_context is properly parsed on load."""
+        await manager.save_agent_state("eng-1", sample_agent_state)
+
+        loaded = await manager.load_agent_state("eng-1", "agent-test-1")
+
+        # decision_context should be loaded (stored as JSON)
+        assert loaded.decision_context is not None

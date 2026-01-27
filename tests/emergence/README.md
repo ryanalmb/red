@@ -11,6 +11,7 @@ Emergence tests validate **stigmergic coordination behavior** between agents. Th
 | `test_emergence_score.py` | Emergence score >20% validation | NFR35 |
 | `test_causal_chains.py` | 3+ hop causal chain validation | NFR36 |
 | `test_decision_context.py` | 100% decision_context population | NFR37 |
+| `test_emergence_gate.py` | **CI HARD GATE** - Combined NFR35-37 validation | NFR35, NFR36, NFR37 |
 
 ## Running Emergence Tests
 

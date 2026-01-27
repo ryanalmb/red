@@ -4,7 +4,7 @@ Provides standardized hash calculation for files and byte data.
 Used for checkpoint integrity verification and scope file hashing.
 
 Usage:
-    from cyberred.core.hashing import calculate_file_hash, calculate_bytes_hash
+    from cyberred.core.hashing import calculate_file_hash, calculate_bytes_hash, compute_hmac_signature
     
     # Hash a file (default SHA-256)
     file_hash = calculate_file_hash(Path("checkpoint.sqlite"))
@@ -14,11 +14,16 @@ Usage:
     
     # Use different algorithm
     md5_hash = calculate_bytes_hash(b"data", algorithm="md5")
+    
+    # Compute HMAC signature for findings
+    signature = compute_hmac_signature(finding_data, secret_key)
 """
 
 import hashlib
+import hmac
+import json
 from pathlib import Path
-from typing import Union
+from typing import Union, Dict, Any
 
 
 # Supported hash algorithms
@@ -102,3 +107,32 @@ def calculate_file_hash(
             hasher.update(chunk)
     
     return hasher.hexdigest()
+
+
+def compute_hmac_signature(
+    data: Dict[str, Any],
+    secret_key: bytes,
+    algorithm: str = "sha256",
+) -> str:
+    """Compute HMAC-SHA256 signature for finding data.
+    
+    Used to sign Finding objects for integrity verification,
+    mitigating Agent-in-the-Middle attacks per architecture spec.
+    
+    Args:
+        data: Dictionary to sign (typically Finding fields).
+        secret_key: Secret key for HMAC computation.
+        algorithm: Hash algorithm for HMAC. Default is "sha256".
+    
+    Returns:
+        Hexadecimal HMAC signature string.
+    
+    Examples:
+        >>> data = {"id": "123", "type": "exploit", "target": "10.0.0.1"}
+        >>> compute_hmac_signature(data, b"secret-key")
+        'a1b2c3...'
+    """
+    # Serialize data deterministically (sorted keys)
+    message = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    
+    return hmac.new(secret_key, message, "sha256").hexdigest()

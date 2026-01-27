@@ -6,6 +6,7 @@ import time
 from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 from cyberred.core.config import ThrottleConfig
 from cyberred.agents.base import StigmergicAgent
+from cyberred.agents.roles import AgentRole
 from cyberred.core.exceptions import ThrottleTimeoutError
 
 @pytest.mark.integration
@@ -57,7 +58,13 @@ async def test_agent_throttling_flow():
     with patch("cyberred.agents.base.get_settings", return_value=mock_settings), \
          patch("cyberred.llm.gateway.get_gateway", return_value=mock_gateway):
          
-        agent = StigmergicAgent("Integrator", agent_id, "eng-1", mock_event_bus)
+        agent = StigmergicAgent(
+            agent_name="Integrator",
+            agent_id=agent_id,
+            engagement_id="eng-1",
+            event_bus=mock_event_bus,
+            role=AgentRole.RECON,  # Required role argument (Story 7.1.v2)
+        )
         
         # Capture logs to verify state changes
         # We can't easily capture structlog in integration without setup, so we trust outcomes.
@@ -134,7 +141,13 @@ async def test_agent_throttling_timeout_integration():
          # So we must verify real timeout OR patch time.
          # For integration, patching time is acceptable to avoid slow tests.
          
-        agent = StigmergicAgent("Integrator", agent_id, "eng-1", mock_event_bus)
+        agent = StigmergicAgent(
+            agent_name="Integrator",
+            agent_id=agent_id,
+            engagement_id="eng-1",
+            event_bus=mock_event_bus,
+            role=AgentRole.RECON,  # Required role argument (Story 7.1.v2)
+        )
         
         with patch("time.monotonic", side_effect=[0, 0, 2]) as mock_time:
              # 0: start_wait creation

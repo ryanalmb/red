@@ -1,0 +1,40 @@
+[
+    {
+        "source": "nvd",
+        "cve_id": "CVE-2021-4034",
+        "priority": 1,
+        "description": "PwnKit - Local privilege escalation in polkit pkexec",
+        "exploit_available": true,
+        "exploit_path": "exploit/linux/local/cve_2021_4034_pwnkit",
+        "metadata": {
+            "cvss_score": 7.8,
+            "affected_versions": "polkit < 0.120",
+            "technique": "privilege_escalation"
+        }
+    },
+    {
+        "source": "cisa_kev",
+        "cve_id": "CVE-2022-0847",
+        "priority": 0,
+        "description": "Dirty Pipe - Linux kernel arbitrary file overwrite",
+        "exploit_available": true,
+        "exploit_path": "exploit/linux/local/cve_2022_0847_dirtypipe",
+        "metadata": {
+            "cvss_score": 7.8,
+            "affected_versions": "Linux kernel 5.8+",
+            "technique": "privilege_escalation",
+            "in_kev": true
+        }
+    },
+    {
+        "source": "metasploit",
+        "cve_id": null,
+        "priority": 3,
+        "description": "Linux Enumeration and Privilege Escalation",
+        "exploit_available": true,
+        "exploit_path": "post/linux/gather/enum_system",
+        "metadata": {
+            "technique": "enumeration"
+        }
+    }
+]

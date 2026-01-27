@@ -1,0 +1,213 @@
+"""WebAppAgent - LLM-driven web application testing agent (Story 7.19)."""
+import asyncio
+import hashlib
+import uuid
+from dataclasses import asdict
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from cyberred.agents.base import StigmergicAgent
+from cyberred.agents.roles import AgentRole
+from cyberred.core.config import get_settings
+from cyberred.core.events import EventBus
+from cyberred.core.hashing import compute_hmac_signature
+from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
+from cyberred.tools.kali_executor import kali_execute
+from cyberred.tools.scope import ScopeConfig, ScopeValidator
+
+if TYPE_CHECKING:
+    from cyberred.llm.gateway import LLMGateway
+    from cyberred.tools.manifest import ManifestLoader
+
+log = structlog.get_logger().bind(component="webapp_agent")
+DEFAULT_HMAC_KEY = b"cyber-red-webapp-agent-key-v1"
+
+
+class WebAppAgent(StigmergicAgent):
+    """LLM-driven web application testing agent - thin subclass setting role=WEBAPP."""
+
+    DEFAULT_MAX_ITERATIONS: int = 25
+    DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 30
+
+    def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
+                 specialty: str = "general", llm_gateway: "LLMGateway | None" = None,
+                 manifest_loader: "ManifestLoader | None" = None, max_iterations: int | None = None,
+                 phase_complete_threshold: int | None = None,
+                 hmac_key: bytes = DEFAULT_HMAC_KEY, **kwargs: Any) -> None:
+        super().__init__(agent_name="WebAppAgent", agent_id=agent_id, engagement_id=engagement_id,
+                         event_bus=event_bus, role=AgentRole.WEBAPP, specialty=specialty,
+                         llm_gateway=llm_gateway, manifest_loader=manifest_loader, **kwargs)
+        self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
+        self._hmac_key = hmac_key
+        self.max_iterations = max_iterations or self.DEFAULT_MAX_ITERATIONS
+        self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
+        self.current_strategy, self._finding_buffer = "standard", []
+        self._stop_event, self._waf_detected, self._waf_type = asyncio.Event(), False, None
+
+    async def execute_webapp_scan(
+        self, target: str, target_info: dict[str, Any]
+    ) -> tuple[list[Finding], list[AgentAction]]:
+        """Execute LLM-driven web application scan against target."""
+        self._validate_target_scope(target)
+        if self._stop_event.is_set():
+            return [], []
+
+        await self._detect_waf(target)
+
+        all_findings: list[Finding] = []
+        all_actions: list[AgentAction] = []
+        has_credentials = bool(target_info.get("credentials"))
+
+        context = ToolSelectionContext(
+            objective="Test web application for OWASP Top 10 vulnerabilities",
+            target_info={"target": target, "phase": "webapp", "strategy": self.current_strategy,
+                         "waf_detected": self._waf_detected, "waf_type": self._waf_type, **target_info},
+            available_tools=[],
+            phase="webapp",
+            constraints=self._get_constraints(),
+            previous_results=[],
+        )
+
+        for _ in range(self.max_iterations):
+            if self._stop_event.is_set() or await self._phase_complete(context):
+                break
+
+            decision_context = self.get_decision_context().copy() or [f"initial_spawn:{self.agent_id}"]
+            if self._waf_detected and self._waf_type:
+                decision_context.append(f"waf:{self._waf_type}")
+            if has_credentials:
+                decision_context.append("auth:credentials_provided")
+
+            action_id = str(uuid.uuid4())
+            result_finding_id: str | None = None
+            tool_name = "unknown"
+
+            try:
+                selection = await self.select_tool(context)
+                tool_name = selection.tool_name
+                self._log.info("executing_tool", tool=tool_name, command=selection.command[:80])
+                result = await kali_execute(selection.command)
+
+                if result.success and result.stdout:
+                    finding = self._create_finding(target, selection, result)
+                    all_findings.append(finding)
+                    await self.on_finding(finding)
+                    result_finding_id = finding.id
+
+                context = ToolSelectionContext(
+                    objective=context.objective,
+                    target_info=context.target_info,
+                    available_tools=[],
+                    phase=context.phase,
+                    constraints=context.constraints,
+                    previous_results=[asdict(f) for f in all_findings],
+                )
+            except Exception as e:
+                self._log.error("webapp_iteration_error", error=str(e))
+
+            all_actions.append(AgentAction(
+                id=action_id,
+                agent_id=str(self.agent_id),
+                action_type=f"webapp:{tool_name}",
+                target=target,
+                timestamp=datetime.now(UTC).isoformat(),
+                decision_context=decision_context,
+                result_finding_id=result_finding_id,
+            ))
+
+        return all_findings, all_actions
+
+    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding:
+        finding_data = {
+            "id": str(uuid.uuid4()), "target": target, "type": "webapp",
+            "tool": selection.tool_name, "severity": "medium",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "agent_id": str(self.agent_id),
+            "topic": f"findings:{self._hash_target(target)}:webapp",
+            "evidence": result.stdout[:2000] if result.stdout else "",
+        }
+        finding_data["signature"] = compute_hmac_signature(
+            {k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key
+        )
+        return Finding(**finding_data)
+
+    async def _detect_waf(self, target: str) -> None:
+        """Detect WAF presence via wafw00f."""
+        try:
+            result = await kali_execute(f"wafw00f {target}")
+            if result.success and result.stdout:
+                output = result.stdout.lower()
+                if "detected" in output and "no waf" not in output:
+                    self._waf_detected = True
+                    for waf in ["cloudflare", "akamai", "aws", "imperva", "f5", "mod_security"]:
+                        if waf in output:
+                            self._waf_type = waf
+                            break
+                    if self._waf_type is None:
+                        self._waf_type = "unknown"
+        except Exception as e:
+            self._log.warning("waf_detection_failed", error=str(e))
+            self._waf_detected = False
+
+    async def _phase_complete(self, context: ToolSelectionContext) -> bool:
+        return len(context.previous_results) >= self.phase_complete_threshold
+
+    def _get_constraints(self) -> list[str]:
+        """Get operational constraints based on strategy and WAF detection."""
+        constraints = []
+        if self.current_strategy == "stealth":
+            constraints.extend(["low_rate", "avoid_detection", "passive_preferred"])
+        elif self.current_strategy == "aggressive":
+            constraints.extend(["high_throughput", "comprehensive"])
+        if self._waf_detected:
+            constraints.append(f"waf_evasion:{self._waf_type or 'generic'}")
+        return constraints
+
+    def _validate_target_scope(self, target: str) -> None:
+        self._get_scope_validator().validate(target=target)
+
+    def _get_scope_validator(self) -> ScopeValidator:
+        settings = get_settings()
+        if settings.engagement.scope_path:
+            try:
+                return ScopeValidator.from_file(settings.engagement.scope_path)
+            except Exception:
+                pass
+        return ScopeValidator(ScopeConfig())
+
+    def _hash_target(self, target: str) -> str:
+        return hashlib.md5(target.encode()).hexdigest()[:8]
+
+    async def on_finding(self, finding: Finding) -> None:
+        channel = f"findings:{self._hash_target(finding.target)}:webapp"
+        message = asdict(finding) if hasattr(finding, "__dataclass_fields__") else finding.model_dump()
+        if self._finding_buffer:
+            await self._flush_buffer()
+        try:
+            await self.event_bus.publish(channel, message)
+        except Exception:
+            self._finding_buffer.append({"channel": channel, "message": message})
+
+    async def _flush_buffer(self) -> None:
+        remaining = []
+        for item in self._finding_buffer:
+            try:
+                await self.event_bus.publish(item["channel"], item["message"])
+            except Exception:
+                remaining.append(item)
+        self._finding_buffer = remaining
+
+    async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
+        await super().on_signal(channel, data)
+        if "strategies" in channel:
+            strategy = data.get("strategy")
+            if strategy in ("stealth", "standard", "aggressive"):
+                self._log.info("strategy_updated", old=self.current_strategy, new=strategy)
+                self.current_strategy = strategy
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._finding_buffer:
+            await self._flush_buffer()

@@ -1,0 +1,12 @@
+{
+    "access_type": "credentials",
+    "credentials": {
+        "username": "admin",
+        "password": "P@ssw0rd123!",
+        "domain": "CORP.LOCAL"
+    },
+    "source_exploit": "credential_dump",
+    "source_agent": "exploit-002",
+    "privilege_level": "admin",
+    "os_type": "windows"
+}
