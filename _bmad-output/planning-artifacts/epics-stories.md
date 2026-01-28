@@ -242,7 +242,7 @@ This document provides the complete epic and story breakdown for Cyber-Red v2.0,
 | FR5 | Epic 8 | Swarm routing |
 | FR6 | Epic 7 | Emergent attack strategies |
 | FR7-FR9 | Epic 9 | War Room core visualization |
-| FR10 | Epic 11 | Director Ensemble display |
+| FR10 | Epic 8 + 11 | Director Ensemble display (8.11 widget + 11.x integration) |
 | FR11 | Epic 9 | Hive Matrix |
 | FR12 | Epic 11 | Drop box status panel |
 | FR13-FR16 | Epic 10 | Authorization prompts/responses |
@@ -439,11 +439,11 @@ This document provides the complete epic and story breakdown for Cyber-Red v2.0,
 ### Epic 8: Director Ensemble & Strategy Synthesis
 **User Outcome:** Three LLMs (DeepSeek, Kimi K2, MiniMax) synthesize attack strategies with cognitive diversity and automatic re-planning.
 
-**FRs:** FR1, FR3, FR5
+**FRs:** FR1, FR3, FR5, FR10 (shared with Epic 11)
 **NFRs:** NFR29
 
 **Components:**
-- `agents/director.py` — DirectorEnsemble (extends Swarms MixtureOfAgents)
+- `llm/ensemble.py` — DirectorEnsemble + StrategySynthesizer (MixtureOfAgents-inspired pattern, custom impl)
 - `llm/ensemble.py` — 3-model synthesis (no voting, aggregation only)
 - `orchestration/aggregator.py` — Batch findings for Director re-plan
 - `orchestration/replan_triggers.py` — Timer (5min), critical finding, phase complete, objective met, operator override
@@ -456,6 +456,13 @@ This document provides the complete epic and story breakdown for Cyber-Red v2.0,
 
 **FRs:** FR7-FR9, FR11, FR47
 **NFRs:** NFR4
+
+**⚠️ CRITICAL: All Epic 9 stories MUST reference the UX Design Specification (`_bmad-output/planning-artifacts/ux-design.md`) for:**
+- Component specs (HiveMatrix, StrategyStream, HeartbeatIndicator)
+- Layout foundation (Three-pane War Room, responsive breakpoints)
+- Color tokens and TCSS theming
+- Keyboard/mouse dual-path input patterns
+- Accessibility requirements (WCAG 2.1 Level AA)
 
 **Components:**
 - `tui/app.py` — Main TUI application (Textual)
@@ -3527,11 +3534,9 @@ So that **strategic decisions benefit from multi-perspective analysis (FR3)**.
 
 **Technical Notes:**
 - Located in `llm/ensemble.py`
-- Models via NVIDIA NIM: `deepseek-ai/deepseek-v3_2`, `moonshot-ai/kimi-k2`, `minimaxai/minimax-m2`
-- **Framework:** [kyegomez/swarms](https://github.com/kyegomez/swarms) MixtureOfAgents pattern
-```python
-from swarms import MixtureOfAgents  # kyegomez/swarms – NOT OpenAI Swarm!
-```
+- Models via NVIDIA NIM: `deepseek-ai/deepseek-v3.2`, `moonshotai/kimi-k2-instruct`, `minimaxai/minimax-m2`
+- **Pattern:** Inspired by [kyegomez/swarms](https://github.com/kyegomez/swarms) MixtureOfAgents pattern
+- **Implementation:** Custom DirectorEnsemble class (not using swarms library directly) for tighter integration with LLMGateway retry/circuit-breaker logic
 
 ---
 
@@ -3806,6 +3811,7 @@ So that **the War Room can be built with modern async terminal UI (FR47)**.
 - Located in `tui/app.py`
 - Textual v0.40.0+ required
 - Dark mode "Command & Control" aesthetic per UX spec
+- **UX Design Reference:** `ux-design.md` lines 189-201 (Platform Strategy, Framework Choice), lines 320-330 (Color System)
 
 ---
 
@@ -3830,6 +3836,7 @@ So that **I can see targets, agents, and strategy simultaneously**.
 - Targets: scope tree, discovered hosts
 - Hive Matrix: agent status grid
 - Strategy Stream: Director output + findings
+- **UX Design Reference:** `ux-design.md` lines 336-345 (Layout Foundation), lines 383-396 (Design Direction)
 
 ---
 
@@ -3853,6 +3860,7 @@ So that **UI remains responsive at full scale (FR7, NFR4)**.
 - Located in `tui/widgets/agent_list.py`
 - Per architecture: Textual spatial_map for constant-time visibility
 - Display: agent_id, status, target, last_action
+- **UX Design Reference:** `ux-design.md` lines 508-509 (HiveMatrix component spec), lines 51-52 (10K visualization challenge)
 
 ---
 
@@ -3877,6 +3885,7 @@ So that **I notice important agents without scrolling (FR8)**.
 - Attention states: AUTH_PENDING, ERROR, CRITICAL_FINDING, STALLED
 - Per UX: "Attention on Demand" principle
 - Re-sort on state change, not continuous
+- **UX Design Reference:** `ux-design.md` lines 65-66 (Anomaly Bubbling), lines 508-509 (HiveMatrix priority queue)
 
 ---
 
@@ -3901,6 +3910,7 @@ So that **I see discoveries as they happen (FR9)**.
 - Located in `tui/widgets/finding_stream.py`
 - WebSocket push from daemon
 - Display: timestamp, severity, type, target, summary
+- **UX Design Reference:** `ux-design.md` lines 346-354 (Strategy Stream Panel), lines 509 (StrategyStream component)
 
 ---
 
@@ -3925,6 +3935,7 @@ So that **I can see swarm coordination at a glance (FR11)**.
 - Located in `tui/widgets/hive_matrix.py`
 - Inspired by ant colony visualization
 - 10K agents = 100x100 grid or similar density view
+- **UX Design Reference:** `ux-design.md` lines 508-509 (HiveMatrix full spec), lines 256 (Agent Status colors)
 
 ---
 
@@ -3955,6 +3966,7 @@ So that **TUI is a client to the background daemon**.
 - Protocol: JSON over Unix socket
 - Async connection with Textual's event loop
 - Stale detection: heartbeat-based or activity timestamp
+- **UX Design Reference:** `ux-design.md` lines 54 (Daemon Attach/Detach), lines 104 (Attach seamless restore), lines 583-584 (Stale State warning)
 
 ---
 
@@ -3977,6 +3989,7 @@ So that **I can quickly connect to running engagements (NFR32)**.
 - State sync: incremental, not full dump
 - Priority: agent count, findings count, then details
 - Per NFR32: <2s from command to operational TUI
+- **UX Design Reference:** `ux-design.md` lines 104 (Attach immediate state sync), lines 113-114 (Catch-up Mode)
 
 ---
 
@@ -4000,6 +4013,7 @@ So that **I can disconnect and reattach later (FR59)**.
 - Detach = graceful disconnect, not kill
 - SSH disconnect behaves same as Ctrl+D
 - Per FR59: detach without stopping engagement
+- **UX Design Reference:** `ux-design.md` lines 54 (Detach pattern), lines 96-97 (Daemon continues)
 
 ---
 
@@ -4023,6 +4037,7 @@ So that **I can monitor C2 link health (FR12)**.
 - Located in `tui/screens/dropbox.py`
 - Per UX: HeartbeatIndicator widget
 - Heartbeat interval: 5s per architecture
+- **UX Design Reference:** `ux-design.md` lines 360 (Heartbeat latency granularity), lines 511 (HeartbeatIndicator component)
 
 ---
 
@@ -4046,6 +4061,7 @@ So that **I can switch views without mouse (per UX design)**.
 - Per UX: F-key navigation is primary
 - Dual-path: keyboard + mouse both work
 - Kill switch (F10) requires confirmation
+- **UX Design Reference:** `ux-design.md` lines 185 (F-key navigation), lines 386-387 (F-key bar), lines 588-597 (Keyboard Consistency)
 
 ---
 
@@ -4055,6 +4071,19 @@ So that **I can switch views without mouse (per UX design)**.
 
 **FRs Covered:** FR13, FR14, FR15, FR16, FR17, FR18, FR19, FR22, FR23, FR63
 **NFRs Covered:** NFR2, NFR5
+
+**⚠️ CRITICAL: All Epic 10 stories MUST reference the UX Design Specification (`_bmad-output/planning-artifacts/ux-design.md`) for:**
+- Authorization Flow patterns (Y/N/M/S, swarm state snapshot, auth batching)
+- Kill Switch accessibility (ESC key, sticky button, <1s response, multi-path)
+- Modal overlay patterns (focus trap, interruptive behavior)
+- Situational alerts (interruptive modal, Continue/Stop/Notes)
+- Keyboard consistency (F5 pause, F6 resume, ESC kill)
+
+**Epic 9 Dependencies (Integration Points):**
+- 9-4 Anomaly Bubbling: Auth-pending agents bubble to top
+- 9-6 Hive Matrix: Filter bar support for `status:pending-auth`
+- 9-3 Virtualized List: Mass state update on kill switch
+- 9-1 StatusBarWidget: Engagement state display (RUNNING/PAUSED/STOPPED)
 
 ---
 
@@ -4078,6 +4107,8 @@ So that **I notice and respond to lateral movement and scope expansion requests 
 - Located in `tui/screens/authorization.py`
 - Per UX: Authorization Flow with Y/N/M/S quick responses
 - WebSocket push for real-time delivery
+- **UX Design Reference:** `ux-design.md` lines 302-306 (Authorization Flow Y/N/M/S), lines 510 (AuthorizationModal with swarm state snapshot, auth batching, timeout), lines 562-563 (Modal overlay focus trap), lines 604 (Blink animation for pending auth)
+- **Epic 9 Integration:** Agent requesting auth should bubble to top via 9-4 Anomaly Bubbling
 
 ---
 
@@ -4104,6 +4135,7 @@ So that **I control lateral movement with precision (FR15)**.
 **Technical Notes:**
 - Constraints: max_targets, time_window, specific_hosts_only
 - Audit: `{timestamp, operator, decision, constraints, context}`
+- **UX Design Reference:** `ux-design.md` lines 305 (Y/N/M/S options), lines 569-573 (Input Patterns for authorization), lines 510 (3s cooldown on consecutive approvals to prevent auth fatigue)
 
 ---
 
@@ -4128,6 +4160,8 @@ So that **nothing auto-approves or auto-denies without my decision (FR16)**.
 - Per FR16: "no auto-approve/deny on timeout"
 - Queue stored in daemon, synced to TUI on attach
 - After 24h pending: engagement auto-pauses (FR64)
+- **UX Design Reference:** `ux-design.md` lines 387 ([AUTH: n] pending count in header), lines 510 (configurable auth timeout default 30min auto-deny), lines 334 (Header Row 2 status display)
+- **Epic 9 Integration:** Pending count displayed via 9-1 StatusBarWidget; filter agents by `status:pending-auth` in 9-6 Hive Matrix
 
 ---
 
@@ -4153,6 +4187,8 @@ So that **I can halt all operations instantly (FR17, FR18, NFR2)**.
 - F10 = Kill Switch per UX
 - Confirmation prevents accidental trigger
 - Per NFR2: <1s halt all operations
+- **UX Design Reference:** `ux-design.md` lines 59 (Kill Switch <1s, always visible), lines 101 (ESC key + sticky button), lines 208 (Kill Switch keyboard/mouse), lines 517 (StickyKillButton component), lines 590 (Multi-path: ESC/Ctrl+C/k/Ctrl+\ for tmux compatibility), lines 543 (Destructive action style: $danger bg)
+- **Epic 9 Integration:** Kill triggers mass state update in 9-3 Virtualized List; StatusBarWidget (9-1) shows STOPPED state
 
 ---
 
@@ -4181,7 +4217,8 @@ So that **I can expand or contract scope during engagement (FR19)**.
 - Located in `tui/screens/scope_editor.py`
 - Live reload: new rules apply to next agent action
 - Validation: CIDR, hostname, port range formats
-- Per UX Design lines 438-439: countdown + undo window for safety
+- **UX Design Reference:** `ux-design.md` lines 437-438 (Live scope modification with confirmation modal, target preview, 5s countdown for production ranges, 10s undo window), lines 573 (Confirmation input pattern: explicit choice required)
+- **Epic 9 Integration:** Scope changes affect Finding Stream (9-5) in/out-of-scope indicators; out-of-scope agents pause and bubble via 9-4 Anomaly Bubbling
 
 ---
 
@@ -4206,6 +4243,8 @@ So that **I'm informed of significant events (FR22)**.
 - Located in `tui/widgets/situational_alert.py`
 - Triggers: new subnet, domain controller, honeypot indicators
 - Per FR22/23: interruptive modal alerts
+- **UX Design Reference:** `ux-design.md` lines 56 (Authorization Flow WebSocket push, interrupt without losing context), lines 502 (Modal base for overlay), lines 549-555 (Feedback patterns: Warning persists, Error persists), lines 584 (Target Unreachable: auto-pause swarm + alert)
+- **Epic 9 Integration:** Discovering agent bubbles to top via 9-4 Anomaly Bubbling with `situational_alert` priority trigger
 
 ---
 
@@ -4230,6 +4269,8 @@ So that **my decisions are documented (FR23)**.
 **Technical Notes:**
 - Audit format: `{timestamp, alert_type, operator_response, notes}`
 - Stop = engagement.pause(), not kill
+- **UX Design Reference:** `ux-design.md` lines 549-555 (Feedback patterns for responses), lines 575-585 (State patterns: Loading, Empty, Error, Disconnected, Stale State)
+- **Epic 9 Integration:** Alert response updates agent state visible in 9-6 Hive Matrix
 
 ---
 
@@ -4254,6 +4295,7 @@ So that **engagements can continue when I'm unavailable (FR63)**.
 - Config: `authorization.deputy_operator: "deputy@example.com"`
 - Config: `authorization.escalation_timeout: 30m`
 - Per FR63: "Deputy Operator role for authorization backup"
+- **UX Design Reference:** `ux-design.md` lines 510 (configurable auth timeout), lines 334 (Header shows which operator is primary)
 
 ---
 
@@ -4280,10 +4322,10 @@ So that **I can respond to critical authorizations when TUI is disconnected**.
 
 **Technical Notes:**
 - Located in `core/notifications.py`
-- Per UX Design line 519: ExternalNotifier widget
 - Webhook: HTTP POST with JSON payload, configurable URL
 - Email: SMTP configuration in `config.yaml`
 - Config: `notifications.webhook_url`, `notifications.email`
+- **UX Design Reference:** `ux-design.md` lines 518 (ExternalNotifier component for webhook/email alerts when disconnected), lines 555 (Audio Alert: terminal bell for critical auth requests, configurable)
 
 ---
 

@@ -35,5 +35,19 @@ class EventBus:
 
         return asyncio.create_task(reader())
 
+    async def audit(self, event: dict):
+        """Log an audit event to the audit channel.
+        
+        Audit events are important compliance/security events that need
+        to be recorded for later review. They are published to a dedicated
+        audit channel.
+        
+        Args:
+            event: The audit event data as a dictionary.
+        """
+        audit_channel = "audit:events"
+        await self.publish(audit_channel, event)
+        self.logger.debug(f"Audit event: {event.get('type', 'unknown')}")
+
     async def close(self):
         await self.redis.close()

@@ -284,3 +284,113 @@ class TestCausalChainGate:
         assert result.max_observed_depth == 4
         assert result.depth_distribution[3] == 1
         assert result.depth_distribution[4] == 1
+
+
+@pytest.mark.emergence
+class TestCrossRoleCausalChains:
+    """Test causal chain validation across multiple agent roles (Story 7.25, AC: 3)."""
+
+    def test_causal_chain_spans_multiple_agent_types(self, validator):
+        """Verify chain spanning RECON→EXPLOIT→POSTEX→AD validates (AC: 3)."""
+        from cyberred.agents.roles import AgentRole
+        from tests.emergence.conftest import create_multi_step_path
+        
+        chain = create_multi_step_path([
+            AgentRole.RECON,
+            AgentRole.EXPLOIT,
+            AgentRole.POSTEX,
+            AgentRole.AD,
+        ])
+        
+        result = validator.validate_chain_depth([chain])
+        
+        assert result.passed, f"Cross-role 4-hop chain should pass: {result.message}"
+        assert result.max_observed_depth == 4
+        assert result.chains_meeting_requirement >= 1
+
+    def test_decision_context_links_cross_role_findings(self, validator):
+        """Verify decision_context links findings across roles (AC: 3)."""
+        from cyberred.agents.roles import AgentRole
+        from tests.emergence.conftest import create_multi_step_path
+        
+        chain = create_multi_step_path([
+            AgentRole.RECON,
+            AgentRole.EXPLOIT,
+            AgentRole.POSTEX,
+        ])
+        
+        # Verify each step after root references previous finding
+        assert chain.steps[1].decision_context == ["finding_recon_001"]
+        assert chain.steps[2].decision_context == ["finding_exploit_002"]
+        
+        structure = validator.validate_chain_structure(chain)
+        assert structure.all_links_valid
+
+    def test_chain_depth_with_8_role_diversity(self, validator, all_agent_roles):
+        """Verify depth calculation with all 8 roles in chain (AC: 3)."""
+        from tests.emergence.conftest import create_multi_step_path
+        
+        # Create a chain using all 8 roles
+        chain = create_multi_step_path(all_agent_roles)
+        
+        assert chain.depth == 8, "8-role chain should have depth 8"
+        
+        result = validator.validate_chain_depth([chain])
+        assert result.passed
+        assert result.max_observed_depth == 8
+
+    def test_cross_role_chain_structure_valid(self, validator):
+        """Verify cross-role chain has valid structure (AC: 3)."""
+        from cyberred.agents.roles import AgentRole
+        from tests.emergence.conftest import create_multi_step_path
+        
+        chain = create_multi_step_path([
+            AgentRole.RECON,
+            AgentRole.EXPLOIT,
+            AgentRole.POSTEX,
+            AgentRole.AD,
+        ])
+        
+        structure = validator.validate_chain_structure(chain)
+        
+        assert structure.valid
+        assert structure.has_root_finding
+        assert structure.all_links_valid
+        assert not structure.has_cycles
+
+    def test_cross_role_chain_traceable_to_root(self, validator):
+        """Verify cross-role chain is traceable to root finding (AC: 3)."""
+        from cyberred.agents.roles import AgentRole
+        from tests.emergence.conftest import create_multi_step_path
+        
+        chain = create_multi_step_path([
+            AgentRole.RECON,
+            AgentRole.EXPLOIT,
+            AgentRole.POSTEX,
+        ])
+        
+        # Trace from leaf to root
+        trace = validator.trace_chain_to_root(chain)
+        
+        # Should trace: postex → exploit → recon
+        assert len(trace) == 3
+        assert "postex" in trace[0]
+        assert "exploit" in trace[1]
+        assert "recon" in trace[2]
+
+    def test_all_8_roles_can_form_valid_chain(self, validator, all_agent_roles):
+        """Verify all 8 roles can participate in valid causal chain (AC: 3)."""
+        from tests.emergence.conftest import create_multi_step_path
+        
+        chain = create_multi_step_path(all_agent_roles)
+        
+        structure = validator.validate_chain_structure(chain)
+        
+        assert structure.valid, f"8-role chain should be valid: {structure.errors}"
+        assert structure.has_root_finding
+        assert not structure.has_cycles
+        
+        # Verify all roles are represented
+        techniques = {step.technique for step in chain.steps}
+        for role in all_agent_roles:
+            assert f"{role.value}_technique" in techniques

@@ -51,6 +51,10 @@ def mock_llm_gateway():
     gateway = MagicMock()
     gateway.generate = AsyncMock(return_value="nmap -sV target")
     gateway.get_queue_depth = MagicMock(return_value=0)
+    # Mock agent_complete for _select_alternative_action (Story 7.16)
+    mock_response = MagicMock()
+    mock_response.content = '{"tool_name": "linpeas", "command": "linpeas.sh", "rationale": "Local enum", "expected_output_type": "text", "confidence": 0.8, "priority": 5}'
+    gateway.agent_complete = AsyncMock(return_value=mock_response)
     return gateway
 
 
@@ -562,7 +566,10 @@ class TestPreservedFunctionality:
     async def test_request_authorization_for_lateral_movement(self, create_agent, mock_event_bus):
         """AC5: _request_authorization() works for lateral movement."""
         agent = create_agent()
-        mock_event_bus.subscribe_once.return_value = {"granted": True}
+        # subscribe_once is AsyncMock - replace with async function
+        async def mock_subscribe_once(channel, timeout=None):
+            return {"granted": True}
+        mock_event_bus.subscribe_once = mock_subscribe_once
         result = await agent._request_authorization(
             action="lateral_movement",
             target="10.0.0.51",
@@ -851,7 +858,10 @@ class TestCoverageGaps:
     async def test_request_authorization_denied(self, create_agent, mock_event_bus):
         """Coverage: _request_authorization returns False when denied."""
         agent = create_agent()
-        mock_event_bus.subscribe_once.return_value = {"granted": False}
+        # subscribe_once is AsyncMock - set return_value on the AsyncMock properly
+        async def mock_subscribe_once(channel, timeout=None):
+            return {"granted": False}
+        mock_event_bus.subscribe_once = mock_subscribe_once
         result = await agent._request_authorization("action", "target", "justification")
         assert result is False
 
@@ -859,7 +869,10 @@ class TestCoverageGaps:
     async def test_request_authorization_no_response(self, create_agent, mock_event_bus):
         """Coverage: _request_authorization returns False when no response."""
         agent = create_agent()
-        mock_event_bus.subscribe_once.return_value = None
+        # subscribe_once is AsyncMock - set return_value on the AsyncMock properly
+        async def mock_subscribe_once(channel, timeout=None):
+            return None
+        mock_event_bus.subscribe_once = mock_subscribe_once
         result = await agent._request_authorization("action", "target", "justification")
         assert result is False
 

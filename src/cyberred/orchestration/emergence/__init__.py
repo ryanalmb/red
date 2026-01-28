@@ -15,6 +15,17 @@ from .causal import (
     ChainStructureResult,
     NFR36_MIN_CHAIN_DEPTH,
 )
+# Story 7.15: Emergent Attack Strategy Triggering
+from .patterns import (
+    EmergentPattern,
+    EmergentPatternDetector,
+    PatternType,
+)
+from .strategy import (
+    EmergentStrategy,
+    EmergentStrategyPublisher,
+    EmergentStrategyAggregator,
+)
 
 __all__ = [
     "DecisionContextTracker",
@@ -39,4 +50,11 @@ __all__ = [
     "ChainDepthResult",
     "ChainStructureResult",
     "NFR36_MIN_CHAIN_DEPTH",
+    # Story 7.15: Emergent Attack Strategy Triggering
+    "EmergentPattern",
+    "EmergentPatternDetector",
+    "PatternType",
+    "EmergentStrategy",
+    "EmergentStrategyPublisher",
+    "EmergentStrategyAggregator",
 ]

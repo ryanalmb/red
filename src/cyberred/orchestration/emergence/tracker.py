@@ -28,6 +28,9 @@ Unknown signal types default to 0.5 weight.
 """
 SIGNAL_TYPE_WEIGHTS: dict[str, float] = {
     "finding": 1.0,      # Direct findings from other agents - highest weight
+    "authorization": 1.0,  # Authorization decisions - critical weight (Story 7.16)
+    "director_strategy": 0.95,  # Director strategy updates - critical weight (Story 7.17)
+    "emergent_pattern": 0.95,  # Emergent patterns from pattern detection (Story 7.15)
     "strategy": 0.9,     # Director Ensemble strategies - high weight
     "intel": 0.8,        # Intelligence enrichment results
     "rag": 0.7,          # RAG escalation results

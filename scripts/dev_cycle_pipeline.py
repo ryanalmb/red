@@ -6,10 +6,8 @@ Runs one or more BMAD stories in sequence (or an entire epic) by spawning a fres
 
 Stages per story:
   1) Create Story (optional)
-  2) Validate Story [GATE]
-  3) Dev Story
-  4) Code Review (retry up to N)
-  5) Architect Validation [GATE]
+  2) Dev Story
+  3) Code Review (retry up to N)
 
 State/resume:
   - Saves progress to `.rovodev/pipeline/state.json`
@@ -207,10 +205,8 @@ class BatchState:
 
 STAGES = [
     {"id": "create-story", "name": "Create Story", "gate": False, "workflow": ".rovodev/workflows/create-story.md", "skip_if_story_file": True},
-    {"id": "validate-story", "name": "Validate Story", "gate": True, "workflow": ".rovodev/workflows/validate-story.md"},
     {"id": "dev-story", "name": "Dev Story", "gate": False, "workflow": ".rovodev/workflows/dev-story.md"},
     {"id": "code-review", "name": "Code Review", "gate": False, "workflow": ".rovodev/workflows/code-review.md", "max_retries": 2},
-    {"id": "architect-validate", "name": "Architect Validation", "gate": True, "workflow": None},
 ]
 
 
@@ -298,27 +294,6 @@ Required output line:
 STORY_FILE: _bmad-output/implementation-artifacts/{epic}-{story_num}-<name>.md
 """.strip()
 
-    if stage_id == "validate-story":
-        return f"""
-{GLOBAL_RULES}
-
-## TASK: Validate Story {story_key}
-
-Validate story against FRS/NFR/Architecture.
-
-Story file: @{story_file}
-
-1. Read and follow workflow: @.rovodev/workflows/validate-story.md
-2. Load full files:
-   - PRD: @_bmad-output/planning-artifacts/prd.md
-   - Architecture: @_bmad-output/planning-artifacts/architecture.md
-   - Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
-3. Run autonomously (YOLO)
-
-Required output line:
-VALIDATION_STATUS: PASS or FAIL
-""".strip()
-
     if stage_id == "dev-story":
         return f"""
 {GLOBAL_RULES}
@@ -353,30 +328,6 @@ Story file: @{story_file}
 
 Required output line:
 REVIEW_STATUS: PASS or NEEDS_FIXES
-""".strip()
-
-    if stage_id == "architect-validate":
-        return f"""
-{GLOBAL_RULES}
-
-## TASK: Final Architect Validation {story_key}
-
-Story file: @{story_file}
-
-Load full:
-- PRD: @_bmad-output/planning-artifacts/prd.md
-- Architecture: @_bmad-output/planning-artifacts/architecture.md
-- Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
-
-Checklist:
-- Architecture compliance
-- FRS implementation
-- NFR compliance
-- Code quality and targeted 100% coverage
-- Integration tests use real code, minimal mocks
-
-Required output line:
-ARCHITECT_VERDICT: APPROVED or REJECTED
 """.strip()
 
     raise ValueError(f"Unknown stage: {stage_id}")
@@ -441,11 +392,15 @@ class Pipeline:
         self.state.save()
 
         try:
+            _loop_iteration = 0
             while self.state.current_story_idx < len(self.state.story_queue):
+                _loop_iteration += 1
+                print(f"[TRACE] Loop iteration {_loop_iteration}: current_story_idx={self.state.current_story_idx}, queue_len={len(self.state.story_queue)}")
                 item = self.state.story_queue[self.state.current_story_idx]
                 story_state = self._init_or_load_story(item)
 
                 rc = self._run_single_story(story_state)
+                print(f"[TRACE] _run_single_story({story_state.story_key}) returned rc={rc}")
                 if rc != 0:
                     self.state.status = PipelineStatus.FAILED if rc != 130 else PipelineStatus.ABORTED
                     self.state.end_time = datetime.now().isoformat()
@@ -453,6 +408,7 @@ class Pipeline:
                     return rc
 
                 # Story success
+                print(f"[TRACE] Story {story_state.story_key} succeeded. Incrementing current_story_idx: {self.state.current_story_idx} -> {self.state.current_story_idx + 1}")
                 self.state.current_story_idx += 1
                 self.state.current_story = None
                 self.state.save()
@@ -491,6 +447,7 @@ class Pipeline:
 
     def _run_single_story(self, story: StoryRunState) -> int:
         print(f"\n=== Running story {story.story_key} (index {self.state.current_story_idx+1}/{len(self.state.story_queue)}) ===")
+        print(f"[TRACE] _run_single_story started for {story.story_key}, current_stage_idx={story.current_stage_idx}")
 
         for idx, stage in enumerate(STAGES):
             # If resuming within a story
@@ -525,6 +482,7 @@ class Pipeline:
             self.state.current_story = story
             self.state.save()
 
+        print(f"[TRACE] _run_single_story completed all stages for {story.story_key}, returning 0")
         return 0
 
     def _run_stage(self, story: StoryRunState, stage: Dict[str, Any]) -> bool:
@@ -574,7 +532,8 @@ class Pipeline:
 
     def _extract_story_file(self, story: StoryRunState, output_file: Path) -> None:
         txt = output_file.read_text(encoding="utf-8", errors="replace") if output_file.exists() else ""
-        m = re.search(r"^STORY_FILE:\s*(.+)$", txt, re.MULTILINE)
+        # Match STORY_FILE with optional markdown bold markers (**)
+        m = re.search(r"^\*{0,2}STORY_FILE:\s*(.+?)\*{0,2}$", txt, re.MULTILINE)
         if m:
             story.story_file = m.group(1).strip()
             # persist into queue item too

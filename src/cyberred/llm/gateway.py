@@ -216,6 +216,9 @@ class LLMGateway:
         """Execute request with retry and exponential backoff.
         
         Per ERR2: 3x retry with exponential backoff (1s, 2s, 4s).
+        
+        If request.model is explicitly set, creates a provider for that specific
+        model (used by Director Ensemble). Otherwise, routes via complexity tier.
         """
         
         backoff_delays = self._retry_policy.backoff_delays
@@ -229,9 +232,17 @@ class LLMGateway:
                 if not await self._rate_limiter.acquire_async(timeout=60.0):
                     raise LLMRateLimitExceeded("gateway", 30)
                 
-                # Router
-                complexity = self._router.infer_complexity(request.prompt)
-                provider = self._router.select_model(complexity)
+                # Check if explicit model requested (e.g., Director Ensemble)
+                if request.model and request.model != "auto":
+                    # Create provider for specific model
+                    from cyberred.llm.nim import NIMProvider
+                    import os
+                    api_key = os.environ.get("NVIDIA_API_KEY", "")
+                    provider = NIMProvider(api_key=api_key, model=request.model)
+                else:
+                    # Router-based selection by complexity
+                    complexity = self._router.infer_complexity(request.prompt)
+                    provider = self._router.select_model(complexity)
                 
                 # Execute with timeout
                 response = await asyncio.wait_for(

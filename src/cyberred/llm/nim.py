@@ -38,11 +38,19 @@ class NIMProvider(LLMProvider):
     DEFAULT_MODEL = "mistralai/devstral-2-123b-instruct-2512"  # FAST tier - validated available
     DEFAULT_TIMEOUT = 60.0
     
-    # Model tiers per architecture
+    # Model tiers per architecture (Agent Pool)
     MODELS = {
         "FAST": "mistralai/devstral-2-123b-instruct-2512",
         "STANDARD": "moonshotai/kimi-k2-instruct-0905",
         "COMPLEX": "minimaxai/minimax-m2.1",
+    }
+    
+    # Director Ensemble models - separate from agent pool per architecture
+    # Used exclusively by DirectorEnsemble for multi-perspective strategy synthesis
+    DIRECTOR_MODELS = {
+        "STRATEGIST": "deepseek-ai/deepseek-v3.2",      # Strategic planning
+        "ANALYST": "moonshotai/kimi-k2-instruct",       # Deep reasoning
+        "CREATIVE": "minimaxai/minimax-m2",             # Lateral thinking
     }
 
     def __init__(
@@ -87,6 +95,30 @@ class NIMProvider(LLMProvider):
             Configured NIMProvider instance.
         """
         model = cls.MODELS.get(tier.upper(), cls.DEFAULT_MODEL)
+        return cls(api_key=api_key, model=model)
+
+    @classmethod
+    def for_director_role(cls, role: str, api_key: str) -> "NIMProvider":
+        """Factory method to create provider for a Director Ensemble role.
+        
+        Director models are separate from the agent pool and used exclusively
+        for multi-perspective strategy synthesis.
+        
+        Args:
+            role: One of STRATEGIST, ANALYST, CREATIVE.
+            api_key: NVIDIA API key.
+            
+        Returns:
+            Configured NIMProvider instance for the Director role.
+            
+        Raises:
+            ValueError: If role is not a valid Director role.
+        """
+        role_upper = role.upper()
+        if role_upper not in cls.DIRECTOR_MODELS:
+            valid_roles = ", ".join(cls.DIRECTOR_MODELS.keys())
+            raise ValueError(f"Invalid Director role: {role}. Valid roles: {valid_roles}")
+        model = cls.DIRECTOR_MODELS[role_upper]
         return cls(api_key=api_key, model=model)
 
     def complete(self, request: LLMRequest) -> LLMResponse:

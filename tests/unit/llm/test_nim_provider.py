@@ -255,3 +255,197 @@ def test_nim_provider_uses_system_prompt(nim_provider, mock_nim_response):
     content = route.calls.last.request.read()
     assert b"Be helpful" in content
     assert b"system" in content
+
+
+def test_for_director_role_strategist():
+    """Test factory method for Director STRATEGIST role."""
+    provider = NIMProvider.for_director_role("STRATEGIST", "key")
+    assert provider.get_model_name() == "deepseek-ai/deepseek-v3.2"
+
+
+def test_for_director_role_analyst():
+    """Test factory method for Director ANALYST role."""
+    provider = NIMProvider.for_director_role("ANALYST", "key")
+    assert provider.get_model_name() == "moonshotai/kimi-k2-instruct"
+
+
+def test_for_director_role_creative():
+    """Test factory method for Director CREATIVE role."""
+    provider = NIMProvider.for_director_role("CREATIVE", "key")
+    assert provider.get_model_name() == "minimaxai/minimax-m2"
+
+
+def test_for_director_role_case_insensitive():
+    """Test that Director role lookup is case-insensitive."""
+    provider_lower = NIMProvider.for_director_role("strategist", "key")
+    provider_mixed = NIMProvider.for_director_role("Strategist", "key")
+    assert provider_lower.get_model_name() == provider_mixed.get_model_name()
+
+
+def test_for_director_role_invalid_raises():
+    """Test that invalid Director role raises ValueError."""
+    import pytest
+    with pytest.raises(ValueError, match="Invalid Director role"):
+        NIMProvider.for_director_role("INVALID", "key")
+
+
+# ============================================================================
+# Additional coverage tests for error handling paths
+# ============================================================================
+
+def test_provider_unavailable_after_consecutive_failures():
+    """Test that provider becomes unavailable after consecutive failures."""
+    provider = NIMProvider(api_key="test-key")
+    
+    # Simulate 3 consecutive failures (circuit breaker threshold)
+    for _ in range(3):
+        provider._record_failure()
+    
+    assert not provider.is_available()
+    
+    # Should raise LLMProviderUnavailable on complete
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMProviderUnavailable, match="Provider unavailable due to consecutive failures"):
+        provider.complete(request)
+
+
+@pytest.mark.asyncio
+async def test_provider_unavailable_async_after_consecutive_failures():
+    """Test that provider becomes unavailable for async calls after consecutive failures."""
+    provider = NIMProvider(api_key="test-key")
+    
+    # Simulate 3 consecutive failures
+    for _ in range(3):
+        provider._record_failure()
+    
+    assert not provider.is_available()
+    
+    # Should raise LLMProviderUnavailable on complete_async
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMProviderUnavailable, match="Provider unavailable due to consecutive failures"):
+        await provider.complete_async(request)
+
+
+@respx.mock
+def test_unexpected_exception_wrapped_as_provider_unavailable():
+    """Test that unexpected exceptions are wrapped as LLMProviderUnavailable."""
+    provider = NIMProvider(api_key="test-key")
+    
+    # Mock to raise an unexpected exception
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        side_effect=RuntimeError("Unexpected internal error")
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMProviderUnavailable, match="Unexpected error"):
+        provider.complete(request)
+    
+    # Failure should be recorded
+    assert provider._consecutive_failures == 1
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_timeout_raises_llm_timeout_error():
+    """Test that async timeout raises LLMTimeoutError."""
+    import httpx
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        side_effect=httpx.TimeoutException("Connection timed out")
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMTimeoutError):
+        await provider.complete_async(request)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_connection_error_raises_provider_unavailable():
+    """Test that async connection errors raise LLMProviderUnavailable."""
+    import httpx
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("Connection refused")
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMProviderUnavailable, match="Connection failed"):
+        await provider.complete_async(request)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_unexpected_exception_wrapped():
+    """Test that unexpected exceptions in async are wrapped as LLMProviderUnavailable."""
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        side_effect=RuntimeError("Async unexpected error")
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMProviderUnavailable, match="Unexpected error"):
+        await provider.complete_async(request)
+
+
+@respx.mock
+def test_response_missing_choices_raises_error():
+    """Test that response without choices raises LLMResponseError."""
+    from httpx import Response
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        return_value=Response(200, json={"id": "test", "model": "test"})  # Missing choices
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMResponseError, match="Missing 'choices' field"):
+        provider.complete(request)
+
+
+@respx.mock
+def test_response_empty_choices_raises_error():
+    """Test that response with empty choices raises LLMResponseError."""
+    from httpx import Response
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        return_value=Response(200, json={"choices": []})  # Empty choices
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMResponseError, match="Missing 'choices' field"):
+        provider.complete(request)
+
+
+@respx.mock
+def test_response_invalid_choice_format_raises_error():
+    """Test that response with invalid choice format raises LLMResponseError."""
+    from httpx import Response
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        return_value=Response(200, json={"choices": ["not a dict"]})  # Invalid choice format
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMResponseError, match="Invalid choice format"):
+        provider.complete(request)
+
+
+@respx.mock
+def test_response_invalid_message_format_raises_error():
+    """Test that response with invalid message format raises LLMResponseError."""
+    from httpx import Response
+    provider = NIMProvider(api_key="test-key")
+    
+    route = respx.post("https://integrate.api.nvidia.com/v1/chat/completions").mock(
+        return_value=Response(200, json={"choices": [{"message": "not a dict"}]})
+    )
+    
+    request = LLMRequest(prompt="test", model="test")
+    with pytest.raises(LLMResponseError, match="Malformed response"):
+        provider.complete(request)

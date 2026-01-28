@@ -158,3 +158,105 @@ class TestDecisionContextStigmergic:
         
         # Context should be ordered by weight (finding > strategy > phase)
         assert context.index("sig-pub-1") < context.index("sig-pub-3")  # finding before phase
+
+
+@pytest.mark.emergence
+class TestDecisionContextAllRoles:
+    """Test decision_context validation for all 8 agent roles (Story 7.25, AC: 4)."""
+
+    @pytest.mark.parametrize("role", [
+        "recon", "exploit", "postex", "webapp",
+        "wireless", "ad", "credential", "forensics",
+    ])
+    def test_decision_context_populated_for_each_role(self, role: str):
+        """Verify decision_context can be populated for each role (AC: 4)."""
+        from cyberred.agents.roles import AgentRole
+        
+        # Find the role enum
+        role_enum = AgentRole(role)
+        
+        action = create_action([f"signal_from_{role_enum.value}"])
+        
+        result = validate_decision_context([action])
+        assert result.passed
+        assert result.percentage == 100.0
+
+    def test_decision_context_8_role_actions_all_pass(self):
+        """Verify decision_context validation passes with 8-role actions (AC: 4)."""
+        from cyberred.agents.roles import AgentRole
+        import uuid
+        
+        # Create actions for all 8 roles with decision_context
+        actions = [
+            AgentAction(
+                id=str(uuid.uuid4()),
+                agent_id=str(uuid.uuid4()),
+                action_type=f"{role.value}_action",
+                target="192.168.1.1",
+                timestamp=datetime.now(UTC).isoformat(),
+                decision_context=[f"signal_{role.value}"],
+            )
+            for role in AgentRole
+        ]
+        
+        result = validate_decision_context(actions)
+        
+        assert result.passed, f"8-role actions should pass: {result.failed_actions}"
+        assert result.percentage == 100.0
+        assert result.total_actions == 8
+
+    def test_decision_context_cross_role_signal_references(self):
+        """Verify decision_context tracks inter-role signals (AC: 4)."""
+        from cyberred.orchestration.emergence.tracker import DecisionContextTracker
+        from unittest.mock import AsyncMock
+        from cyberred.agents.roles import AgentRole
+        
+        event_bus = AsyncMock()
+        tracker = DecisionContextTracker("test-eng", event_bus)
+        
+        # Record signals from different agent roles
+        role_signals = [
+            (AgentRole.RECON, "finding:port_scan_001"),
+            (AgentRole.EXPLOIT, "finding:sqli_001"),
+            (AgentRole.POSTEX, "finding:privesc_001"),
+            (AgentRole.AD, "finding:kerberos_001"),
+        ]
+        
+        for role, signal_id in role_signals:
+            tracker.record_signal(
+                agent_id="agent-multi",
+                signal_id=signal_id,
+                signal_type="finding",
+                source=f"{role.value}_agent",
+            )
+        
+        context = tracker.get_context("agent-multi")
+        
+        # All signals should be present
+        for _, signal_id in role_signals:
+            assert signal_id in context
+
+    def test_decision_context_validates_all_8_role_types(self):
+        """Verify validation handles all 8 role types correctly (AC: 4)."""
+        from cyberred.agents.roles import AgentRole
+        import uuid
+        
+        # Create mixed valid/invalid actions across roles
+        valid_actions = []
+        for i, role in enumerate(AgentRole):
+            valid_actions.append(
+                AgentAction(
+                    id=str(uuid.uuid4()),
+                    agent_id=str(uuid.uuid4()),
+                    action_type=f"{role.value}_action",
+                    target=f"192.168.1.{i+1}",
+                    timestamp=datetime.now(UTC).isoformat(),
+                    decision_context=[f"signal_{role.value}_{i}"],
+                )
+            )
+        
+        result = validate_decision_context(valid_actions)
+        
+        assert result.passed
+        assert result.total_actions == 8
+        assert len(result.failed_actions) == 0

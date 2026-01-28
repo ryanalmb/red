@@ -866,7 +866,7 @@ def create_recon_agent(engagement_config: EngagementConfig) -> Agent:
 
     return Agent(
         agent_name=f"recon-{uuid.uuid4().hex[:8]}",
-        model_name="deepseek-ai/deepseek-v3_2",
+        model_name="deepseek-ai/deepseek-v3.2",
         tools=[executor.kali_execute],  # ONE tool, 600+ capabilities
         system_prompt=RECON_AGENT_PROMPT,
         max_loops=10,
@@ -1099,8 +1099,8 @@ Cyber-Red v2 uses NVIDIA NIM as the unified LLM provider for the Director Ensemb
 
 | Model | NIM Identifier | Role in Ensemble |
 |-------|----------------|------------------|
-| **DeepSeek v3.2** | `deepseek-ai/deepseek-v3_2` | Strategic planning, methodology |
-| **Kimi K2** | `moonshot-ai/kimi-k2` | Deep reasoning, analysis |
+| **DeepSeek v3.2** | `deepseek-ai/deepseek-v3.2` | Strategic planning, methodology |
+| **Kimi K2** | `moonshotai/kimi-k2-instruct` | Deep reasoning, analysis |
 | **MiniMax M2** | `minimaxai/minimax-m2` | Creative approaches, evasion (interleaved thinking) |
 
 **Why NVIDIA NIM:**
@@ -1121,11 +1121,11 @@ llm_provider:
 director_ensemble:
   models:
     strategist:
-      model: deepseek-ai/deepseek-v3_2
+      model: deepseek-ai/deepseek-v3.2
       role: "Strategic planning and methodology"
       timeout: 30
     analyst:
-      model: moonshot-ai/kimi-k2
+      model: moonshotai/kimi-k2-instruct
       role: "Deep reasoning and analysis"
       timeout: 45
     creative:

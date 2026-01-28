@@ -4,15 +4,24 @@ The main Textual application for the Cyber-Red War Room interface.
 Supports two modes:
 1. Standalone mode: Uses EventBus for internal event streaming
 2. Daemon mode: Uses TUIClient for daemon IPC streaming
+
+Story 9.1: Textual App Foundation
+- Responsive breakpoints per UX spec (80x24 min, 100x30 standard, 120x40 optimal)
+- Engagement state tracking (RUNNING/PAUSED/STOPPED)
+- C2 heartbeat indicator (●/◐/○)
 """
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Input
 from textual.containers import Horizontal, Vertical
+from textual.geometry import Size
+from textual.reactive import reactive
+from textual.css.query import NoMatches
 import asyncio
 
 from cyberred.tui.widgets import (
@@ -21,14 +30,66 @@ from cyberred.tui.widgets import (
     KillChainLog,
     TerminalLog,
     ThinkingLog,
-    AuthorizationModal,
     RAGManagerWidget,
+    DirectorDisplayWidget,
+    StatusBarWidget,
+    AttachProgressIndicator,
 )
+from cyberred.tui.screens.authorization import (
+    AuthorizationScreen,
+    AuthorizationRequest,
+)
+from cyberred.tui.screens.dropbox import DropBoxScreen
+from cyberred.tui.screens.kill_confirm import KillSwitchConfirmScreen
+from cyberred.tui.screens.help import HelpScreen
 from cyberred.daemon.streaming import StreamEventType
 
 if TYPE_CHECKING:
     from cyberred.core.event_bus import EventBus
     from cyberred.tui.daemon_client import TUIClient
+
+
+# Responsive breakpoint constants per UX spec
+# Compact: < 100 columns (single pane focus with tabs)
+# Standard: 100-119 columns (all panes visible, compressed)
+# Optimal: 120+ columns (full layout)
+BREAKPOINT_COMPACT = 100
+BREAKPOINT_STANDARD = 120
+
+# Minimum terminal size per UX spec (80x24)
+MIN_TERMINAL_WIDTH = 80
+MIN_TERMINAL_HEIGHT = 24
+
+# C2 heartbeat latency thresholds (milliseconds) per UX spec
+LATENCY_HEALTHY_MS = 500
+LATENCY_DEGRADED_MS = 2000
+
+
+class LayoutMode(Enum):
+    """Layout mode based on terminal size breakpoints."""
+    COMPACT = "compact"    # < 100 cols: single pane focus with tabs
+    STANDARD = "standard"  # 100-119 cols: all panes visible, compressed
+    OPTIMAL = "optimal"    # 120+ cols: full layout
+
+
+class EngagementState(Enum):
+    """Engagement state for header display."""
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    STOPPED = "STOPPED"
+
+
+class HeartbeatStatus(Enum):
+    """C2 heartbeat status indicator per UX spec.
+    
+    Latency thresholds:
+    - Healthy: <500ms (●)
+    - Degraded: 500-2000ms (◐)
+    - Critical: >2000ms (○)
+    """
+    HEALTHY = "●"    # <500ms
+    DEGRADED = "◐"   # 500-2000ms
+    CRITICAL = "○"   # >2000ms
 
 
 class CyberRedApp(App):
@@ -37,17 +98,37 @@ class CyberRedApp(App):
     Supports two modes of operation:
     - Standalone: Uses EventBus for internal events (testing, demos)
     - Daemon: Uses TUIClient for daemon IPC streaming (production)
+    
+    Story 9.1: Responsive breakpoints per UX spec:
+    - Compact (<100 cols): Single pane focus with tabs
+    - Standard (100-119 cols): All panes visible, compressed
+    - Optimal (120+ cols): Full layout
     """
 
     CSS_PATH = "style.tcss"
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("d", "toggle_dark", "Toggle Dark Mode"),
-        ("f5", "approvals", "Approvals"),
+        ("escape", "panic", "KILL"),  # Story 9.1: ESC for kill switch per UX spec (immediate, no confirm)
         ("p", "panic", "PANIC"),
+        ("f1", "dashboard", "Dashboard"),  # Story 9.1: F1 for dashboard per UX spec
+        ("f2", "config", "Config"),  # Story 9.1: F2 for config per UX spec
+        ("f3", "logs", "Logs"),  # Story 9.1: F3 for logs per UX spec
+        ("f4", "report", "Report"),  # Story 9.1: F4 for report per UX spec
+        ("f5", "pause_resume", "Pause/Resume"),  # Story 9.1: F5 for pause per UX spec
         ("ctrl+d", "detach", "Detach"),
-        ("f6", "rag_manager", "RAG Manager"),
+        ("f6", "show_dropbox", "Drop Box"),  # Story 9.10: Drop Box Status Panel
+        ("f7", "director_panel", "Director"),  # Story 8.11: Director Ensemble Display
+        ("f10", "kill_switch_confirm", "Kill"),  # Story 9.11: F10 kill switch with confirmation
+        ("question_mark", "help", "Help"),  # Story 9.11: ? for help overlay
+        ("ctrl+t", "toggle_thinking", "Toggle Thinking"),  # Story 8.11: Toggle <think> tags
+        ("r", "refresh_state", "Refresh"),  # Story 9.7: Refresh stale state
     ]
+
+    # Reactive properties for state tracking (Story 9.1)
+    current_layout_mode: reactive[LayoutMode] = reactive(LayoutMode.STANDARD)
+    engagement_state: reactive[EngagementState] = reactive(EngagementState.STOPPED)
+    heartbeat_status: reactive[HeartbeatStatus] = reactive(HeartbeatStatus.CRITICAL)
 
     def __init__(
         self,
@@ -70,14 +151,106 @@ class CyberRedApp(App):
         self._daemon_client = daemon_client
         self._engagement_id = engagement_id
         self._stream_task: Optional[asyncio.Task] = None
+        self._stale_check_task: Optional[asyncio.Task] = None  # Story 9.7: Stale state check
+        self._attach_progress: Optional[AttachProgressIndicator] = None  # Story 9.8: Progress indicator
 
     @property
     def is_daemon_mode(self) -> bool:
         """Return True if using daemon client for events."""
         return self._daemon_client is not None
 
+    def get_layout_mode(self, size: Size) -> LayoutMode:
+        """Determine layout mode based on terminal size.
+        
+        Story 9.1: Responsive breakpoints per UX spec.
+        
+        Args:
+            size: Terminal size (width, height).
+            
+        Returns:
+            LayoutMode based on terminal width:
+            - COMPACT: < 100 columns
+            - STANDARD: 100-119 columns
+            - OPTIMAL: 120+ columns
+        """
+        if size.width < BREAKPOINT_COMPACT:
+            return LayoutMode.COMPACT
+        elif size.width < BREAKPOINT_STANDARD:
+            return LayoutMode.STANDARD
+        else:
+            return LayoutMode.OPTIMAL
+
+    def get_heartbeat_status(self, latency_ms: int) -> HeartbeatStatus:
+        """Get heartbeat status based on C2 latency.
+        
+        Story 9.1: C2 heartbeat indicator per UX spec.
+        
+        Args:
+            latency_ms: Latency in milliseconds.
+            
+        Returns:
+            HeartbeatStatus:
+            - HEALTHY: <500ms (●)
+            - DEGRADED: 500-2000ms (◐)
+            - CRITICAL: ≥2000ms (○)
+        """
+        if latency_ms < LATENCY_HEALTHY_MS:
+            return HeartbeatStatus.HEALTHY
+        elif latency_ms < LATENCY_DEGRADED_MS:
+            return HeartbeatStatus.DEGRADED
+        else:
+            return HeartbeatStatus.CRITICAL
+
+    def configure_layout_for_mode(self, mode: LayoutMode) -> None:
+        """Configure pane visibility based on layout mode.
+        
+        Story 9.1: Graceful degradation for compact mode.
+        
+        Args:
+            mode: The layout mode to configure for.
+        """
+        # In compact mode, hide secondary panes and show tabs
+        # In standard/optimal mode, show all panes
+        try:
+            left_pane = self.query_one("#pane-left", Vertical)
+            mid_pane = self.query_one("#pane-mid", Vertical)
+            right_pane = self.query_one("#pane-right", Vertical)
+            
+            if mode == LayoutMode.COMPACT:
+                # Compact: Single pane focus - hide left and right, expand middle
+                left_pane.display = False
+                right_pane.display = False
+                mid_pane.display = True
+            else:
+                # Standard/Optimal: Show all panes
+                left_pane.display = True
+                mid_pane.display = True
+                right_pane.display = True
+        except NoMatches:
+            # Panes not yet mounted, skip configuration
+            pass
+
+    def on_resize(self, event) -> None:
+        """Handle terminal resize events.
+        
+        Story 9.1: Updates layout mode on resize per UX spec breakpoints.
+        """
+        new_mode = self.get_layout_mode(event.size)
+        if new_mode != self.current_layout_mode:
+            self.current_layout_mode = new_mode
+            self.configure_layout_for_mode(new_mode)
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        
+        # Story 9.1: Status bar with F-keys, engagement state, C2 heartbeat
+        yield StatusBarWidget(
+            engagement_id=self._engagement_id or "",
+            id="status-bar",
+        )
+        
+        # Story 9.8: Attach progress indicator (AC #3)
+        yield AttachProgressIndicator(id="attach-progress")
 
         with Horizontal():
             # Left: Target & Matrix
@@ -87,12 +260,17 @@ class CyberRedApp(App):
                 yield Static("HIVE STATUS", classes="pane-title")
                 yield HiveGrid(id="hive-grid")
 
-            # Middle: Brain Stream & Kill Chain
+            # Middle: Brain Stream & Kill Chain & Director
             with Vertical(id="pane-mid"):
                 yield Static("BRAIN STREAM", classes="pane-title")
                 yield ThinkingLog(id="brain-stream")
                 yield Static("KILL CHAIN", classes="pane-title")
                 yield KillChainLog(id="kill-chain")
+                # Story 8.11: Director Ensemble Display (hidden by default)
+                director = DirectorDisplayWidget(daemon_client=self._daemon_client)
+                director.display = False
+                director.id = "director-display-widget"
+                yield director
 
             # Right: Terminal
             with Vertical(id="pane-right"):
@@ -151,14 +329,47 @@ class CyberRedApp(App):
             )
 
     async def _consume_daemon_stream(self) -> None:
-        """Consume streaming events from daemon client."""
+        """Consume streaming events from daemon client.
+        
+        Story 9.8: Shows progress indicator during attach and displays
+        latency on completion (AC #1, #3).
+        """
         if not self._daemon_client or not self._engagement_id:
             return
 
+        # Story 9.8: Show progress indicator during attach (AC #3)
         try:
-            async for event in self._daemon_client.attach(self._engagement_id):
+            progress = self.query_one("#attach-progress", AttachProgressIndicator)
+            progress.start(self._engagement_id)
+        except NoMatches:
+            progress = None
+
+        try:
+            # Story 9.8: Use incremental sync for faster attach (AC #2)
+            async for event in self._daemon_client.attach(
+                self._engagement_id,
+                sync_mode="incremental",
+            ):
+                # Story 9.8: Complete progress indicator after first event (initial state)
+                if progress and self._daemon_client.attach_latency_ms is not None:
+                    latency_ms = self._daemon_client.attach_latency_ms
+                    progress.complete(success=True, latency_ms=latency_ms)
+                    # Update status bar with latency (AC #3 - Task 3.4)
+                    # Story 9.8 Task 3.5: Handle attach timeout (>2s) with warning but continue
+                    if latency_ms > 2000.0:
+                        self.notify(
+                            f"Attached in {latency_ms:.0f}ms (exceeds 2s threshold)",
+                            severity="warning"
+                        )
+                    else:
+                        self.notify(f"Attached in {latency_ms:.0f}ms", severity="information")
+                    progress = None  # Only show once
+                
                 await self._handle_stream_event(event)
         except Exception as e:
+            # Story 9.8: Show error in progress indicator
+            if progress:
+                progress.complete(success=False)
             self.notify(f"Stream error: {e}", severity="error")
 
     async def _handle_stream_event(self, event) -> None:
@@ -173,6 +384,9 @@ class CyberRedApp(App):
             await self._handle_state_change(event.data)
         elif event.event_type == StreamEventType.HEARTBEAT:
             pass  # Just keep-alive, no action needed
+        elif event.event_type == StreamEventType.STRATEGY_UPDATE:
+            # Story 8.11: Handle Director strategy updates
+            await self._handle_strategy_update(event.data)
 
     async def _handle_finding(self, data: dict) -> None:
         """Handle finding discovery event."""
@@ -195,6 +409,22 @@ class CyberRedApp(App):
             status = agent.get("status", "idle")
             if agent_id:
                 grid.update_agent(agent_id, status)
+
+    async def _handle_strategy_update(self, data: dict) -> None:
+        """Handle Director strategy update event (Story 8.11).
+        
+        Args:
+            data: Strategy data from STRATEGY_UPDATE stream event.
+        """
+        try:
+            director_widget = self.query_one("#director-display-widget", DirectorDisplayWidget)
+            await director_widget.update_strategy(data)
+            # Show notification
+            confidence = data.get("confidence", 0.0)
+            self.notify(f"Strategy Updated (confidence: {confidence:.0%})", severity="information")
+        except NoMatches:
+            # Director panel not visible or not found, log but don't error
+            pass
 
     async def handle_status_update(self, data: dict) -> None:
         grid = self.query_one("#hive-grid", HiveGrid)
@@ -244,22 +474,70 @@ class CyberRedApp(App):
         brain.log_thought(data.get("category", "INFO"), data.get("text", ""))
 
     async def handle_auth_request(self, data: dict) -> None:
-        """Handle HITL authorization request - show modal dialog."""
+        """Handle HITL authorization request - show enhanced modal dialog.
+        
+        Story 10.1: Enhanced authorization with Y/N/M/S options, swarm snapshot,
+        risk assessment, and <500ms delivery requirement (NFR5).
+        
+        Also integrates with anomaly bubbling (Task 6) - sets agent status to
+        AUTH_PENDING so it bubbles to the top of HiveMatrix/AgentList.
+        """
         target = data.get("target", "Unknown")
-        message = data.get("message", f"Authorize engagement with {target}?")
-
+        agent_id = data.get("agent_id")
+        
         log = self.query_one("#kill-chain", KillChainLog)
         log.log_event("now", "AUTH", f"Authorization requested for: {target}")
+        
+        # Story 10.1 Task 6: Update agent status to AUTH_PENDING for anomaly bubbling
+        if agent_id:
+            try:
+                grid = self.query_one("#hive-grid", HiveGrid)
+                grid.update_agent(agent_id, "auth_pending")
+            except NoMatches:
+                pass
+        
+        # Update pending auth count in status bar
+        self._pending_auth_count = getattr(self, "_pending_auth_count", 0) + 1
+        self._update_status_bar_auth_count(self._pending_auth_count)
 
         async def send_response(result):
+            # Decrement pending auth count
+            current = getattr(self, "_pending_auth_count", 1)
+            self._pending_auth_count = max(0, current - 1)
+            self._update_status_bar_auth_count(self._pending_auth_count)
+            
+            # Story 10.1 Task 6: Clear AUTH_PENDING status after response
+            if agent_id:
+                try:
+                    grid = self.query_one("#hive-grid", HiveGrid)
+                    # Reset to active status after auth decision
+                    grid.update_agent(agent_id, "active")
+                except NoMatches:
+                    pass
+            
             if self.bus:
                 await self.bus.publish("hitl:auth_response", result)
-                decision = "APPROVED" if result.get("approved") else "DENIED"
-                persist_msg = " (Always)" if result.get("persist") else ""
-                log.log_event("now", "AUTH", f"Target {target}: {decision}{persist_msg}")
+                if result.get("skipped"):
+                    decision = "SKIPPED"
+                elif result.get("approved"):
+                    decision = "APPROVED"
+                else:
+                    decision = "DENIED"
+                log.log_event("now", "AUTH", f"Target {target}: {decision}")
+            
+            # Send response to daemon if in daemon mode
+            if self._daemon_client:
+                try:
+                    await self._daemon_client.send_auth_response(result)
+                except Exception as e:
+                    log.log_event("now", "AUTH", f"Failed to send response: {e}")
 
-        modal = AuthorizationModal(target, message, callback=send_response)
-        self.push_screen(modal)
+        # Create AuthorizationRequest from data
+        request = AuthorizationRequest.from_dict(data)
+        
+        # Push enhanced authorization screen
+        screen = AuthorizationScreen(request, callback=send_response)
+        self.push_screen(screen)
 
     def action_panic(self) -> None:
         self.notify("PANIC TRIGGERED!", severity="error")
@@ -269,9 +547,13 @@ class CyberRedApp(App):
             )
 
     async def action_detach(self) -> None:
-        """Detach from daemon and exit TUI."""
+        """Detach from daemon and exit TUI.
+        
+        Per Story 9.9 AC #3: Shows "Detached from {engagement_id}" message.
+        Cancels stream task and stale check task before detaching.
+        """
         if self._daemon_client:
-            self.notify("Detaching...")
+            engagement_id = self._engagement_id or "unknown"
             # Cancel stream task
             if self._stream_task and not self._stream_task.done():
                 self._stream_task.cancel()
@@ -279,9 +561,45 @@ class CyberRedApp(App):
                     await self._stream_task
                 except asyncio.CancelledError:
                     pass
+            # Cancel stale check task if running
+            if self._stale_check_task and not self._stale_check_task.done():
+                self._stale_check_task.cancel()
+                try:
+                    await self._stale_check_task
+                except asyncio.CancelledError:
+                    pass
             # Detach from engagement
             await self._daemon_client.detach()
+            # AC #3: Show "Detached from {engagement_id}" message
+            self.notify(f"Detached from {engagement_id}")
         self.exit()
+
+    def action_show_dropbox(self) -> None:
+        """Show Drop Box status screen (Story 9.10: AC #6).
+        
+        Per UX spec line 386-387 and 400: F6 Drop Box screen.
+        Pushes DropBoxScreen onto the screen stack.
+        """
+        self.push_screen(DropBoxScreen(daemon_client=self._daemon_client))
+
+    def action_kill_switch_confirm(self) -> None:
+        """Show kill switch confirmation modal (Story 9.11: AC #4).
+        
+        Per UX spec: F10 kill switch requires confirmation.
+        ESC bypasses confirmation for emergency use (handled by action_panic).
+        """
+        def handle_confirm(confirmed: bool) -> None:
+            if confirmed:
+                self.action_panic()
+        
+        self.push_screen(KillSwitchConfirmScreen(), handle_confirm)
+
+    def action_help(self) -> None:
+        """Show help overlay (Story 9.11: AC #3).
+        
+        Per UX spec line 595: Help is accessible via `?` key.
+        """
+        self.push_screen(HelpScreen())
 
     async def action_rag_manager(self) -> None:
         """Open RAG Management modal."""
@@ -321,6 +639,136 @@ class CyberRedApp(App):
                 yield RAGManagerWidget(store, pipeline)
 
         self.push_screen(RAGManagerScreen(id="rag-modal"))
+
+    async def action_director_panel(self) -> None:
+        """Toggle Director Ensemble panel visibility (Story 8.11)."""
+        try:
+            director = self.query_one("#director-display-widget", DirectorDisplayWidget)
+            director.display = not director.display
+            if director.display:
+                self.notify("Director panel shown (F7 to hide)")
+            else:
+                self.notify("Director panel hidden (F7 to show)")
+        except NoMatches:
+            self.notify("Director panel not available", severity="error")
+
+    def action_toggle_thinking(self) -> None:
+        """Toggle <think> tag visibility in Director panel (Story 8.11)."""
+        try:
+            director = self.query_one("#director-display-widget", DirectorDisplayWidget)
+            director.show_thinking = not director.show_thinking
+            state = "visible" if director.show_thinking else "hidden"
+            self.notify(f"Thinking tags now {state}")
+        except NoMatches:
+            pass
+
+    async def action_refresh_state(self) -> None:
+        """Refresh engagement state from daemon (Story 9.7: AC #7).
+        
+        Manually triggers a state refresh and updates activity time.
+        Bound to 'R' key.
+        """
+        if not self._daemon_client:
+            return
+        
+        if not self._daemon_client.connected:
+            return
+        
+        # Update last activity time to clear stale state using public API
+        self._daemon_client.reset_activity_time()
+        self.notify("State refreshed", severity="information")
+
+    def action_dashboard(self) -> None:
+        """Show dashboard view (Story 9.1: F1 keybinding).
+        
+        Focuses the main hive grid and status displays.
+        """
+        self.notify("Dashboard view (F1)", severity="information")
+        # Focus the main content area
+        try:
+            grid = self.query_one("#hive-grid", HiveGrid)
+            grid.focus()
+        except NoMatches:
+            pass
+
+    def action_config(self) -> None:
+        """Show configuration panel (Story 9.1: F2 keybinding).
+        
+        Placeholder for configuration modal/panel.
+        """
+        self.notify("Configuration panel - not yet implemented (F2)", severity="warning")
+
+    def action_logs(self) -> None:
+        """Focus logs panel (Story 9.1: F3 keybinding).
+        
+        Focuses the kill chain log display.
+        """
+        self.notify("Logs view (F3)", severity="information")
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+            log.focus()
+        except NoMatches:
+            pass
+
+    def action_report(self) -> None:
+        """Show report panel (Story 9.1: F4 keybinding).
+        
+        Placeholder for engagement report generation/viewing.
+        """
+        self.notify("Report panel - not yet implemented (F4)", severity="warning")
+
+    async def action_pause_resume(self) -> None:
+        """Toggle pause/resume engagement state (Story 9.1).
+        
+        UX Spec: F5 for pause, single keypress instant action.
+        """
+        if self.engagement_state == EngagementState.RUNNING:
+            self.engagement_state = EngagementState.PAUSED
+            self.notify("Engagement PAUSED", severity="warning")
+            if self.bus:
+                await self.bus.publish("swarm:broadcast", {"command": "PAUSE"})
+        elif self.engagement_state == EngagementState.PAUSED:
+            self.engagement_state = EngagementState.RUNNING
+            self.notify("Engagement RESUMED", severity="information")
+            if self.bus:
+                await self.bus.publish("swarm:broadcast", {"command": "RESUME"})
+        
+        # Update status bar
+        self._update_status_bar_state()
+
+    def _update_status_bar_state(self) -> None:
+        """Update status bar with current engagement state."""
+        try:
+            status_bar = self.query_one("#status-bar", StatusBarWidget)
+            status_bar.update_state(self.engagement_state.value)
+        except NoMatches:
+            pass
+
+    def _update_status_bar_heartbeat(self, latency_ms: int) -> None:
+        """Update status bar heartbeat based on C2 latency.
+        
+        Args:
+            latency_ms: C2 latency in milliseconds.
+        """
+        try:
+            status = self.get_heartbeat_status(latency_ms)
+            self.heartbeat_status = status
+            status_bar = self.query_one("#status-bar", StatusBarWidget)
+            status_bar.update_heartbeat(status.value)
+        except NoMatches:
+            pass
+
+    def _update_status_bar_auth_count(self, count: int) -> None:
+        """Update status bar pending authorization count.
+        
+        Args:
+            count: Number of pending auth requests.
+        """
+        try:
+            status_bar = self.query_one("#status-bar", StatusBarWidget)
+            status_bar.update_pending_auth(count)
+        except NoMatches:
+            pass
 
 
 if __name__ == "__main__":

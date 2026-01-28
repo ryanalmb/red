@@ -22,6 +22,34 @@ from .crash_monitor import (
     CRASH_DETECTION_TIMEOUT_S,
     HEARTBEAT_INTERVAL_S,
 )
+from .directive import (
+    DirectiveInterpreter,
+    DirectiveResult,
+    DirectiveType,
+    MissionDirective,
+    ParsedDirective,
+)
+from .replan_triggers import (
+    TriggerType,
+    ReplanTrigger,
+    ReplanTriggerConfig,
+    ReplanTriggerManager,
+    VALID_PHASE_TRANSITIONS,
+    VALID_OBJECTIVE_TYPES,
+)
+from .aggregator import (
+    FindingCategory,
+    FindingSeverity,
+    AggregatedFinding,
+    AggregationSummary,
+    AggregatorConfig,
+    FindingAggregator,
+    FINDING_TYPE_CATEGORIES,
+)
+from .strategy_publisher import (
+    PublishedStrategy,
+    StrategyPublisher,
+)
 from .emergence import (
     DecisionContextTracker,
     SignalRecord,
@@ -51,4 +79,28 @@ __all__ = [
     "AgentHealthState",
     "CRASH_DETECTION_TIMEOUT_S",
     "HEARTBEAT_INTERVAL_S",
+    # Story 8.7: Natural Language Mission Directive
+    "DirectiveInterpreter",
+    "DirectiveResult",
+    "DirectiveType",
+    "MissionDirective",
+    "ParsedDirective",
+    # Story 8.8: Re-Plan Triggers
+    "TriggerType",
+    "ReplanTrigger",
+    "ReplanTriggerConfig",
+    "ReplanTriggerManager",
+    "VALID_PHASE_TRANSITIONS",
+    "VALID_OBJECTIVE_TYPES",
+    # Story 8.9: Finding Aggregation
+    "FindingCategory",
+    "FindingSeverity",
+    "AggregatedFinding",
+    "AggregationSummary",
+    "AggregatorConfig",
+    "FindingAggregator",
+    "FINDING_TYPE_CATEGORIES",
+    # Story 8.10: Strategy Publication
+    "PublishedStrategy",
+    "StrategyPublisher",
 ]

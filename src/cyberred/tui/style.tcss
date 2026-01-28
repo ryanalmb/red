@@ -1,5 +1,24 @@
+/* Story 9.1: Textual App Foundation - UX Spec Color Tokens */
+
+/* Background Colors */
+$bg-primary: #0a0a0a;
+$bg-secondary: #1a1a1a;
+$bg-elevated: #2a2a2a;
+
+/* Text Colors */
+$text-primary: #e0e0e0;
+$text-muted: #606060;
+
+/* Semantic Colors */
+$cyber-green: #00ff41;
+$danger: #ff4444;
+$warning: #ff8800;
+$success: #00ff00;
+$info: #4444ff;
+
 Screen {
     layout: vertical;
+    background: $bg-primary;
 }
 
 .pane-title {
@@ -9,6 +28,23 @@ Screen {
     text-style: bold;
 }
 
+/* Three-Pane Layout (Story 9.1) */
+#pane-left {
+    width: 20%;
+    border: solid $cyber-green;
+}
+
+#pane-mid {
+    width: 50%;
+    border: solid $cyber-green;
+}
+
+#pane-right {
+    width: 30%;
+    border: solid $cyber-green;
+}
+
+/* Legacy pane IDs for backward compatibility */
 #pane-tree {
     width: 20%;
     border: solid green;
@@ -39,10 +75,235 @@ HiveGrid {
     background: $surface;
 }
 
-/* Status Colors */
-.status-idle { background: $surface; }
-.status-scanning { background: blue; }
+/* Agent Status Colors (UX Spec) */
+.status-idle { background: $surface; color: $text-muted; }
+.status-scanning { background: blue; color: white; }
 .status-thinking { background: yellow; color: black; }
-.status-attacking { background: red; }
+.status-attacking { background: red; color: white; }
 .status-paused { background: orange; color: black; }
-.status-exploited { background: green; }
+.status-exploited { background: green; color: white; }
+
+/* Story 9.1: Status Bar Widget Styles */
+#status-bar {
+    height: 1;
+    dock: top;
+    background: $bg-secondary;
+    color: $text-primary;
+}
+
+#status-bar-left {
+    width: auto;
+}
+
+#status-bar-right {
+    width: auto;
+    dock: right;
+}
+
+/* F-Key Navigation Bar (UX Spec Lines 333-334) */
+#fkey-bar {
+    height: 1;
+    dock: top;
+    background: $bg-elevated;
+    color: $text-primary;
+}
+
+.fkey-item {
+    width: auto;
+    padding: 0 1;
+    background: $bg-elevated;
+}
+
+.fkey-item:hover {
+    background: $bg-secondary;
+}
+
+.fkey-key {
+    color: $cyber-green;
+    text-style: bold;
+}
+
+/* Sticky Kill Button (UX Spec - always visible) */
+#kill-button {
+    dock: right;
+    width: auto;
+    min-width: 8;
+    background: $danger;
+    color: white;
+    text-style: bold;
+    padding: 0 1;
+}
+
+#kill-button:hover {
+    background: #ff0000;
+}
+
+/* Engagement State Indicator */
+.state-running {
+    color: $success;
+    text-style: bold;
+}
+
+.state-paused {
+    color: $warning;
+    text-style: bold;
+}
+
+.state-stopped {
+    color: $text-muted;
+}
+
+/* C2 Heartbeat Indicator (UX Spec Lines 360) */
+.heartbeat-healthy {
+    color: $success;
+}
+
+.heartbeat-degraded {
+    color: $warning;
+}
+
+.heartbeat-critical {
+    color: $danger;
+}
+
+/* Compact Mode Styles (Story 9.1 - responsive) */
+.compact-hidden {
+    display: none;
+}
+
+.compact-tabs {
+    dock: top;
+    height: 1;
+    background: $bg-elevated;
+}
+
+/* Director Display Widget Styles (Story 8.11) */
+#director-display {
+    height: auto;
+    border: solid $primary;
+    padding: 1;
+}
+
+#director-title {
+    text-align: center;
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+
+.perspective-header {
+    text-style: bold;
+    padding: 0 1;
+}
+
+.perspective-strategist { border-left: thick blue; padding-left: 1; }
+.perspective-analyst { border-left: thick cyan; padding-left: 1; }
+.perspective-creative { border-left: thick magenta; padding-left: 1; }
+
+.thinking-content {
+    color: $text-muted;
+    text-style: italic;
+    display: none;
+}
+
+.thinking-content.visible {
+    display: block;
+}
+
+.unified-strategy {
+    background: $surface;
+    border: double $success;
+    padding: 1;
+    margin-top: 1;
+}
+
+.degradation-warning {
+    color: $warning;
+    text-style: bold;
+}
+
+.confidence-high { color: green; }
+.confidence-medium { color: yellow; }
+.confidence-low { color: red; }
+
+/* Story 9.2: War Room Three-Pane Layout Styles */
+WarRoomLayout {
+    height: 100%;
+    width: 100%;
+}
+
+WarRoomLayout > Vertical {
+    height: 100%;
+}
+
+.war-room-pane {
+    border: solid $cyber-green;
+}
+
+.war-room-pane.focused {
+    border: double $warning;
+}
+
+#pane-targets {
+    width: 20%;
+}
+
+#pane-hive {
+    width: 50%;
+}
+
+#pane-strategy {
+    width: 30%;
+}
+
+/* Story 9.10: Drop Box Status Panel Styles */
+HeartbeatIndicator {
+    width: auto;
+    padding: 0 1;
+}
+
+HeartbeatIndicator.heartbeat-healthy {
+    color: $success;
+}
+
+HeartbeatIndicator.heartbeat-degraded {
+    color: $warning;
+}
+
+HeartbeatIndicator.heartbeat-critical {
+    color: $danger;
+}
+
+HeartbeatIndicator.heartbeat-warning {
+    color: $warning;
+    text-style: bold;
+}
+
+HeartbeatIndicator.heartbeat-unknown {
+    color: $text-muted;
+}
+
+HeartbeatIndicator.pulse {
+    text-style: bold;
+}
+
+DropBoxStatusPanel {
+    padding: 1 2;
+    border: solid $primary;
+}
+
+DropBoxStatusPanel .panel-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+DropBoxScreen {
+    layout: vertical;
+}
+
+DropBoxScreen #screen-title {
+    text-align: center;
+    text-style: bold;
+    padding: 1;
+    background: $surface;
+}

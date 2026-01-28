@@ -906,3 +906,227 @@ class TestEventBusAudit:
 
         assert result == []  # Branch 561->568 taken (no log)
 
+
+class TestSubscribeOnce:
+    """Story 7.16: Test subscribe_once() method for authorization flows.
+    
+    These tests use careful synchronization to avoid race conditions and
+    ensure proper cleanup of asyncio tasks to prevent resource exhaustion.
+    """
+
+    @pytest.mark.asyncio
+    async def test_subscribe_once_receives_json_message(self):
+        """subscribe_once should receive and parse JSON message."""
+        import asyncio
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+        from cyberred.storage.redis_client import PubSubSubscription
+
+        # Setup mock with synchronization event
+        mock_redis = MagicMock(spec=RedisClient)
+        captured_callback = None
+        subscription_ready = asyncio.Event()
+
+        async def capture_subscribe(channel, callback):
+            nonlocal captured_callback
+            captured_callback = callback
+            subscription_ready.set()  # Signal that callback is captured
+            return PubSubSubscription(pattern=channel, unsubscribe=AsyncMock())
+
+        mock_redis.subscribe = AsyncMock(side_effect=capture_subscribe)
+
+        event_bus = EventBus(mock_redis)
+        task = None
+
+        try:
+            # Start subscribe_once in background
+            async def run_subscribe():
+                return await event_bus.subscribe_once("auth:test-123:response", timeout=2.0)
+
+            task = asyncio.create_task(run_subscribe())
+
+            # Wait for subscription to be set up with timeout
+            await asyncio.wait_for(subscription_ready.wait(), timeout=1.0)
+
+            # Simulate message arrival
+            assert captured_callback is not None, "Callback was not captured"
+            await captured_callback("auth:test-123:response", '{"granted": true, "operator_id": "op-1"}')
+
+            # Wait for result with timeout
+            result = await asyncio.wait_for(task, timeout=1.0)
+
+            assert result is not None
+            assert result["granted"] is True
+            assert result["operator_id"] == "op-1"
+        finally:
+            # Ensure task cleanup
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_subscribe_once_timeout_returns_none(self):
+        """subscribe_once should return None on timeout."""
+        import asyncio
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+        from cyberred.storage.redis_client import PubSubSubscription
+
+        mock_redis = MagicMock(spec=RedisClient)
+        mock_redis.subscribe = AsyncMock(
+            return_value=PubSubSubscription(pattern="auth:test:response", unsubscribe=AsyncMock())
+        )
+
+        event_bus = EventBus(mock_redis)
+
+        # Short timeout - no message will arrive
+        # Use a reasonable but short timeout to avoid hanging
+        result = await asyncio.wait_for(
+            event_bus.subscribe_once("auth:test:response", timeout=0.05),
+            timeout=1.0  # Outer safety timeout
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_subscribe_once_handles_non_json_message(self):
+        """subscribe_once should handle non-JSON messages."""
+        import asyncio
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+        from cyberred.storage.redis_client import PubSubSubscription
+
+        mock_redis = MagicMock(spec=RedisClient)
+        captured_callback = None
+        subscription_ready = asyncio.Event()
+
+        async def capture_subscribe(channel, callback):
+            nonlocal captured_callback
+            captured_callback = callback
+            subscription_ready.set()
+            return PubSubSubscription(pattern=channel, unsubscribe=AsyncMock())
+
+        mock_redis.subscribe = AsyncMock(side_effect=capture_subscribe)
+
+        event_bus = EventBus(mock_redis)
+        task = None
+
+        try:
+            async def run_subscribe():
+                return await event_bus.subscribe_once("auth:test:response", timeout=2.0)
+
+            task = asyncio.create_task(run_subscribe())
+            
+            # Wait for subscription with timeout
+            await asyncio.wait_for(subscription_ready.wait(), timeout=1.0)
+
+            # Send non-JSON message
+            assert captured_callback is not None, "Callback was not captured"
+            await captured_callback("auth:test:response", "plain text message")
+
+            result = await asyncio.wait_for(task, timeout=1.0)
+
+            assert result is not None
+            assert result["raw_content"] == "plain text message"
+        finally:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_subscribe_once_unsubscribes_after_receive(self):
+        """subscribe_once should unsubscribe after receiving message."""
+        import asyncio
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+        from cyberred.storage.redis_client import PubSubSubscription
+
+        mock_unsubscribe = AsyncMock()
+        mock_redis = MagicMock(spec=RedisClient)
+        captured_callback = None
+        subscription_ready = asyncio.Event()
+
+        async def capture_subscribe(channel, callback):
+            nonlocal captured_callback
+            captured_callback = callback
+            subscription_ready.set()
+            return PubSubSubscription(pattern=channel, unsubscribe=mock_unsubscribe)
+
+        mock_redis.subscribe = AsyncMock(side_effect=capture_subscribe)
+
+        event_bus = EventBus(mock_redis)
+        task = None
+
+        try:
+            async def run_subscribe():
+                return await event_bus.subscribe_once("auth:test:response", timeout=2.0)
+
+            task = asyncio.create_task(run_subscribe())
+            
+            await asyncio.wait_for(subscription_ready.wait(), timeout=1.0)
+
+            assert captured_callback is not None, "Callback was not captured"
+            await captured_callback("auth:test:response", '{"granted": true}')
+
+            await asyncio.wait_for(task, timeout=1.0)
+
+            # Verify unsubscribe was called
+            mock_unsubscribe.assert_called_once()
+        finally:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+
+class TestAuthorizationChannelPattern:
+    """Story 7.16: Test auth:{request_id}:response channel pattern."""
+
+    @pytest.mark.asyncio
+    async def test_auth_response_channel_valid(self):
+        """auth:{request_id}:response channel should be valid."""
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+
+        mock_redis = MagicMock(spec=RedisClient)
+        mock_redis.publish = AsyncMock(return_value=1)
+
+        event_bus = EventBus(mock_redis)
+
+        # Should not raise ChannelNameError
+        result = await event_bus.publish(
+            "auth:abc123-def456:response",
+            {"granted": True}
+        )
+
+        assert result == 1
+
+    @pytest.mark.asyncio
+    async def test_auth_response_channel_with_uuid(self):
+        """auth:{uuid}:response channel should be valid."""
+        import uuid
+        from cyberred.core.events import EventBus
+        from cyberred.storage import RedisClient
+
+        mock_redis = MagicMock(spec=RedisClient)
+        mock_redis.publish = AsyncMock(return_value=1)
+
+        event_bus = EventBus(mock_redis)
+
+        # UUID-style request_id
+        request_id = str(uuid.uuid4()).replace("-", "")[:20]
+        channel = f"auth:{request_id}:response"
+
+        # Should not raise
+        result = await event_bus.publish(channel, {"granted": False, "reason": "out of scope"})
+
+        assert result == 1
+

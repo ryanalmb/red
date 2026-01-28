@@ -755,6 +755,13 @@ class TestInferSignalType:
         assert agent._infer_signal_type("engagement:phase:recon") == "phase"
         assert agent._infer_signal_type("control:phase_change") == "phase"
 
+    def test_infer_signal_type_authorization(self, agent):
+        """Test authorization type inference from authorization: and auth: channels."""
+        assert agent._infer_signal_type("authorization:req-123") == "authorization"
+        assert agent._infer_signal_type("auth:req-123:response") == "authorization"
+        assert agent._infer_signal_type("authorization:") == "authorization"
+        assert agent._infer_signal_type("auth:") == "authorization"
+
     def test_infer_signal_type_status_default(self, agent):
         """Test status (default) type for unknown channels."""
         assert agent._infer_signal_type("agents:agent-1:status") == "status"
@@ -1253,3 +1260,359 @@ class TestStigmergicAgentSharding:
         # Should not raise, should still process
         await agent_with_sharding._handle_sharded_finding(channel, message)
         # No ID to cache, but should not crash
+
+
+class TestAuthorizationMethods:
+    """Story 7.16: Test _request_authorization() and _select_alternative_action()."""
+
+    @pytest.fixture
+    def mock_event_bus(self):
+        """Create mock EventBus with subscribe_once support."""
+        from unittest.mock import AsyncMock, MagicMock
+        from cyberred.core.events import EventBus
+
+        mock_redis = MagicMock()
+        mock_redis.publish = AsyncMock(return_value=1)
+        event_bus = EventBus(mock_redis)
+        return event_bus
+
+    @pytest.fixture
+    def agent_for_auth(self, mock_event_bus):
+        """Create agent for authorization testing."""
+        from unittest.mock import MagicMock
+        from cyberred.agents.base import StigmergicAgent
+        from cyberred.agents.roles import AgentRole
+
+        mock_llm = MagicMock()
+        agent = StigmergicAgent(
+            agent_name="TestAuthAgent",
+            agent_id="auth-agent-1",
+            engagement_id="eng-auth-1",
+            event_bus=mock_event_bus,
+            role=AgentRole.POSTEX,
+            llm=mock_llm,
+        )
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_granted(self, agent_for_auth):
+        """Test _request_authorization returns True when granted."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        # Mock subscribe_once to return granted response
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": True, "operator_id": "op-1", "reason": "approved"}
+        )
+
+        result = await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Found valid credentials",
+            alternative_on_denial=False,
+        )
+
+        assert result is True
+        assert agent_for_auth._status == "active"
+        assert agent_for_auth._pending_auth_request_id is None
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_denied(self, agent_for_auth):
+        """Test _request_authorization returns False when denied."""
+        from unittest.mock import AsyncMock
+
+        # Mock subscribe_once to return denied response
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": False, "operator_id": "op-1", "reason": "out of scope"}
+        )
+
+        result = await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Found valid credentials",
+            alternative_on_denial=False,
+        )
+
+        assert result is False
+        # Status should be restored to previous (idle by default)
+        assert agent_for_auth._pending_auth_request_id is None
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_enters_waiting_state(self, agent_for_auth):
+        """Test _request_authorization enters WAITING_AUTHORIZATION state."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        status_during_wait = None
+
+        async def mock_subscribe_once(channel, timeout=None):
+            nonlocal status_during_wait
+            status_during_wait = agent_for_auth._status
+            await asyncio.sleep(0.01)
+            return {"granted": True}
+
+        agent_for_auth.event_bus.subscribe_once = mock_subscribe_once
+
+        await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Test",
+            alternative_on_denial=False,
+        )
+
+        assert status_during_wait == "waiting_authorization"
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_publishes_request(self, agent_for_auth):
+        """Test _request_authorization publishes to correct channel."""
+        from unittest.mock import AsyncMock
+
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(return_value={"granted": True})
+
+        await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Found valid credentials",
+            alternative_on_denial=False,
+        )
+
+        # Verify publish was called with authorization channel
+        publish_calls = agent_for_auth.event_bus._redis.publish.call_args_list
+        assert len(publish_calls) >= 1
+
+        # Check the channel format
+        channel, payload = publish_calls[0][0]
+        assert channel.startswith("authorization:")
+        assert "lateral_movement" in payload or "action" in payload
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_records_decision_context(self, agent_for_auth):
+        """Test _request_authorization records grant/deny in decision_context."""
+        from unittest.mock import AsyncMock
+
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": True, "operator_id": "op-1"}
+        )
+
+        await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Test",
+            alternative_on_denial=False,
+        )
+
+        # Check decision context contains auth grant
+        context = agent_for_auth.get_decision_context()
+        assert any("auth:" in c and ":granted" in c for c in context)
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_records_denial_in_context(self, agent_for_auth):
+        """Test _request_authorization records denial in decision_context."""
+        from unittest.mock import AsyncMock
+
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": False, "reason": "denied"}
+        )
+
+        await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Test",
+            alternative_on_denial=False,
+        )
+
+        context = agent_for_auth.get_decision_context()
+        assert any("auth:" in c and ":denied" in c for c in context)
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_with_context_tracker(self, agent_for_auth):
+        """Test _request_authorization uses DecisionContextTracker if available."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_tracker = MagicMock()
+        mock_tracker.record_signal = MagicMock()
+        mock_tracker.get_context = MagicMock(return_value=["auth:123:granted"])
+        agent_for_auth._context_tracker = mock_tracker
+
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": True, "operator_id": "op-1"}
+        )
+
+        await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Test",
+            alternative_on_denial=False,
+        )
+
+        # Verify tracker.record_signal was called with authorization type
+        mock_tracker.record_signal.assert_called()
+        call_kwargs = mock_tracker.record_signal.call_args[1]
+        assert call_kwargs["signal_type"] == "authorization"
+
+    @pytest.mark.asyncio
+    async def test_select_alternative_action_returns_tool(self, agent_for_auth):
+        """Test _select_alternative_action returns alternative tool."""
+        from unittest.mock import AsyncMock, MagicMock
+        from cyberred.core.models import ToolSelection
+
+        mock_gateway = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = '{"tool_name": "linpeas", "command": "linpeas.sh", "rationale": "local enum", "expected_output_type": "text", "confidence": 0.8, "priority": 5}'
+        mock_gateway.agent_complete = AsyncMock(return_value=mock_response)
+        agent_for_auth._llm_gateway = mock_gateway
+
+        result = await agent_for_auth._select_alternative_action(
+            original_action="lateral_movement",
+            denial_reason="out of scope",
+        )
+
+        assert result == "linpeas"
+
+    @pytest.mark.asyncio
+    async def test_select_alternative_action_no_gateway_returns_none(self, agent_for_auth):
+        """Test _select_alternative_action returns None without LLM gateway."""
+        agent_for_auth._llm_gateway = None
+
+        result = await agent_for_auth._select_alternative_action(
+            original_action="lateral_movement",
+            denial_reason="denied",
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_calls_alternative_on_denial(self, agent_for_auth):
+        """Test _request_authorization calls _select_alternative_action when denied."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent_for_auth.event_bus.subscribe_once = AsyncMock(
+            return_value={"granted": False, "reason": "out of scope"}
+        )
+
+        with patch.object(
+            agent_for_auth, "_select_alternative_action", new_callable=AsyncMock
+        ) as mock_alt:
+            mock_alt.return_value = "linpeas"
+
+            result = await agent_for_auth._request_authorization(
+                action="lateral_movement",
+                target="192.168.1.50",
+                justification="Test",
+                alternative_on_denial=True,
+            )
+
+            assert result is False
+            mock_alt.assert_called_once_with("lateral_movement", "out of scope")
+            # Status should be active after alternative found
+            assert agent_for_auth._status == "active"
+
+    @pytest.mark.asyncio
+    async def test_pending_auth_request_id_tracked(self, agent_for_auth):
+        """Test _pending_auth_request_id is set during authorization."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        pending_id_during_wait = None
+
+        async def mock_subscribe_once(channel, timeout=None):
+            nonlocal pending_id_during_wait
+            pending_id_during_wait = agent_for_auth._pending_auth_request_id
+            await asyncio.sleep(0.01)
+            return {"granted": True}
+
+        agent_for_auth.event_bus.subscribe_once = mock_subscribe_once
+
+        await agent_for_auth._request_authorization(
+            action="test",
+            target="test",
+            justification="test",
+            alternative_on_denial=False,
+        )
+
+        assert pending_id_during_wait is not None
+        assert agent_for_auth._pending_auth_request_id is None  # Cleared after
+
+    @pytest.mark.asyncio
+    async def test_request_authorization_none_response_handles_gracefully(self, agent_for_auth):
+        """Test _request_authorization handles None response (timeout scenario)."""
+        async def mock_subscribe_once(channel, timeout=None):
+            return None  # Simulates timeout or no response
+
+        agent_for_auth.event_bus.subscribe_once = mock_subscribe_once
+
+        result = await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="192.168.1.50",
+            justification="Test",
+            alternative_on_denial=False,
+        )
+
+        # Should return False (not granted) and handle gracefully
+        assert result is False
+        # Context should still record denial
+        context = agent_for_auth.get_decision_context()
+        assert any(":denied" in c for c in context)
+
+    @pytest.mark.asyncio
+    async def test_pending_auth_request_id_cleared_on_exception(self, agent_for_auth):
+        """Test _pending_auth_request_id is cleared even when exception occurs."""
+        async def mock_subscribe_once_error(channel, timeout=None):
+            raise RuntimeError("Connection failed")
+
+        agent_for_auth.event_bus.subscribe_once = mock_subscribe_once_error
+
+        with pytest.raises(RuntimeError, match="Connection failed"):
+            await agent_for_auth._request_authorization(
+                action="test",
+                target="test",
+                justification="test",
+                alternative_on_denial=False,
+            )
+
+        # _pending_auth_request_id should be cleared even after exception
+        assert agent_for_auth._pending_auth_request_id is None
+
+    @pytest.mark.asyncio
+    async def test_select_alternative_action_tool_selection_error_returns_none(self, agent_for_auth):
+        """Test _select_alternative_action returns None when ToolSelectionError occurs."""
+        from unittest.mock import AsyncMock, MagicMock
+        from cyberred.core.exceptions import ToolSelectionError
+
+        mock_gateway = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = "invalid json {not parseable"  # Will cause ToolSelectionError
+        mock_gateway.agent_complete = AsyncMock(return_value=mock_response)
+        agent_for_auth._llm_gateway = mock_gateway
+
+        result = await agent_for_auth._select_alternative_action(
+            original_action="lateral_movement",
+            denial_reason="out of scope",
+        )
+
+        # Should return None gracefully, not raise
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_denial_with_alternative_that_returns_none_restores_status(self, agent_for_auth):
+        """Test that when alternative selection returns None, previous status is restored."""
+        from unittest.mock import AsyncMock
+
+        agent_for_auth._status = "active"
+        agent_for_auth._llm_gateway = None  # No gateway means _select_alternative returns None
+
+        async def mock_subscribe_once(channel, timeout=None):
+            return {"granted": False, "reason": "denied"}
+
+        agent_for_auth.event_bus.subscribe_once = mock_subscribe_once
+
+        result = await agent_for_auth._request_authorization(
+            action="lateral_movement",
+            target="test",
+            justification="test",
+            alternative_on_denial=True,  # Enable alternative selection
+        )
+
+        assert result is False
+        # Status should be restored to previous (active) since no alternative found
+        assert agent_for_auth._status == "active"

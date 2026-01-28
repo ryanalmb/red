@@ -47,6 +47,7 @@ class StreamEventType(StrEnum):
     STATE_CHANGE = "state_change"
     HEARTBEAT = "heartbeat"
     DAEMON_SHUTDOWN = "daemon_shutdown"  # Story 2.11: Graceful shutdown notification
+    STRATEGY_UPDATE = "strategy_update"  # Story 8.11: Director strategy updates
 
 
 @dataclass

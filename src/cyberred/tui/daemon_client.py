@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional, Any
 
@@ -35,6 +36,7 @@ from cyberred.daemon.ipc import (
 )
 from cyberred.daemon.streaming import (
     StreamEvent,
+    StreamEventType,
     decode_stream_event,
 )
 
@@ -67,6 +69,7 @@ class TUIClient:
     - Attaching to engagements and receiving streaming events
     - Detaching from engagements
     - Measuring attach latency (NFR32: <2s)
+    - Stale state detection (Story 9.7: AC #6, #7)
 
     Attributes:
         socket_path: Path to the daemon Unix socket.
@@ -74,11 +77,16 @@ class TUIClient:
         attached: Whether the client is attached to an engagement.
         engagement_id: Currently attached engagement ID (if any).
         subscription_id: Current subscription ID (if attached).
+        is_stale: Whether daemon connection is stale (no activity for 60s+).
+        last_activity_time: Datetime of last event received.
+        seconds_since_activity: Seconds since last event received.
     """
 
-    
     # Timeout for reading events (slightly longer than server heartbeat of 30s)
     HEARTBEAT_TIMEOUT: float = 35.0
+    
+    # Stale state threshold (Story 9.7: AC #6)
+    STALE_THRESHOLD_SECONDS: float = 60.0
 
     def __init__(self) -> None:
         """Initialize TUI client (not connected yet)."""
@@ -89,6 +97,7 @@ class TUIClient:
         self._subscription_id: Optional[str] = None
         self._attach_latency_ms: Optional[float] = None
         self._streaming: bool = False
+        self._last_activity_time: float = 0.0  # Story 9.7: Track last event timestamp
 
     @property
     def connected(self) -> bool:
@@ -114,6 +123,51 @@ class TUIClient:
     def attach_latency_ms(self) -> Optional[float]:
         """Return attach latency in milliseconds (after successful attach)."""
         return self._attach_latency_ms
+
+    @property
+    def is_stale(self) -> bool:
+        """Return True if no activity received for more than 60 seconds (Story 9.7: AC #6).
+        
+        Returns False if no events have ever been received (never activated).
+        Returns False at exactly 60 seconds, True only after 60 seconds.
+        """
+        if self._last_activity_time == 0.0:
+            return False  # Never received any event
+        elapsed = time.monotonic() - self._last_activity_time
+        # Use > (not >=) so exactly 60s is not stale, only >60s is stale
+        return elapsed > self.STALE_THRESHOLD_SECONDS
+
+    @property
+    def last_activity_time(self) -> Optional[datetime]:
+        """Return datetime of last activity (Story 9.7: AC #7).
+        
+        Returns:
+            Datetime of last event received, or None if no events received.
+        """
+        if self._last_activity_time == 0.0:
+            return None
+        # Convert monotonic to wall clock (approximate)
+        seconds_ago = time.monotonic() - self._last_activity_time
+        return datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+
+    @property
+    def seconds_since_activity(self) -> float:
+        """Return seconds since last activity (Story 9.7: AC #7).
+        
+        Returns:
+            Seconds since last event, or 0.0 if no events ever received.
+        """
+        if self._last_activity_time == 0.0:
+            return 0.0
+        return time.monotonic() - self._last_activity_time
+
+    def reset_activity_time(self) -> None:
+        """Reset activity time to current time (Story 9.7: AC #7).
+        
+        Used by refresh action to clear stale state.
+        This is the public API for updating activity time externally.
+        """
+        self._last_activity_time = time.monotonic()
 
     async def connect(self, socket_path: Path) -> None:
         """Connect to the daemon via Unix socket.
@@ -177,7 +231,11 @@ class TUIClient:
         except (BrokenPipeError, ConnectionResetError) as e:
             raise DaemonConnectionError(f"Connection lost: {e}") from e
 
-    async def attach(self, engagement_id: str) -> AsyncIterator[StreamEvent]:
+    async def attach(
+        self,
+        engagement_id: str,
+        sync_mode: str = "full",
+    ) -> AsyncIterator[StreamEvent]:
         """Attach to an engagement and stream events.
 
         Sends ENGAGEMENT_ATTACH command, receives initial state snapshot,
@@ -185,6 +243,9 @@ class TUIClient:
 
         Args:
             engagement_id: Engagement ID to attach to.
+            sync_mode: Sync mode - "full" for complete state with agent/finding
+                details, "incremental" for counts only (faster attach).
+                Default is "full" for backwards compatibility.
 
         Yields:
             StreamEvent objects from the daemon.
@@ -192,12 +253,28 @@ class TUIClient:
         Raises:
             DaemonConnectionError: If not connected.
             EngagementError: If engagement not found or invalid state.
+        
+        Note:
+            For incremental mode (Story 9.8):
+            - First yield contains: state, agent_count, finding_count
+            - TUI becomes operational immediately
+            - Full details loaded on-demand when user requests
+        
+        Raises:
+            ValueError: If sync_mode is not 'full' or 'incremental'.
+            DaemonConnectionError: If not connected.
+            EngagementError: If engagement not found or invalid state.
         """
+        # Validate sync_mode parameter
+        if sync_mode not in ("full", "incremental"):
+            raise ValueError(f"sync_mode must be 'full' or 'incremental', got '{sync_mode}'")
+        
         start_time = time.monotonic()
 
         response = await self._send_request(
             IPCCommand.ENGAGEMENT_ATTACH,
             engagement_id=engagement_id,
+            sync_mode=sync_mode,
         )
 
         if response.status == "error":
@@ -221,7 +298,7 @@ class TUIClient:
         # Yield initial state as a STATE_CHANGE event if state is present
         if "state" in data:
             yield StreamEvent(
-                event_type="state_change",
+                event_type=StreamEventType.STATE_CHANGE,
                 data={
                     "engagement_id": engagement_id,
                     "state": data.get("state"),
@@ -248,6 +325,7 @@ class TUIClient:
                     break
 
                 event = decode_stream_event(data_line)
+                self._last_activity_time = time.monotonic()  # Story 9.7: Track activity
                 yield event
 
             except asyncio.TimeoutError:
@@ -261,20 +339,26 @@ class TUIClient:
         # Clean up streaming state
         self._streaming = False
 
-    async def detach(self) -> None:
+    async def detach(self) -> bool:
         """Detach from current engagement.
 
         Sends ENGAGEMENT_DETACH command to stop streaming.
         Safe to call even if not attached (no-op).
+        
+        Per Story 9.9 FR59: Detach without stopping engagement.
+        SSH disconnect behaves same as Ctrl+D.
+
+        Returns:
+            True if detach successful or already detached, False on error.
         """
         if not self._subscription_id:
             log.debug("detach_no_subscription")
-            return
+            return True  # Already detached is success
 
         if not self.connected:
             log.warning("detach_not_connected")
             self._cleanup_attachment()
-            return
+            return True  # Connection lost counts as successful detach
 
         try:
             response = await self._send_request(
@@ -289,15 +373,18 @@ class TUIClient:
                     engagement_id=self._engagement_id,
                     subscription_id=self._subscription_id,
                 )
+                return True
             else:
                 log.warning(
                     "detach_error",
                     engagement_id=self._engagement_id,
                     error=response.error,
                 )
+                return False
 
         except DaemonConnectionError as e:
             log.warning("detach_connection_error", error=str(e))
+            return True  # Connection error during detach still counts as detached
 
         finally:
             self._cleanup_attachment()

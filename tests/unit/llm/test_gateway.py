@@ -837,3 +837,91 @@ class TestMetrics:
         response = await gateway._execute_with_retry(request)
         assert response.content == "ok"
 
+    @pytest.mark.asyncio
+    async def test_explicit_model_bypasses_router(self, mock_rate_limiter, mock_router, mock_queue, monkeypatch):
+        """Test that explicit model in request bypasses router selection."""
+        gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
+        mock_rate_limiter.acquire_async.return_value = True
+        
+        # Mock NIMProvider - patch in cyberred.llm.nim module since it's imported inside the function
+        mock_nim_instance = AsyncMock()
+        mock_nim_instance.complete_async.return_value = LLMResponse(
+            content="explicit model response",
+            model="deepseek-ai/deepseek-v3.2",
+            usage=None,
+            latency_ms=50.0
+        )
+        
+        mock_nim_class = MagicMock(return_value=mock_nim_instance)
+        monkeypatch.setattr("cyberred.llm.nim.NIMProvider", mock_nim_class)
+        monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+        
+        # Request with explicit model (Director Ensemble use case)
+        request = LLMRequest(prompt="test", model="deepseek-ai/deepseek-v3.2")
+        
+        response = await gateway._execute_with_retry(request)
+        
+        # Verify NIMProvider was created with explicit model
+        mock_nim_class.assert_called_once()
+        call_kwargs = mock_nim_class.call_args
+        assert call_kwargs[1]["model"] == "deepseek-ai/deepseek-v3.2"
+        
+        # Verify router was NOT used
+        mock_router.infer_complexity.assert_not_called()
+        mock_router.select_model.assert_not_called()
+        
+        assert response.content == "explicit model response"
+
+    @pytest.mark.asyncio
+    async def test_auto_model_uses_router(self, mock_rate_limiter, mock_router, mock_queue):
+        """Test that model='auto' uses router for selection."""
+        gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
+        mock_rate_limiter.acquire_async.return_value = True
+        
+        provider = AsyncMock()
+        provider.complete_async.return_value = LLMResponse(
+            content="routed response",
+            model="standard-model",
+            usage=None,
+            latency_ms=30.0
+        )
+        
+        mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
+        mock_router.select_model.return_value = provider
+        
+        request = LLMRequest(prompt="test prompt", model="auto")
+        
+        response = await gateway._execute_with_retry(request)
+        
+        # Verify router was used
+        mock_router.infer_complexity.assert_called_once_with("test prompt")
+        mock_router.select_model.assert_called_once()
+        
+        assert response.content == "routed response"
+
+    @pytest.mark.asyncio
+    async def test_empty_model_uses_router(self, mock_rate_limiter, mock_router, mock_queue):
+        """Test that empty/None model uses router for selection."""
+        gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
+        mock_rate_limiter.acquire_async.return_value = True
+        
+        provider = AsyncMock()
+        provider.complete_async.return_value = LLMResponse(
+            content="routed response",
+            model="standard-model",
+            usage=None,
+            latency_ms=30.0
+        )
+        
+        mock_router.infer_complexity.return_value = TaskComplexity.FAST
+        mock_router.select_model.return_value = provider
+        
+        # Empty string model should use router
+        request = LLMRequest(prompt="simple test", model="")
+        
+        response = await gateway._execute_with_retry(request)
+        
+        # Verify router was used
+        mock_router.infer_complexity.assert_called()
+        mock_router.select_model.assert_called()
+

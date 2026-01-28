@@ -959,3 +959,56 @@ class ToolSelectionError(CyberRedError):
     def __repr__(self) -> str:
         """Return debug representation."""
         return f"ToolSelectionError(agent_id={self.agent_id!r}, reason={self.reason!r})"
+
+
+# === Director Ensemble Exceptions (Story 8.6) ===
+
+
+class NoModelsAvailableError(CyberRedError):
+    """No Director models are available for synthesis.
+
+    Story 8.6: Partial Model Availability Fallback.
+    
+    Raised when all Director models are excluded or unavailable,
+    triggering engagement pause and requiring operator action.
+
+    Attributes:
+        excluded_models: List of excluded model names.
+        last_errors: Dict mapping model name to last error.
+    """
+
+    def __init__(
+        self,
+        message: str | None = None,
+        excluded_models: list[str] | None = None,
+        last_errors: dict[str, str] | None = None,
+    ) -> None:
+        """Initialize NoModelsAvailableError.
+
+        Args:
+            message: Custom error message.
+            excluded_models: List of excluded model names.
+            last_errors: Dict mapping model name to last error.
+        """
+        self.excluded_models = excluded_models or []
+        self.last_errors = last_errors or {}
+
+        if message is None:
+            message = "No Director models available"
+
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for no models available error."""
+        return {
+            "excluded_models": self.excluded_models,
+            "last_errors": self.last_errors,
+        }
+
+    def __repr__(self) -> str:
+        """Return debug representation."""
+        return (
+            f"NoModelsAvailableError(excluded_models={self.excluded_models!r}, "
+            f"last_errors={self.last_errors!r})"
+        )

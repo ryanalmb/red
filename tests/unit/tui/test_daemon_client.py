@@ -451,6 +451,163 @@ class TestTUIClientLatency:
             await server.wait_closed()
 
 
+class TestTUIClientStaleDetection:
+    """Tests for stale state detection (Story 9.7).
+
+    Covers AC #6, #7: Stale state detection after 60s inactivity.
+    """
+
+    def test_initial_last_activity_time_zero(self):
+        """_last_activity_time starts at 0.0."""
+        client = TUIClient()
+        assert client._last_activity_time == 0.0
+
+    def test_is_stale_false_when_never_received_events(self):
+        """is_stale returns False if no events ever received."""
+        client = TUIClient()
+        assert client.is_stale is False
+
+    def test_is_stale_false_within_threshold(self):
+        """is_stale returns False within 60s threshold."""
+        import time
+        client = TUIClient()
+        client._last_activity_time = time.monotonic() - 30.0  # 30s ago
+        assert client.is_stale is False
+
+    def test_is_stale_true_after_threshold(self):
+        """is_stale returns True after 60s inactivity."""
+        import time
+        client = TUIClient()
+        client._last_activity_time = time.monotonic() - 61.0  # 61s ago
+        assert client.is_stale is True
+
+    def test_is_stale_exactly_at_threshold(self):
+        """is_stale returns False at exactly 60s (boundary test)."""
+        import time
+        client = TUIClient()
+        # Set slightly less than 60s to account for execution time
+        client._last_activity_time = time.monotonic() - 59.9
+        assert client.is_stale is False
+
+    def test_seconds_since_activity_zero_when_never_received(self):
+        """seconds_since_activity returns 0.0 if no events ever received."""
+        client = TUIClient()
+        assert client.seconds_since_activity == 0.0
+
+    def test_seconds_since_activity_calculation(self):
+        """seconds_since_activity returns correct delta."""
+        import time
+        client = TUIClient()
+        client._last_activity_time = time.monotonic() - 45.5
+        # Allow small tolerance for execution time
+        assert 45.0 <= client.seconds_since_activity <= 46.0
+
+    def test_last_activity_time_none_when_never_received(self):
+        """last_activity_time returns None if no events ever received."""
+        client = TUIClient()
+        assert client.last_activity_time is None
+
+    def test_last_activity_time_returns_datetime(self):
+        """last_activity_time returns datetime when events were received."""
+        import time
+        from datetime import datetime, timezone
+        client = TUIClient()
+        client._last_activity_time = time.monotonic() - 10.0
+        
+        result = client.last_activity_time
+        assert result is not None
+        assert isinstance(result, datetime)
+        # Should be approximately 10 seconds ago
+        now = datetime.now(timezone.utc)
+        diff = (now - result).total_seconds()
+        assert 9.0 <= diff <= 11.0
+
+    def test_stale_threshold_constant(self):
+        """STALE_THRESHOLD_SECONDS is 60.0."""
+        assert TUIClient.STALE_THRESHOLD_SECONDS == 60.0
+
+    def test_reset_activity_time_updates_timestamp(self):
+        """reset_activity_time() updates _last_activity_time to current time."""
+        import time
+        client = TUIClient()
+        assert client._last_activity_time == 0.0
+        
+        before = time.monotonic()
+        client.reset_activity_time()
+        after = time.monotonic()
+        
+        assert before <= client._last_activity_time <= after
+        assert client.is_stale is False
+
+    def test_reset_activity_time_clears_stale_state(self):
+        """reset_activity_time() clears stale state."""
+        import time
+        client = TUIClient()
+        
+        # Set stale state (61s ago)
+        client._last_activity_time = time.monotonic() - 61.0
+        assert client.is_stale is True
+        
+        # Reset activity time
+        client.reset_activity_time()
+        
+        # Should no longer be stale
+        assert client.is_stale is False
+        assert client.seconds_since_activity < 1.0
+
+    @pytest.mark.asyncio
+    async def test_activity_time_updated_on_event_receipt(self, tmp_path: Path):
+        """_last_activity_time is updated when event is received."""
+        import time
+        socket_path = tmp_path / "daemon.sock"
+
+        async def handle_client(reader, writer):
+            try:
+                await reader.readline()
+                response = IPCResponse(
+                    status="ok",
+                    request_id="test",
+                    data={"subscription_id": "sub-abc", "state": "RUNNING"},
+                )
+                writer.write((response.to_json() + "\n").encode())
+                await writer.drain()
+                # Send a stream event
+                event = StreamEvent(
+                    event_type=StreamEventType.HEARTBEAT,
+                    data={},
+                )
+                writer.write(encode_stream_event(event))
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(
+            handle_client, path=str(socket_path)
+        )
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            
+            # Check initial state
+            assert client._last_activity_time == 0.0
+            
+            before_time = time.monotonic()
+            events = []
+            async for event in client.attach("eng-123"):
+                events.append(event)
+            after_time = time.monotonic()
+            
+            # Activity time should be updated
+            assert client._last_activity_time > 0.0
+            assert before_time <= client._last_activity_time <= after_time
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+
 class TestTUIClientEdgeCases:
     """Tests for edge cases to achieve 100% coverage."""
 
@@ -738,6 +895,212 @@ class TestTUIClientEdgeCases:
 
             # No initial state (no 'state' key), and loop exits immediately
             assert len(events) == 0
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+
+class TestTUIClientIncrementalSync:
+    """Tests for TUIClient incremental state sync (Story 9.8).
+    
+    AC #2: Full engagement state is synced during attach.
+    Task 6: TUIClient incremental sync tests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_attach_invalid_sync_mode_raises_error(self, tmp_path: Path):
+        """Attach with invalid sync_mode raises ValueError."""
+        socket_path = tmp_path / "daemon.sock"
+
+        async def handle_client(reader, writer):
+            try:
+                await asyncio.sleep(0.1)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(socket_path))
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            
+            with pytest.raises(ValueError) as exc_info:
+                async for _ in client.attach("eng-123", sync_mode="invalid"):
+                    pass
+            
+            assert "sync_mode must be" in str(exc_info.value)
+            assert "'invalid'" in str(exc_info.value)
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_attach_default_sync_mode_is_full(self, tmp_path: Path):
+        """Default sync_mode is 'full' for backwards compatibility."""
+        socket_path = tmp_path / "daemon.sock"
+        received_request = {}
+
+        async def handle_client(reader, writer):
+            try:
+                data = await reader.readline()
+                received_request["data"] = json.loads(data.decode())
+                response = IPCResponse(
+                    status="ok",
+                    request_id="test",
+                    data={"subscription_id": "sub-123", "state": "RUNNING"},
+                )
+                writer.write((response.to_json() + "\n").encode())
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(socket_path))
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            async for _ in client.attach("eng-123"):
+                break
+            
+            # Default should be "full" mode
+            assert received_request["data"]["params"].get("sync_mode", "full") == "full"
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_attach_incremental_sync_mode(self, tmp_path: Path):
+        """Attach with sync_mode='incremental' sends correct parameter."""
+        socket_path = tmp_path / "daemon.sock"
+        received_request = {}
+
+        async def handle_client(reader, writer):
+            try:
+                data = await reader.readline()
+                received_request["data"] = json.loads(data.decode())
+                response = IPCResponse(
+                    status="ok",
+                    request_id="test",
+                    data={
+                        "subscription_id": "sub-123",
+                        "state": "RUNNING",
+                        "agent_count": 100,
+                        "finding_count": 50,
+                    },
+                )
+                writer.write((response.to_json() + "\n").encode())
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(socket_path))
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            async for _ in client.attach("eng-123", sync_mode="incremental"):
+                break
+            
+            assert received_request["data"]["params"]["sync_mode"] == "incremental"
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_attach_incremental_returns_counts(self, tmp_path: Path):
+        """Incremental sync returns agent/finding counts in initial state."""
+        socket_path = tmp_path / "daemon.sock"
+
+        async def handle_client(reader, writer):
+            try:
+                await reader.readline()
+                response = IPCResponse(
+                    status="ok",
+                    request_id="test",
+                    data={
+                        "subscription_id": "sub-123",
+                        "state": "RUNNING",
+                        "agent_count": 1000,
+                        "finding_count": 250,
+                    },
+                )
+                writer.write((response.to_json() + "\n").encode())
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(socket_path))
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            
+            events = []
+            async for event in client.attach("eng-123", sync_mode="incremental"):
+                events.append(event)
+                break
+            
+            assert len(events) == 1
+            assert events[0].data["agent_count"] == 1000
+            assert events[0].data["finding_count"] == 250
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_attach_full_sync_includes_details(self, tmp_path: Path):
+        """Full sync includes agent and finding details."""
+        socket_path = tmp_path / "daemon.sock"
+
+        async def handle_client(reader, writer):
+            try:
+                await reader.readline()
+                response = IPCResponse(
+                    status="ok",
+                    request_id="test",
+                    data={
+                        "subscription_id": "sub-123",
+                        "state": "RUNNING",
+                        "agent_count": 2,
+                        "finding_count": 1,
+                        "agents": [
+                            {"id": "agent-1", "status": "active"},
+                            {"id": "agent-2", "status": "idle"},
+                        ],
+                        "findings": [
+                            {"id": "finding-1", "severity": "HIGH"},
+                        ],
+                    },
+                )
+                writer.write((response.to_json() + "\n").encode())
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(socket_path))
+
+        try:
+            client = TUIClient()
+            await client.connect(socket_path)
+            
+            events = []
+            async for event in client.attach("eng-123", sync_mode="full"):
+                events.append(event)
+                break
+            
+            assert len(events) == 1
+            assert len(events[0].data["agents"]) == 2
+            assert len(events[0].data["findings"]) == 1
         finally:
             await client.close()
             server.close()

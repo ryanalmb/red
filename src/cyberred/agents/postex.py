@@ -197,18 +197,9 @@ class PostExAgent(StigmergicAgent):
                 pass
         return None
 
-    async def _request_authorization(self, action: str, target: str, justification: str) -> bool:
-        """Request operator authorization for lateral movement (FR13)."""
-        request_id = str(uuid.uuid4())
-        channel = f"authorization:{request_id}"
-        await self.event_bus.publish(channel, {
-            "action": action, "target": target, "justification": justification,
-            "agent_id": str(self.agent_id), "request_id": request_id,
-        })
-        response = await self.event_bus.subscribe_once(f"{channel}:response")
-        granted = response.get("granted", False) if response else False
-        self._decision_context.append(f"auth:{request_id}:{'granted' if granted else 'denied'}")
-        return granted
+    # Note: _request_authorization() is inherited from StigmergicAgent base class (Story 7.16)
+    # The base implementation provides state management, decision context tracking,
+    # and alternative action selection on denial.
 
     def _generate_finding_signature(self, finding_data: dict[str, Any]) -> str:
         return compute_hmac_signature({k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key)

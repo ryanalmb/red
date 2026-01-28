@@ -742,6 +742,48 @@ class SessionManager:
 
         return count
 
+    def push_auth_request(self, engagement_id: str, request_data: dict) -> int:
+        """Push authorization request to all attached TUI clients.
+        
+        Story 10.1 Task 7: WebSocket push delivery for auth requests.
+        Delivers auth requests with <500ms latency (NFR5) by using
+        direct callback invocation to subscribed TUI clients.
+        
+        Args:
+            engagement_id: Engagement ID the request belongs to.
+            request_data: Authorization request data dict containing:
+                - id: Request ID
+                - agent_id: Requesting agent
+                - target: Target for authorization
+                - request_type: Type of authorization
+                - risk_level: Risk assessment
+                - related_findings: Supporting findings
+                - swarm_snapshot: Current swarm state
+                
+        Returns:
+            Number of TUI clients notified.
+        """
+        from cyberred.daemon.streaming import StreamEvent, StreamEventType
+        
+        # Create AUTH_REQUEST stream event
+        event = StreamEvent(
+            event_type=StreamEventType.AUTH_REQUEST,
+            data=request_data,
+        )
+        
+        # Broadcast to all subscribers for this engagement
+        count = self.broadcast_event(engagement_id, event)
+        
+        log.info(
+            "auth_request_pushed",
+            engagement_id=engagement_id,
+            request_id=request_data.get("id"),
+            target=request_data.get("target"),
+            clients_notified=count,
+        )
+        
+        return count
+
     def get_subscription_count(self, engagement_id: str) -> int:
         """Get number of active subscriptions for an engagement.
 

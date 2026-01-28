@@ -342,3 +342,169 @@ class TestEmergenceComparison:
         
         config = EmergenceComparisonConfig()
         assert "cyber-range" in config.cyber_range_baseline
+
+
+@pytest.mark.emergence
+class TestEmergenceScoreWithRoleDiversity:
+    """Test emergence score calculation with 8-role diversity (Story 7.25, AC: 2)."""
+
+    def test_emergence_score_with_all_8_roles(
+        self,
+        comparison_framework,
+        isolated_baseline_result,
+        eight_role_stigmergic_result,
+    ):
+        """Verify emergence score calculation with all 8 roles (AC: 2)."""
+        from cyberred.orchestration.emergence import NFR35_EMERGENCE_THRESHOLD
+        
+        comparison = comparison_framework.compare(
+            isolated_baseline_result,
+            eight_role_stigmergic_result,
+        )
+        
+        # With 8-role diversity, we should have significant novel paths
+        assert comparison.emergence_score > NFR35_EMERGENCE_THRESHOLD, (
+            f"8-role swarm emergence score {comparison.emergence_score:.2%} "
+            f"should exceed {NFR35_EMERGENCE_THRESHOLD:.0%}"
+        )
+
+    def test_novel_chains_identified_across_agent_types(
+        self,
+        comparison_framework,
+        isolated_baseline_result,
+        eight_role_stigmergic_result,
+    ):
+        """Verify novel chain detection spans all roles (AC: 2)."""
+        comparison = comparison_framework.compare(
+            isolated_baseline_result,
+            eight_role_stigmergic_result,
+        )
+        
+        # Novel paths should include paths from roles not in isolated
+        novel_techniques = set()
+        for path in comparison.novel_paths:
+            for step in path.steps:
+                novel_techniques.add(step.technique.replace("_technique", ""))
+        
+        # Should include new roles like webapp, wireless, ad, credential, forensics
+        new_roles = {"webapp", "wireless", "ad", "credential", "forensics"}
+        assert novel_techniques.intersection(new_roles), (
+            f"Novel paths should include new roles, found: {novel_techniques}"
+        )
+
+    def test_emergence_score_multi_role_vs_single_role(
+        self,
+        comparison_framework,
+    ):
+        """Verify emergence improves with multi-role diversity (AC: 2)."""
+        from cyberred.orchestration.emergence.models import AttackPath, PathStep, RunResult
+        from cyberred.agents.roles import AgentRole
+        
+        def create_role_path(role: AgentRole) -> AttackPath:
+            return AttackPath(steps=[
+                PathStep(
+                    target="192.168.1.1",
+                    technique=f"{role.value}_technique",
+                    finding_id=f"finding_{role.value}",
+                    action_id=f"action_{role.value}",
+                    decision_context=[],
+                )
+            ])
+        
+        # Single role isolated baseline
+        isolated = RunResult(
+            run_id="iso-single",
+            mode="isolated",
+            agent_count=10,
+            findings=[],
+            attack_paths=[create_role_path(AgentRole.RECON)],
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        # Single role stigmergic (same as isolated - 0% emergence)
+        stigmergic_single = RunResult(
+            run_id="stig-single",
+            mode="stigmergic",
+            agent_count=10,
+            findings=[],
+            attack_paths=[create_role_path(AgentRole.RECON)],
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        # Multi-role stigmergic (adds novel paths)
+        stigmergic_multi = RunResult(
+            run_id="stig-multi",
+            mode="stigmergic",
+            agent_count=10,
+            findings=[],
+            attack_paths=[
+                create_role_path(AgentRole.RECON),
+                create_role_path(AgentRole.EXPLOIT),
+                create_role_path(AgentRole.WEBAPP),
+            ],
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        score_single = comparison_framework.compare(isolated, stigmergic_single).emergence_score
+        score_multi = comparison_framework.compare(isolated, stigmergic_multi).emergence_score
+        
+        assert score_multi > score_single, (
+            f"Multi-role emergence {score_multi:.2%} should exceed "
+            f"single-role {score_single:.2%}"
+        )
+
+    def test_emergence_score_uses_real_agent_role_metadata(
+        self,
+        comparison_framework,
+        all_agent_roles,
+    ):
+        """Integration test: emergence scoring uses real agent role metadata (AC: 2)."""
+        from cyberred.orchestration.emergence.models import AttackPath, PathStep, RunResult
+        
+        # Create paths using real AgentRole values
+        paths = []
+        for role in all_agent_roles:
+            path = AttackPath(steps=[
+                PathStep(
+                    target="192.168.1.1",
+                    technique=f"{role.value}_technique",
+                    finding_id=f"finding_{role.value}",
+                    action_id=f"action_{role.value}",
+                    decision_context=[f"signal_{role.value}"],
+                )
+            ])
+            paths.append(path)
+        
+        isolated = RunResult(
+            run_id="iso-meta",
+            mode="isolated",
+            agent_count=100,
+            findings=[],
+            attack_paths=[],  # Empty baseline
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        stigmergic = RunResult(
+            run_id="stig-meta",
+            mode="stigmergic",
+            agent_count=100,
+            findings=[],
+            attack_paths=paths,
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        comparison = comparison_framework.compare(isolated, stigmergic)
+        
+        # All 8 paths should be novel
+        assert len(comparison.novel_paths) == 8
+        assert comparison.emergence_score == 1.0
+        
+        # Verify techniques match real AgentRole values
+        techniques = {step.technique for path in comparison.novel_paths for step in path.steps}
+        for role in all_agent_roles:
+            assert f"{role.value}_technique" in techniques

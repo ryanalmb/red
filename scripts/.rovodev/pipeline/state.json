@@ -1,0 +1,22 @@
+{
+  "pipeline_id": "test-save-load",
+  "status": "not_started",
+  "start_time": null,
+  "end_time": null,
+  "story_queue": [
+    {
+      "epic": 7,
+      "story": 15,
+      "story_key": "7-15",
+      "story_file": null
+    },
+    {
+      "epic": 7,
+      "story": 16,
+      "story_key": "7-16",
+      "story_file": null
+    }
+  ],
+  "current_story_idx": 1,
+  "current_story": null
+}

@@ -180,12 +180,64 @@ jobs:
           include-hidden-files: true
 
   # =============================================================================
+  # EMERGENCE GATE - NFR35-37 Hard Gate (SHIP/NO-SHIP)
+  # Story 7.14: Emergence Validation Gate Test
+  # =============================================================================
+  emergence-gate:
+    name: "Emergence Hard Gate (NFR35-37)"
+    runs-on: self-hosted
+    needs: [unit-tests, integration-tests, safety-tests]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Run emergence gate tests
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          EMERGENCE_TEST_AGENT_COUNT: "100"
+          EMERGENCE_TEST_TIMEOUT: "1800"
+        run: |
+          export COVERAGE_FILE=.coverage.emergence
+          pytest -m emergence tests/emergence/test_emergence_gate.py \
+            --tb=long \
+            --junit-xml=emergence-results.xml \
+            --cov=src \
+            --cov-report=term-missing \
+            -v
+
+      - name: Upload emergence test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emergence-gate-results
+          path: emergence-results.xml
+
+      - name: Upload emergence coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-emergence
+          path: .coverage.emergence
+          include-hidden-files: true
+
+  # =============================================================================
   # COVERAGE GATE - Enforce 100% coverage via COMBINING artifacts
   # =============================================================================
   coverage-gate:
     name: Coverage Gate (100%)
     runs-on: self-hosted
-    needs: [unit-tests, integration-tests, safety-tests]
+    needs: [unit-tests, integration-tests, safety-tests, emergence-gate]
     timeout-minutes: 5
     steps:
       - name: Checkout code

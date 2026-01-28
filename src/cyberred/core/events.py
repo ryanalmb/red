@@ -50,6 +50,7 @@ CHANNEL_PATTERNS = [
     re.compile(r"^agents:[a-zA-Z0-9_-]+:status$"),  # agents:id:status
     re.compile(r"^control:[a-zA-Z0-9_-]+$"),  # control:*
     re.compile(r"^authorization:[a-zA-Z0-9_-]+$"),  # authorization:request_id
+    re.compile(r"^auth:[a-zA-Z0-9_-]+:response$"),  # auth:request_id:response (Story 7.16)
     re.compile(r"^strategies:[a-zA-Z0-9_-]+$"),  # strategies:engagement_id
     re.compile(r"^audit:stream$"),  # audit:stream (Story 3.4)
 ]
@@ -220,6 +221,64 @@ class EventBus:
         self._log.info("event_subscribed", pattern=pattern)
 
         return subscription
+
+    async def subscribe_once(
+        self,
+        channel: str,
+        timeout: float | None = None,
+    ) -> dict | None:
+        """Subscribe to a channel and wait for a single message.
+
+        Subscribes to the specified channel, waits for one message,
+        then automatically unsubscribes. Used for request-response
+        patterns like authorization (Story 7.16).
+
+        Args:
+            channel: Channel to subscribe to.
+            timeout: Optional timeout in seconds. None means wait indefinitely
+                (per FR16 - no auto-deny for authorization).
+
+        Returns:
+            Parsed JSON message dict, or None if timeout occurs.
+
+        Note:
+            This method blocks until a message is received or timeout occurs.
+            For authorization flows, timeout should be None per FR16.
+        """
+        import asyncio
+
+        result: dict | None = None
+        received_event = asyncio.Event()
+
+        async def once_callback(recv_channel: str, message: str) -> None:
+            nonlocal result
+            try:
+                result = json.loads(message)
+            except json.JSONDecodeError:
+                result = {"raw_content": message}
+            received_event.set()
+
+        # Subscribe to channel
+        subscription = await self._redis.subscribe(channel, once_callback)
+
+        self._log.info("subscribe_once_waiting", channel=channel, timeout=timeout)
+
+        try:
+            if timeout is not None:
+                try:
+                    await asyncio.wait_for(received_event.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    self._log.warning("subscribe_once_timeout", channel=channel)
+                    result = None
+            else:
+                # Wait indefinitely (FR16 - no auto-deny)
+                await received_event.wait()
+        finally:
+            # Always unsubscribe
+            await subscription.unsubscribe()
+            self._log.info("subscribe_once_completed", channel=channel, received=result is not None)
+
+        return result
 
     # =========================================================================
     # Validation Helpers (Task 2)

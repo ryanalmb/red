@@ -14,7 +14,6 @@ Story 7.14: Emergence Validation Gate Test
 
 import os
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, UTC
 from typing import Any
 
@@ -39,78 +38,8 @@ AGENT_COUNT = int(os.environ.get("EMERGENCE_TEST_AGENT_COUNT", "100"))
 TEST_TIMEOUT = int(os.environ.get("EMERGENCE_TEST_TIMEOUT", "1800"))  # 30 min
 
 
-@dataclass
-class MockContextResult:
-    """Mock result for decision context validation in failure scenarios.
-    
-    Used when testing gate failure reports without full validation pipeline.
-    """
-    passed: bool = False
-    percentage: float = 0.0
-
-
-@dataclass
-class EmergenceGateReport:
-    """Comprehensive report from emergence gate validation.
-    
-    Attributes:
-        nfr35_passed: Whether emergence score > 0.20.
-        nfr35_score: The actual emergence score.
-        nfr36_passed: Whether at least one 3+ hop chain exists.
-        nfr36_max_depth: Maximum chain depth observed.
-        nfr37_passed: Whether 100% decision_context populated.
-        nfr37_rate: Decision context population rate.
-        all_passed: Whether all gates passed.
-        report_text: Human-readable report.
-    """
-    nfr35_passed: bool
-    nfr35_score: float
-    nfr36_passed: bool
-    nfr36_max_depth: int
-    nfr37_passed: bool
-    nfr37_rate: float
-    all_passed: bool
-    report_text: str
-
-    @classmethod
-    def from_results(
-        cls,
-        comparison: ComparisonResult,
-        chain_result: Any,
-        context_result: Any,
-    ) -> "EmergenceGateReport":
-        """Create report from validation results."""
-        nfr35_passed = comparison.emergence_score > NFR35_EMERGENCE_THRESHOLD
-        nfr36_passed = chain_result.passed
-        nfr37_passed = context_result.passed and context_result.percentage == 100.0
-        
-        all_passed = nfr35_passed and nfr36_passed and nfr37_passed
-        
-        report_text = (
-            f"\n{'='*60}\n"
-            f"EMERGENCE HARD GATE REPORT\n"
-            f"{'='*60}\n"
-            f"NFR35 (>20% emergence): {'PASS' if nfr35_passed else 'FAIL'} "
-            f"({comparison.emergence_score:.2%})\n"
-            f"NFR36 (3+ hop chains):  {'PASS' if nfr36_passed else 'FAIL'} "
-            f"(max depth: {chain_result.max_observed_depth})\n"
-            f"NFR37 (100% context):   {'PASS' if nfr37_passed else 'FAIL'} "
-            f"({context_result.percentage:.1f}%)\n"
-            f"{'='*60}\n"
-            f"OVERALL: {'PASS - SHIP APPROVED' if all_passed else 'FAIL - NO SHIP'}\n"
-            f"{'='*60}"
-        )
-        
-        return cls(
-            nfr35_passed=nfr35_passed,
-            nfr35_score=comparison.emergence_score,
-            nfr36_passed=nfr36_passed,
-            nfr36_max_depth=chain_result.max_observed_depth,
-            nfr37_passed=nfr37_passed,
-            nfr37_rate=context_result.percentage,
-            all_passed=all_passed,
-            report_text=report_text,
-        )
+# MockContextResult and EmergenceGateReport moved to conftest.py for shared use
+from tests.emergence.conftest import MockContextResult, EmergenceGateReport
 
 
 def create_path(steps_data: list[tuple[str, str, str, str, list[str]]]) -> AttackPath:
@@ -687,3 +616,193 @@ class TestEmergenceGateReportGeneration:
         assert report.all_passed is False
         # At least one gate should fail
         assert not (report.nfr35_passed and report.nfr36_passed and report.nfr37_passed)
+
+
+@pytest.mark.emergence
+class TestNFR35With8RoleSwarm:
+    """Test NFR35 hard gate with 8-role swarm diversity (Story 7.25, AC: 6)."""
+
+    def test_nfr35_with_8_role_swarm(
+        self,
+        comparison_framework: EmergenceComparisonFramework,
+        isolated_baseline_result: RunResult,
+        eight_role_stigmergic_result: RunResult,
+    ):
+        """Verify NFR35 passes with 8-role swarm (AC: 6)."""
+        comparison = comparison_framework.compare(
+            isolated_baseline_result,
+            eight_role_stigmergic_result,
+        )
+        
+        assert comparison.emergence_score > NFR35_EMERGENCE_THRESHOLD, (
+            f"NFR35 HARD GATE with 8 roles: {comparison.emergence_score:.2%} "
+            f"must exceed {NFR35_EMERGENCE_THRESHOLD:.0%}"
+        )
+
+    def test_emergence_gate_report_shows_role_breakdown(
+        self,
+        comparison_framework: EmergenceComparisonFramework,
+        causal_validator: CausalChainValidator,
+        isolated_baseline_result: RunResult,
+        eight_role_stigmergic_result: RunResult,
+    ):
+        """Verify report includes per-role metrics (AC: 6)."""
+        comparison = comparison_framework.compare(
+            isolated_baseline_result,
+            eight_role_stigmergic_result,
+        )
+        
+        chain_result = causal_validator.validate_chain_depth(
+            eight_role_stigmergic_result.attack_paths
+        )
+        
+        # Create actions for validation (using valid UUIDs)
+        actions = [create_action([f"signal_{i}"]) for i in range(8)]
+        context_result = validate_decision_context(actions)
+        
+        report = EmergenceGateReport.from_results(
+            comparison,
+            chain_result,
+            context_result,
+        )
+        
+        assert report.all_passed, f"8-role gate should pass: {report.report_text}"
+        
+        # Verify role_contributions is populated
+        assert report.role_contributions is not None
+        assert len(report.role_contributions) > 0
+        
+        # Verify report text contains role breakdown
+        assert "Role Contributions:" in report.report_text
+
+    def test_nfr35_novel_chains_from_all_8_types(
+        self,
+        comparison_framework: EmergenceComparisonFramework,
+        all_agent_roles,
+    ):
+        """Verify NFR35 with 8 types contributing to novel chains (AC: 6)."""
+        from tests.emergence.conftest import create_path_for_role
+        
+        # Isolated has no paths
+        isolated = RunResult(
+            run_id="iso-empty",
+            mode="isolated",
+            agent_count=100,
+            findings=[],
+            attack_paths=[],
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        # Stigmergic has paths from all 8 roles
+        paths = [create_path_for_role(role) for role in all_agent_roles]
+        
+        stigmergic = RunResult(
+            run_id="stig-all-8",
+            mode="stigmergic",
+            agent_count=100,
+            findings=[],
+            attack_paths=paths,
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        comparison = comparison_framework.compare(isolated, stigmergic)
+        
+        # All 8 paths should be novel (100% emergence)
+        assert comparison.emergence_score == 1.0, (
+            f"All paths novel = 100% emergence, got {comparison.emergence_score:.2%}"
+        )
+        assert len(comparison.novel_paths) == 8
+
+    def test_role_contributions_in_report(
+        self,
+        comparison_framework: EmergenceComparisonFramework,
+        causal_validator: CausalChainValidator,
+        all_agent_roles,
+    ):
+        """Verify role_contributions dict is correctly populated (AC: 6)."""
+        from tests.emergence.conftest import create_path_for_role
+        
+        # Create isolated with no paths
+        isolated = RunResult(
+            run_id="iso-contrib",
+            mode="isolated",
+            agent_count=100,
+            findings=[],
+            attack_paths=[],
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        # Create stigmergic with 1 path per role
+        paths = [create_path_for_role(role) for role in all_agent_roles]
+        
+        stigmergic = RunResult(
+            run_id="stig-contrib",
+            mode="stigmergic",
+            agent_count=100,
+            findings=[],
+            attack_paths=paths,
+            actions=[],
+            duration_ms=1000,
+        )
+        
+        comparison = comparison_framework.compare(isolated, stigmergic)
+        chain_result = causal_validator.validate_chain_depth(paths)
+        context_result = MockContextResult(passed=True, percentage=100.0)
+        
+        report = EmergenceGateReport.from_results(
+            comparison,
+            chain_result,
+            context_result,
+        )
+        
+        # Verify role_contributions has all 8 roles
+        assert report.role_contributions is not None
+        assert len(report.role_contributions) == 8
+        
+        # Each role should have contributed 1 step
+        for role in all_agent_roles:
+            assert role.value in report.role_contributions
+            assert report.role_contributions[role.value] == 1
+
+    def test_ci_gate_uses_8_role_swarm_data(
+        self,
+        comparison_framework: EmergenceComparisonFramework,
+        causal_validator: CausalChainValidator,
+        isolated_baseline_result: RunResult,
+        eight_role_stigmergic_result: RunResult,
+    ):
+        """Integration test: CI gate uses 8-role swarm data (AC: 6)."""
+        # Simulate full CI gate check with 8-role swarm
+        comparison = comparison_framework.compare(
+            isolated_baseline_result,
+            eight_role_stigmergic_result,
+        )
+        
+        chain_result = causal_validator.validate_chain_depth(
+            eight_role_stigmergic_result.attack_paths
+        )
+        
+        actions = [create_action([f"signal_{i}"]) for i in range(8)]
+        context_result = validate_decision_context(actions)
+        
+        report = EmergenceGateReport.from_results(
+            comparison,
+            chain_result,
+            context_result,
+        )
+        
+        # All gates should pass
+        assert report.nfr35_passed, f"NFR35 failed: {report.nfr35_score:.2%}"
+        assert report.nfr36_passed, f"NFR36 failed: max depth {report.nfr36_max_depth}"
+        assert report.nfr37_passed, f"NFR37 failed: {report.nfr37_rate:.1f}%"
+        assert report.all_passed, f"CI gate failed: {report.report_text}"
+        
+        # Verify diversity is reflected in report
+        assert report.role_contributions is not None
+        contributing_roles = len([c for c in report.role_contributions.values() if c > 0])
+        assert contributing_roles >= 3, (
+            f"Expected 3+ contributing roles, got {contributing_roles}"
+        )
