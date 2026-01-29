@@ -26,6 +26,7 @@ from cyberred.daemon.session_manager import (
     ShutdownResult,
     validate_engagement_name,
 )
+from cyberred.daemon.authorization_queue import AuthorizationQueue
 
 __all__ = [
     "IPCCommand",
@@ -39,5 +40,6 @@ __all__ = [
     "SessionManager",
     "ShutdownResult",
     "validate_engagement_name",
+    "AuthorizationQueue",
 ]
 

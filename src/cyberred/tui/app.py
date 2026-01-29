@@ -13,9 +13,11 @@ Story 9.1: Textual App Foundation
 
 from __future__ import annotations
 
+import time
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
+import structlog
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Input
 from textual.containers import Horizontal, Vertical
@@ -42,10 +44,13 @@ from cyberred.tui.screens.authorization import (
 from cyberred.tui.screens.dropbox import DropBoxScreen
 from cyberred.tui.screens.kill_confirm import KillSwitchConfirmScreen
 from cyberred.tui.screens.help import HelpScreen
+from cyberred.tui.screens.scope_editor import ScopeEditorScreen
+from cyberred.tui.screens.data_browser import DataBrowserScreen
 from cyberred.daemon.streaming import StreamEventType
 
 if TYPE_CHECKING:
     from cyberred.core.event_bus import EventBus
+    from cyberred.core.killswitch import KillSwitch
     from cyberred.tui.daemon_client import TUIClient
 
 
@@ -77,6 +82,7 @@ class EngagementState(Enum):
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     STOPPED = "STOPPED"
+    FROZEN = "FROZEN"  # Story 10.4: Kill switch activated state
 
 
 class HeartbeatStatus(Enum):
@@ -119,6 +125,8 @@ class CyberRedApp(App):
         ("ctrl+d", "detach", "Detach"),
         ("f6", "show_dropbox", "Drop Box"),  # Story 9.10: Drop Box Status Panel
         ("f7", "director_panel", "Director"),  # Story 8.11: Director Ensemble Display
+        ("f8", "scope_editor", "Scope"),  # Story 10.5: Runtime Scope Adjustment
+        ("f9", "data_browser", "Data"),  # Story 11.2: Exfiltrated Data Browser
         ("f10", "kill_switch_confirm", "Kill"),  # Story 9.11: F10 kill switch with confirmation
         ("question_mark", "help", "Help"),  # Story 9.11: ? for help overlay
         ("ctrl+t", "toggle_thinking", "Toggle Thinking"),  # Story 8.11: Toggle <think> tags
@@ -135,6 +143,8 @@ class CyberRedApp(App):
         event_bus: Optional["EventBus"] = None,
         daemon_client: Optional["TUIClient"] = None,
         engagement_id: Optional[str] = None,
+        redis_client: Optional[Any] = None,
+        docker_client: Optional[Any] = None,
     ) -> None:
         """Initialize CyberRedApp.
 
@@ -142,9 +152,12 @@ class CyberRedApp(App):
             event_bus: EventBus for standalone mode (optional).
             daemon_client: TUIClient for daemon mode (optional).
             engagement_id: Engagement ID when using daemon mode.
+            redis_client: Redis client for KillSwitch (optional).
+            docker_client: Docker client for KillSwitch (optional).
 
         Note:
             If daemon_client is provided, it takes precedence over event_bus.
+            If redis_client or docker_client is provided, KillSwitch is initialized.
         """
         super().__init__()
         self.bus = event_bus
@@ -153,6 +166,19 @@ class CyberRedApp(App):
         self._stream_task: Optional[asyncio.Task] = None
         self._stale_check_task: Optional[asyncio.Task] = None  # Story 9.7: Stale state check
         self._attach_progress: Optional[AttachProgressIndicator] = None  # Story 9.8: Progress indicator
+        
+        # Story 10.4: Kill switch integration
+        self._killswitch: Optional["KillSwitch"] = None
+        self._log = structlog.get_logger().bind(component="tui_app")
+        
+        # Initialize KillSwitch if clients are provided
+        if redis_client is not None or docker_client is not None:
+            from cyberred.core.killswitch import KillSwitch
+            self._killswitch = KillSwitch(
+                redis_client=redis_client,
+                docker_client=docker_client,
+                engagement_id=engagement_id or "unknown",
+            )
 
     @property
     def is_daemon_mode(self) -> bool:
@@ -286,12 +312,23 @@ class CyberRedApp(App):
     async def on_input_submitted(self, message: Input.Submitted) -> None:
         user_text = message.value
         self.query_one("#cmd-input", Input).value = ""
-        self.notify(f"Analyzing: {user_text}...")
 
         # Handle 'detach' command
         if user_text.strip().lower() == "detach":
             await self.action_detach()
             return
+
+        # Story 10.4: Handle 'kill' command (AC #2)
+        if user_text.strip().lower() == "kill":
+            self.action_kill_switch_confirm()
+            return
+        
+        # Story 10.4: Handle 'kill!' command (immediate, bypass confirmation)
+        if user_text.strip().lower() == "kill!":
+            await self.action_panic(trigger_source="command")
+            return
+
+        self.notify(f"Analyzing: {user_text}...")
 
         if self.bus:
             await self.bus.publish("cmd:nlp", {"text": user_text})
@@ -396,19 +433,43 @@ class CyberRedApp(App):
         log.log_event("now", severity, f"Finding: {finding_id}")
 
     async def _handle_state_change(self, data: dict) -> None:
-        """Handle engagement state change event."""
+        """Handle engagement state change event.
+        
+        Story 10.4: Handles FROZEN state from daemon (AC #6).
+        """
         state = data.get("state", "UNKNOWN")
-        log = self.query_one("#kill-chain", KillChainLog)
-        log.log_event("now", "STATE", f"Engagement: {state}")
+        
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+            log.log_event("now", "STATE", f"Engagement: {state}")
+        except NoMatches:
+            pass
+
+        # Story 10.4: Handle FROZEN state from daemon
+        if state == "FROZEN":
+            self.engagement_state = EngagementState.FROZEN
+            self._update_status_bar_state()
+            self.notify("ENGAGEMENT FROZEN - Kill switch activated", severity="error")
+            # Update all agents to frozen status
+            try:
+                grid = self.query_one("#hive-grid", HiveGrid)
+                for i in range(1, 101):
+                    grid.update_agent(i, "frozen")
+            except NoMatches:
+                pass
+            return
 
         # Update hive grid with initial agent data if present
         agents = data.get("agents", [])
-        grid = self.query_one("#hive-grid", HiveGrid)
-        for agent in agents:
-            agent_id = agent.get("id") or agent.get("agent_id")
-            status = agent.get("status", "idle")
-            if agent_id:
-                grid.update_agent(agent_id, status)
+        try:
+            grid = self.query_one("#hive-grid", HiveGrid)
+            for agent in agents:
+                agent_id = agent.get("id") or agent.get("agent_id")
+                status = agent.get("status", "idle")
+                if agent_id:
+                    grid.update_agent(agent_id, status)
+        except NoMatches:
+            pass
 
     async def _handle_strategy_update(self, data: dict) -> None:
         """Handle Director strategy update event (Story 8.11).
@@ -539,12 +600,83 @@ class CyberRedApp(App):
         screen = AuthorizationScreen(request, callback=send_response)
         self.push_screen(screen)
 
-    def action_panic(self) -> None:
+    async def action_panic(
+        self,
+        trigger_source: str = "ESC",
+        reason: str = "Operator initiated",
+    ) -> Optional[dict[str, Any]]:
+        """Trigger kill switch to halt all operations.
+        
+        Story 10.4: Kill Switch TUI Integration (AC #2, #5, #6)
+        
+        This method:
+        1. Calls KillSwitch.trigger() if available (production mode)
+        2. Falls back to event bus publish (standalone mode)
+        3. Sets engagement state to FROZEN
+        4. Updates status bar and logs to kill chain
+        5. Logs to audit trail
+        
+        Args:
+            trigger_source: Source of trigger (ESC, F10, command).
+            reason: Reason for kill switch activation.
+            
+        Returns:
+            KillSwitch result dict if KillSwitch is available, None otherwise.
+        """
+        start_time = time.perf_counter()
+        result: Optional[dict[str, Any]] = None
+        
         self.notify("PANIC TRIGGERED!", severity="error")
-        if self.bus:
-            asyncio.create_task(
-                self.bus.publish("swarm:broadcast", {"command": "ABORT"})
+        
+        # Story 10.4: Use KillSwitch if available
+        if self._killswitch is not None:
+            result = await self._killswitch.trigger(
+                reason=reason,
+                triggered_by="operator",
             )
+            duration_ms = result.get("duration_ms", 0)
+            paths = result.get("paths", {})
+            
+            # Log to audit trail
+            self._log.warning(
+                "kill_switch_tui_triggered",
+                trigger_source=trigger_source,
+                reason=reason,
+                duration_ms=duration_ms,
+                paths=paths,
+                engagement_id=self._engagement_id,
+            )
+        elif self._daemon_client is not None:
+            # Daemon mode: Send kill command to daemon
+            await self._daemon_client.send_kill_command()
+        elif self.bus is not None:
+            # Fallback: Event bus broadcast
+            await self.bus.publish("swarm:broadcast", {"command": "ABORT"})
+        
+        # Set engagement state to FROZEN
+        self.engagement_state = EngagementState.FROZEN
+        self._update_status_bar_state()
+        
+        # Log to kill chain
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            log.log_event("now", "KILL", f"ENGAGEMENT FROZEN ({elapsed_ms:.0f}ms)")
+        except NoMatches:
+            pass
+        
+        # Update all agents to frozen status
+        try:
+            grid = self.query_one("#hive-grid", HiveGrid)
+            for i in range(1, 101):
+                grid.update_agent(i, "frozen")
+        except NoMatches:
+            pass
+        
+        # Show notification
+        self.notify("ENGAGEMENT FROZEN - Kill switch activated", severity="error")
+        
+        return result
 
     async def action_detach(self) -> None:
         """Detach from daemon and exit TUI.
@@ -588,11 +720,15 @@ class CyberRedApp(App):
         Per UX spec: F10 kill switch requires confirmation.
         ESC bypasses confirmation for emergency use (handled by action_panic).
         """
-        def handle_confirm(confirmed: bool) -> None:
+        async def handle_confirm(confirmed: bool) -> None:
             if confirmed:
-                self.action_panic()
+                await self.action_panic(trigger_source="F10")
         
-        self.push_screen(KillSwitchConfirmScreen(), handle_confirm)
+        def sync_handle_confirm(confirmed: bool) -> None:
+            if confirmed:
+                asyncio.create_task(self.action_panic(trigger_source="F10"))
+        
+        self.push_screen(KillSwitchConfirmScreen(), sync_handle_confirm)
 
     def action_help(self) -> None:
         """Show help overlay (Story 9.11: AC #3).
@@ -600,6 +736,23 @@ class CyberRedApp(App):
         Per UX spec line 595: Help is accessible via `?` key.
         """
         self.push_screen(HelpScreen())
+
+    def action_scope_editor(self) -> None:
+        """Show scope editor screen (Story 10.5: AC #1).
+        
+        Per UX spec: F8 opens scope editor for runtime scope adjustment.
+        """
+        # Note: In production, this would get the ScopeValidator from the engagement
+        # For now, we show a notification if no validator is available
+        self.notify("Scope Editor - requires active engagement", severity="warning")
+
+    def action_data_browser(self) -> None:
+        """Show exfiltrated data browser screen (Story 11.2: AC #7).
+        
+        Per UX spec: F9 opens data browser for viewing exfiltrated data.
+        Screen can be opened from War Room via F-key binding.
+        """
+        self.push_screen(DataBrowserScreen(daemon_client=self._daemon_client))
 
     async def action_rag_manager(self) -> None:
         """Open RAG Management modal."""

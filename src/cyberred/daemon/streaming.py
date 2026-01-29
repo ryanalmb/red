@@ -48,6 +48,7 @@ class StreamEventType(StrEnum):
     HEARTBEAT = "heartbeat"
     DAEMON_SHUTDOWN = "daemon_shutdown"  # Story 2.11: Graceful shutdown notification
     STRATEGY_UPDATE = "strategy_update"  # Story 8.11: Director strategy updates
+    AUTH_QUEUE_UPDATED = "auth_queue_updated"  # Story 10.3: Queue count changed
 
 
 @dataclass

@@ -951,3 +951,255 @@ class TestDirectorDisplayWidgetPerspectiveParsing:
         creative = widget._perspectives.get(DirectorRole.CREATIVE)
         assert creative is not None
         assert creative.success is False
+
+
+# ============================================================================
+# Story 11.1: Per-Perspective Structured Data Tests
+# ============================================================================
+
+
+class TestDirectorPerspectiveStructuredData:
+    """Tests for Story 11.1 per-perspective structured data fields."""
+
+    def test_perspective_with_confidence(self) -> None:
+        """Test perspective with confidence score."""
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="Strategic recommendations...",
+            latency_ms=1500,
+            success=True,
+            confidence=0.85,
+        )
+        assert perspective.confidence == 0.85
+
+    def test_perspective_with_recommendations(self) -> None:
+        """Test strategist perspective with recommendations list."""
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="",
+            latency_ms=1200,
+            success=True,
+            confidence=0.9,
+            recommendations=["Focus on SSH service", "Escalate via sudo"],
+            rationale="Target shows weak sudo configuration",
+        )
+        assert len(perspective.recommendations) == 2
+        assert "Focus on SSH" in perspective.recommendations[0]
+        assert perspective.rationale is not None
+
+    def test_perspective_with_attck_techniques(self) -> None:
+        """Test strategist perspective with ATT&CK techniques."""
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="",
+            latency_ms=1200,
+            success=True,
+            attck_techniques=[
+                {"technique_id": "T1548", "technique_name": "Abuse Elevation", "rationale": "Weak sudo"},
+            ],
+        )
+        assert len(perspective.attck_techniques) == 1
+        assert perspective.attck_techniques[0]["technique_id"] == "T1548"
+
+    def test_perspective_with_security_gaps(self) -> None:
+        """Test analyst perspective with security gaps."""
+        perspective = DirectorPerspective(
+            role=DirectorRole.ANALYST,
+            content="",
+            latency_ms=1500,
+            success=True,
+            risk_level="HIGH",
+            security_gaps=[
+                {"gap_id": "GAP-001", "description": "Weak SSH config", "severity": "HIGH"},
+            ],
+        )
+        assert perspective.risk_level == "HIGH"
+        assert len(perspective.security_gaps) == 1
+
+    def test_perspective_with_alternatives(self) -> None:
+        """Test creative perspective with alternatives."""
+        perspective = DirectorPerspective(
+            role=DirectorRole.CREATIVE,
+            content="",
+            latency_ms=1800,
+            success=True,
+            alternatives=[
+                {"alternative_id": "ALT-001", "description": "DNS tunneling", "novelty_score": 0.7},
+            ],
+        )
+        assert len(perspective.alternatives) == 1
+        assert perspective.alternatives[0]["novelty_score"] == 0.7
+
+
+class TestRenderPerspectiveContent:
+    """Tests for Story 11.1 perspective content rendering."""
+
+    def test_render_strategist_with_structured_data(self) -> None:
+        """Test rendering strategist perspective with structured data."""
+        widget = DirectorDisplayWidget()
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="fallback content",
+            latency_ms=1200,
+            success=True,
+            confidence=0.85,
+            recommendations=["Focus on SSH", "Check sudo"],
+            attck_techniques=[
+                {"technique_id": "T1548", "technique_name": "Abuse Elevation", "rationale": "Weak sudo"},
+            ],
+        )
+        
+        content = widget._render_perspective_content(perspective)
+        
+        assert "85%" in content
+        assert "Recommendations:" in content
+        assert "Focus on SSH" in content
+        assert "ATT&CK Techniques:" in content
+        assert "T1548" in content
+
+    def test_render_analyst_with_structured_data(self) -> None:
+        """Test rendering analyst perspective with structured data."""
+        widget = DirectorDisplayWidget()
+        perspective = DirectorPerspective(
+            role=DirectorRole.ANALYST,
+            content="fallback content",
+            latency_ms=1500,
+            success=True,
+            confidence=0.75,
+            risk_level="HIGH",
+            security_gaps=[
+                {"gap_id": "GAP-001", "description": "Weak SSH", "severity": "HIGH"},
+            ],
+        )
+        
+        content = widget._render_perspective_content(perspective)
+        
+        assert "75%" in content
+        assert "Risk Level: HIGH" in content
+        assert "Security Gaps:" in content
+        assert "GAP-001" in content
+
+    def test_render_creative_with_structured_data(self) -> None:
+        """Test rendering creative perspective with structured data."""
+        widget = DirectorDisplayWidget()
+        perspective = DirectorPerspective(
+            role=DirectorRole.CREATIVE,
+            content="fallback content",
+            latency_ms=1800,
+            success=True,
+            confidence=0.65,
+            alternatives=[
+                {"alternative_id": "ALT-001", "description": "DNS tunneling", "novelty_score": 0.7, "rationale": "Bypass firewall"},
+            ],
+        )
+        
+        content = widget._render_perspective_content(perspective)
+        
+        assert "65%" in content
+        assert "Creative Alternatives:" in content
+        assert "ALT-001" in content
+        assert "70%" in content  # novelty score
+        assert "Bypass firewall" in content
+
+    def test_render_fallback_to_raw_content(self) -> None:
+        """Test fallback to raw content when no structured data."""
+        widget = DirectorDisplayWidget()
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="Raw strategist output without structured fields",
+            latency_ms=1200,
+            success=True,
+        )
+        
+        content = widget._render_perspective_content(perspective)
+        
+        assert "Raw strategist output" in content
+
+    def test_render_with_rationale(self) -> None:
+        """Test rendering perspective with rationale."""
+        widget = DirectorDisplayWidget()
+        perspective = DirectorPerspective(
+            role=DirectorRole.STRATEGIST,
+            content="",
+            latency_ms=1200,
+            success=True,
+            confidence=0.8,
+            rationale="Based on discovered vulnerabilities",
+        )
+        
+        content = widget._render_perspective_content(perspective)
+        
+        assert "Rationale:" in content
+        assert "Based on discovered" in content
+
+
+class TestUpdateStrategySyncStructuredData:
+    """Tests for Story 11.1 structured data parsing in update_strategy_sync."""
+
+    def test_parse_structured_perspective_data(self) -> None:
+        """Test parsing structured perspective data from stream."""
+        widget = DirectorDisplayWidget()
+        data = {
+            "objectives": ["Test objective"],
+            "actions": ["Test action"],
+            "rationale": "Test rationale",
+            "confidence": 0.8,
+            "contributing_roles": ["strategist"],
+            "degradation_level": "full",
+            "missing_perspectives": [],
+            "perspectives": {
+                "strategist": {
+                    "content": "Strategic analysis...",
+                    "latency_ms": 1200,
+                    "success": True,
+                    "confidence": 0.85,
+                    "recommendations": ["Rec 1", "Rec 2"],
+                    "rationale": "Strategist rationale",
+                    "attck_techniques": [
+                        {"technique_id": "T1548", "technique_name": "Abuse Elevation"},
+                    ],
+                },
+                "analyst": {
+                    "content": "Analyst analysis...",
+                    "latency_ms": 1500,
+                    "success": True,
+                    "confidence": 0.75,
+                    "risk_level": "HIGH",
+                    "security_gaps": [
+                        {"gap_id": "GAP-001", "description": "Weak config", "severity": "HIGH"},
+                    ],
+                },
+                "creative": {
+                    "content": "<think>Thinking...</think>Creative output",
+                    "latency_ms": 1800,
+                    "success": True,
+                    "confidence": 0.65,
+                    "alternatives": [
+                        {"alternative_id": "ALT-001", "description": "DNS tunneling", "novelty_score": 0.7},
+                    ],
+                },
+            },
+        }
+        
+        widget.update_strategy_sync(data)
+        
+        # Verify strategist perspective
+        strategist = widget._perspectives.get(DirectorRole.STRATEGIST)
+        assert strategist is not None
+        assert strategist.confidence == 0.85
+        assert len(strategist.recommendations) == 2
+        assert len(strategist.attck_techniques) == 1
+        
+        # Verify analyst perspective
+        analyst = widget._perspectives.get(DirectorRole.ANALYST)
+        assert analyst is not None
+        assert analyst.risk_level == "HIGH"
+        assert len(analyst.security_gaps) == 1
+        
+        # Verify creative perspective
+        creative = widget._perspectives.get(DirectorRole.CREATIVE)
+        assert creative is not None
+        assert creative.confidence == 0.65
+        assert len(creative.alternatives) == 1
+        assert creative.thinking_content is not None
+        assert "Thinking" in creative.thinking_content

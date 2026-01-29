@@ -82,6 +82,9 @@ HiveGrid {
 .status-attacking { background: red; color: white; }
 .status-paused { background: orange; color: black; }
 .status-exploited { background: green; color: white; }
+.status-frozen { background: $danger; color: white; text-style: bold; }  /* Story 10.4: Kill switch frozen */
+.status-active { background: $cyber-green; color: black; }
+.status-auth_pending { background: $warning; color: black; }
 
 /* Story 9.1: Status Bar Widget Styles */
 #status-bar {

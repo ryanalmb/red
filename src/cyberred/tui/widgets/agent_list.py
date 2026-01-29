@@ -49,6 +49,7 @@ class AgentStatus(Enum):
     - IDLE: Agent is waiting for work
     - ERROR: Agent encountered an error
     - AUTH_PENDING: Agent awaiting authorization
+    - SITUATIONAL_ALERT: Agent triggered situational alert (Story 10.6)
     - STALLED: Agent is stalled/slow
     - CRITICAL_FINDING: Agent found critical vulnerability
     """
@@ -56,6 +57,7 @@ class AgentStatus(Enum):
     IDLE = "idle"
     ERROR = "error"
     AUTH_PENDING = "auth_pending"
+    SITUATIONAL_ALERT = "situational_alert"
     STALLED = "stalled"
     CRITICAL_FINDING = "critical_finding"
 
@@ -66,6 +68,7 @@ _STATUS_COLORS = {
     AgentStatus.IDLE: "blue",
     AgentStatus.ERROR: "red",
     AgentStatus.AUTH_PENDING: "yellow",
+    AgentStatus.SITUATIONAL_ALERT: "bright_yellow",  # Story 10.6
     AgentStatus.STALLED: "orange",
     AgentStatus.CRITICAL_FINDING: "magenta",
 }
@@ -77,22 +80,33 @@ _STATUS_ICONS = {
     AgentStatus.IDLE: "○",        # Empty circle
     AgentStatus.ERROR: "✗",       # X mark
     AgentStatus.AUTH_PENDING: "⚠", # Warning
+    AgentStatus.SITUATIONAL_ALERT: "⚡",  # Story 10.6: Lightning for situational alert
     AgentStatus.STALLED: "◐",     # Half-filled
     AgentStatus.CRITICAL_FINDING: "★",  # Star for critical
 }
 
 
 # Story 9.4: Attention Priority System
+# Story 10.6: Added SITUATIONAL_ALERT priority
 class AttentionPriority(IntEnum):
     """Priority levels for attention bubbling.
     
     Lower values = higher priority (bubbled to top first).
     Used to determine sort order for agents requiring attention.
+    
+    Priority order per spec:
+    - ERROR (0): Highest priority
+    - AUTH_PENDING (1): Authorization pending
+    - SITUATIONAL_ALERT (2): Story 10.6 - unexpected discovery alert
+    - CRITICAL_FINDING (3): Critical vulnerability found
+    - STALLED (4): Agent stalled
+    - NONE (99): No attention required
     """
     ERROR = 0
     AUTH_PENDING = 1
-    CRITICAL_FINDING = 2
-    STALLED = 3
+    SITUATIONAL_ALERT = 2  # Story 10.6: Situational awareness alerts
+    CRITICAL_FINDING = 3
+    STALLED = 4
     NONE = 99  # No attention required
 
 
@@ -100,6 +114,7 @@ class AttentionPriority(IntEnum):
 _STATUS_TO_PRIORITY = {
     AgentStatus.ERROR: AttentionPriority.ERROR,
     AgentStatus.AUTH_PENDING: AttentionPriority.AUTH_PENDING,
+    AgentStatus.SITUATIONAL_ALERT: AttentionPriority.SITUATIONAL_ALERT,
     AgentStatus.CRITICAL_FINDING: AttentionPriority.CRITICAL_FINDING,
     AgentStatus.STALLED: AttentionPriority.STALLED,
 }
@@ -109,6 +124,7 @@ _STATUS_TO_PRIORITY = {
 _ATTENTION_ICONS = {
     AgentStatus.ERROR: "⚠",
     AgentStatus.AUTH_PENDING: "🔐",
+    AgentStatus.SITUATIONAL_ALERT: "⚡",  # Story 10.6: Lightning bolt for situational alert
     AgentStatus.CRITICAL_FINDING: "🔴",
     AgentStatus.STALLED: "⏸",
 }
@@ -118,6 +134,7 @@ _ATTENTION_ICONS = {
 _ATTENTION_COLORS = {
     AgentStatus.ERROR: "bright_red",
     AgentStatus.AUTH_PENDING: "yellow",
+    AgentStatus.SITUATIONAL_ALERT: "bright_yellow",  # Story 10.6
     AgentStatus.CRITICAL_FINDING: "magenta",
     AgentStatus.STALLED: "orange3",
 }

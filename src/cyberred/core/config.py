@@ -19,10 +19,13 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
+from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 from dotenv import load_dotenv
@@ -31,6 +34,173 @@ from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from cyberred.core.exceptions import ConfigurationError
+
+
+# =============================================================================
+# Duration Parsing (Story 10.8)
+# =============================================================================
+
+
+def parse_duration(value: Union[str, int, float, timedelta]) -> timedelta:
+    """Parse a duration value into a timedelta.
+    
+    Supports multiple formats:
+    - String with unit: "30m", "2h", "300s"
+    - Integer/float: seconds
+    - timedelta: passed through unchanged
+    
+    Args:
+        value: Duration value to parse.
+        
+    Returns:
+        timedelta representing the duration.
+        
+    Raises:
+        ValueError: If format is invalid or unrecognized.
+        
+    Examples:
+        >>> parse_duration("30m")
+        timedelta(minutes=30)
+        >>> parse_duration("2h")
+        timedelta(hours=2)
+        >>> parse_duration(3600)
+        timedelta(seconds=3600)
+    """
+    if isinstance(value, timedelta):
+        return value
+    
+    if isinstance(value, (int, float)):
+        return timedelta(seconds=value)
+    
+    if isinstance(value, str):
+        # Pattern: number followed by unit (m, h, s)
+        pattern = r"^(\d+(?:\.\d+)?)\s*(m|h|s|min|mins|minutes?|hours?|seconds?|sec)$"
+        match = re.match(pattern, value.lower().strip())
+        
+        if not match:
+            raise ValueError(
+                f"Invalid duration format: '{value}'. "
+                "Expected format like '30m', '2h', '300s', or integer seconds."
+            )
+        
+        amount = float(match.group(1))
+        unit = match.group(2)
+        
+        if unit in ("m", "min", "mins", "minute", "minutes"):
+            return timedelta(minutes=amount)
+        elif unit in ("h", "hour", "hours"):
+            return timedelta(hours=amount)
+        elif unit in ("s", "sec", "second", "seconds"):
+            return timedelta(seconds=amount)
+        else:
+            raise ValueError(f"Unknown duration unit: '{unit}'")
+    
+    raise ValueError(
+        f"Cannot parse duration from type {type(value).__name__}. "
+        "Expected str, int, float, or timedelta."
+    )
+
+
+# =============================================================================
+# Deputy Operator Configuration (Story 10.8)
+# =============================================================================
+
+
+@dataclass
+class DeputyOperatorConfig:
+    """Configuration for deputy operator authorization backup.
+    
+    Per FR63: "Deputy Operator role for authorization backup"
+    
+    When the primary operator doesn't respond to an authorization request
+    within the escalation_timeout, the request is escalated to the deputy.
+    
+    Attributes:
+        deputy_operator: Email or identifier of the deputy operator. Cannot be empty.
+        escalation_timeout: Time before escalating to deputy (default: 30 minutes).
+            Must be between 5 minutes and 24 hours.
+    
+    Raises:
+        ConfigurationError: If deputy_operator is empty or escalation_timeout
+            is outside valid range.
+    """
+    deputy_operator: str
+    escalation_timeout: timedelta = field(default_factory=lambda: timedelta(minutes=30))
+    
+    def __post_init__(self) -> None:
+        """Validate deputy_operator and escalation timeout bounds after initialization."""
+        # Validate deputy_operator is not empty
+        if not self.deputy_operator or not self.deputy_operator.strip():
+            raise ConfigurationError(
+                config_path="engagement.yaml",
+                key="authorization.deputy_operator",
+                message="deputy_operator cannot be empty",
+            )
+        
+        # Validate escalation_timeout bounds
+        min_timeout = timedelta(minutes=5)
+        max_timeout = timedelta(hours=24)
+        
+        if not (min_timeout <= self.escalation_timeout <= max_timeout):
+            raise ConfigurationError(
+                config_path="engagement.yaml",
+                key="authorization.escalation_timeout",
+                message=(
+                    f"escalation_timeout must be between 5 minutes and 24 hours, "
+                    f"got {self.escalation_timeout}"
+                ),
+            )
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DeputyOperatorConfig":
+        """Create DeputyOperatorConfig from engagement.yaml authorization section.
+        
+        Args:
+            data: Dictionary with 'deputy_operator' and optional 'escalation_timeout'.
+            
+        Returns:
+            DeputyOperatorConfig instance.
+            
+        Raises:
+            ConfigurationError: If deputy_operator is missing or timeout is invalid.
+            KeyError: If deputy_operator key is missing.
+            ValueError: If escalation_timeout format is invalid.
+        """
+        if "deputy_operator" not in data:
+            raise ConfigurationError(
+                config_path="engagement.yaml",
+                key="authorization.deputy_operator",
+                message="deputy_operator is required when configuring deputy authorization",
+            )
+        
+        deputy_operator = data["deputy_operator"]
+        
+        # Parse escalation_timeout with default of 30 minutes
+        timeout_value = data.get("escalation_timeout", "30m")
+        try:
+            escalation_timeout = parse_duration(timeout_value)
+        except ValueError as e:
+            raise ConfigurationError(
+                config_path="engagement.yaml",
+                key="authorization.escalation_timeout",
+                message=str(e),
+            ) from e
+        
+        return cls(
+            deputy_operator=deputy_operator,
+            escalation_timeout=escalation_timeout,
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize config to dictionary for persistence.
+        
+        Returns:
+            Dictionary with deputy_operator and escalation_timeout (in seconds).
+        """
+        return {
+            "deputy_operator": self.deputy_operator,
+            "escalation_timeout": int(self.escalation_timeout.total_seconds()),
+        }
 
 
 # =============================================================================

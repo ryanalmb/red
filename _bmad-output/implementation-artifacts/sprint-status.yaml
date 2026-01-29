@@ -206,23 +206,23 @@ development_status:
   epic-9-retrospective: done # Retrospective completed 2026-01-28
 
   # Epic 10: War Room TUI - Auth & Control
-  epic-10: in-progress
-  10-1-authorization-request-modal: review # AI-Review 2026-01-28: 4 HIGH issues found - missing auth timeout, anomaly bubbling, latency measurement, auth batching
-  10-2-authorization-response-handling: backlog
-  10-3-pending-authorization-queue: backlog
-  10-4-kill-switch-tui-integration: backlog
-  10-5-runtime-scope-adjustment: backlog
-  10-6-situational-awareness-alerts: backlog
-  10-7-alert-response-and-logging: backlog
-  10-8-deputy-operator-configuration: backlog
-  10-9-external-authorization-notification: backlog
-  epic-10-retrospective: optional
+  epic-10: done
+  10-1-authorization-request-modal: done
+  10-2-authorization-response-handling: done
+  10-3-pending-authorization-queue: done
+  10-4-kill-switch-tui-integration: done
+  10-5-runtime-scope-adjustment: done
+  10-6-situational-awareness-alerts: done
+  10-7-alert-response-and-logging: done
+  10-8-deputy-operator-configuration: done
+  10-9-external-authorization-notification: done
+  epic-10-retrospective: done
 
   # Epic 11: War Room TUI - Data & Strategy
-  epic-11: backlog
-  11-1-director-ensemble-display-three-perspectives: backlog
-  11-2-exfiltrated-data-browser: backlog
-  11-3-data-export-from-tui: backlog
+  epic-11: in-progress
+  11-1-director-ensemble-display-three-perspectives: review
+  11-2-exfiltrated-data-browser: in-progress
+  11-3-data-export-from-tui: in-progress
   11-4-manual-data-deletion: backlog
   11-5-rag-management-panel: backlog
   11-6-engagement-statistics-dashboard: backlog

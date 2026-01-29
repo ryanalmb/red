@@ -4336,6 +4336,14 @@ So that **I can respond to critical authorizations when TUI is disconnected**.
 **FRs Covered:** FR42, FR85
 **NFRs Covered:** NFR4
 
+**⚠️ CRITICAL: All Epic 11 stories MUST reference the full UX Design Specification (`_bmad-output/planning-artifacts/ux-design.md`) as required reading before implementation. Do not rely on line-specific references alone — read the entire spec to understand:**
+- Component specs (StrategyStream, DataBrowser, RAGManager, HeartbeatIndicator)
+- Layout patterns (Three-pane War Room, modal dialogs, panel navigation)
+- Color tokens and TCSS theming ("Command & Control" dark aesthetic)
+- Keyboard/mouse dual-path input patterns (F-keys, filters, search)
+- Feedback patterns (loading states, confirmations, error handling)
+- Accessibility requirements (WCAG 2.1 Level AA)
+
 ---
 
 ### Story 11.1: Director Ensemble Display (Three Perspectives)
@@ -4359,6 +4367,7 @@ So that **I understand strategic reasoning (FR10)**.
 - Located in `tui/widgets/director_display.py`
 - Live updates as Director re-plans
 - Highlight consensus items
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 
@@ -4382,6 +4391,7 @@ So that **I can access evidence without leaving the War Room (FR42)**.
 - Located in `tui/screens/data_browser.py`
 - Per FR42: "access all exfiltrated data via TUI menu"
 - No auto-delete per FR44
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 
@@ -4404,6 +4414,7 @@ So that **I can save evidence to local filesystem**.
 **Technical Notes:**
 - Export formats: original, JSON metadata, both
 - Archive: ZIP with manifest.json
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 
@@ -4427,6 +4438,7 @@ So that **I can clean up sensitive data when required (FR45)**.
 **Technical Notes:**
 - Secure delete: overwrite with random data before unlink
 - Per FR44/45: no auto-delete, operator manual only
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 
@@ -4459,6 +4471,7 @@ So that **I can keep knowledge bases current (FR85)**.
 - Per Story 6.11: TUI RAG widget
 - Non-blocking update
 - Catch-up Mode per UX Design lines 105, 114-115
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 
@@ -4482,6 +4495,7 @@ So that **I can track progress at a glance**.
 - Located in `tui/widgets/dashboard.py`
 - Prometheus metrics as source
 - Sparklines for trends
+- **UX Design Reference:** Full `ux-design.md` specification required reading
 
 ---
 

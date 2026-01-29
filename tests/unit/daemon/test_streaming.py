@@ -26,6 +26,7 @@ class TestStreamEventType:
         assert StreamEventType.AUTH_REQUEST == "auth_request"
         assert StreamEventType.STATE_CHANGE == "state_change"
         assert StreamEventType.HEARTBEAT == "heartbeat"
+        assert StreamEventType.AUTH_QUEUE_UPDATED == "auth_queue_updated"  # Story 10.3
 
     def test_event_type_is_strenum(self) -> None:
         """Verify StreamEventType is a StrEnum for JSON serialization."""

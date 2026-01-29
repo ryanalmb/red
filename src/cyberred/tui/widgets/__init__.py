@@ -71,6 +71,15 @@ from .fkey_bar import (
     FKeyMapping,
     DEFAULT_FKEY_MAPPINGS,
 )
+from .constraints_form import (
+    ConstraintsForm,
+    TIME_LIMIT_OPTIONS,
+    TARGET_LIMIT_MIN,
+    TARGET_LIMIT_MAX,
+    validate_target_limit,
+    validate_host_format,
+    parse_hosts_input,
+)
 
 
 class StatusBarWidget(Static):
@@ -131,10 +140,12 @@ class StatusBarWidget(Static):
         fkeys = "[F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]RAG"
         
         # State with color class
+        # Story 10.4: Added FROZEN state with bold red styling
         state_colors = {
             "RUNNING": "green",
             "PAUSED": "yellow", 
             "STOPPED": "dim",
+            "FROZEN": "bold red",  # Story 10.4: Kill switch activated
         }
         state_color = state_colors.get(self.engagement_state, "dim")
         state_display = f"[{state_color}]{self.engagement_state}[/{state_color}]"
@@ -159,8 +170,14 @@ class StatusBarWidget(Static):
         """Update engagement state.
         
         Args:
-            state: New state (RUNNING, PAUSED, STOPPED).
+            state: New state (RUNNING, PAUSED, STOPPED, FROZEN).
+            
+        Raises:
+            ValueError: If state is not a valid engagement state.
         """
+        valid_states = {"RUNNING", "PAUSED", "STOPPED", "FROZEN"}
+        if state not in valid_states:
+            raise ValueError(f"Invalid engagement state: '{state}'. Valid states: {valid_states}")
         self.engagement_state = state
         self.refresh()
     

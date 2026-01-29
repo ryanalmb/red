@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import structlog
 from textual.app import ComposeResult
@@ -40,6 +40,8 @@ log = structlog.get_logger()
 class DirectorPerspective:
     """Single Director model perspective for display.
     
+    Story 11.1: Enhanced with per-perspective structured data display.
+    
     Attributes:
         role: The Director role (STRATEGIST, ANALYST, CREATIVE).
         content: The model's response content.
@@ -47,6 +49,13 @@ class DirectorPerspective:
         success: Whether the query succeeded.
         error: Error message if query failed.
         thinking_content: Extracted <think> tags content for creative role.
+        confidence: Per-perspective confidence score (0.0-1.0).
+        recommendations: List of recommendations (strategist role).
+        rationale: Rationale text for this perspective.
+        attck_techniques: ATT&CK techniques (strategist role).
+        security_gaps: Security gaps identified (analyst role).
+        risk_level: Overall risk level (analyst role).
+        alternatives: Creative alternatives (creative role).
     """
     role: DirectorRole
     content: str
@@ -54,6 +63,14 @@ class DirectorPerspective:
     success: bool
     error: Optional[str] = None
     thinking_content: Optional[str] = None
+    # Story 11.1: Per-perspective structured fields
+    confidence: Optional[float] = None
+    recommendations: List[str] = field(default_factory=list)
+    rationale: Optional[str] = None
+    attck_techniques: List[Dict[str, str]] = field(default_factory=list)
+    security_gaps: List[Dict[str, str]] = field(default_factory=list)
+    risk_level: Optional[str] = None
+    alternatives: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def extract_thinking_content(content: Optional[str]) -> Tuple[str, str]:
@@ -404,6 +421,8 @@ class DirectorDisplayWidget(Static):
     def _update_perspective_section(self, role: DirectorRole, content_id: str) -> None:
         """Update a perspective section with current data.
         
+        Story 11.1: Enhanced to show recommendations, rationale, confidence per perspective.
+        
         Args:
             role: The Director role.
             content_id: The DOM ID of the content widget.
@@ -413,7 +432,9 @@ class DirectorDisplayWidget(Static):
             
             perspective = self._perspectives.get(role)
             if perspective and perspective.success:
-                content_widget.update(perspective.content)
+                # Story 11.1: Render structured perspective data
+                content = self._render_perspective_content(perspective)
+                content_widget.update(content)
             elif perspective and not perspective.success:
                 content_widget.update(f"❌ Error: {perspective.error or 'Unknown error'}")
             else:
@@ -421,6 +442,131 @@ class DirectorDisplayWidget(Static):
                 
         except Exception as e:
             self._log.debug("perspective_update_failed", role=role.value, error=str(e))
+    
+    def _render_perspective_content(self, perspective: DirectorPerspective) -> str:
+        """Render structured perspective content for display.
+        
+        Story 11.1: Renders recommendations, rationale, confidence per AC #2.
+        
+        Args:
+            perspective: The DirectorPerspective to render.
+            
+        Returns:
+            Formatted string with structured perspective data.
+        """
+        lines = []
+        
+        # Show confidence if available
+        if perspective.confidence is not None:
+            conf_pct = f"{perspective.confidence:.0%}"
+            conf_class = self._get_confidence_class(perspective.confidence)
+            conf_label = conf_class.split('-')[-1].upper()
+            lines.append(f"📊 Confidence: {conf_pct} [{conf_label}]")
+            lines.append("")
+        
+        # Role-specific structured data
+        if perspective.role == DirectorRole.STRATEGIST:
+            lines.extend(self._render_strategist_perspective(perspective))
+        elif perspective.role == DirectorRole.ANALYST:
+            lines.extend(self._render_analyst_perspective(perspective))
+        elif perspective.role == DirectorRole.CREATIVE:
+            lines.extend(self._render_creative_perspective(perspective))
+        
+        # Show rationale if available
+        if perspective.rationale:
+            lines.append("")
+            lines.append(f"📝 Rationale: {perspective.rationale}")
+        
+        # Fallback to raw content if no structured data
+        if not lines and perspective.content:
+            return perspective.content
+        
+        return "\n".join(lines) if lines else perspective.content
+    
+    def _render_strategist_perspective(self, perspective: DirectorPerspective) -> List[str]:
+        """Render strategist-specific structured data.
+        
+        Args:
+            perspective: Strategist perspective with recommendations/techniques.
+            
+        Returns:
+            List of formatted lines.
+        """
+        lines = []
+        
+        # Recommendations
+        if perspective.recommendations:
+            lines.append("📋 Recommendations:")
+            for i, rec in enumerate(perspective.recommendations[:5], 1):
+                lines.append(f"  {i}. {rec}")
+            lines.append("")
+        
+        # ATT&CK Techniques
+        if perspective.attck_techniques:
+            lines.append("🎯 ATT&CK Techniques:")
+            for tech in perspective.attck_techniques[:5]:
+                tech_id = tech.get("technique_id", "")
+                tech_name = tech.get("technique_name", "")
+                lines.append(f"  • {tech_id} - {tech_name}")
+                if tech.get("rationale"):
+                    lines.append(f"    └─ {tech.get('rationale')}")
+        
+        return lines
+    
+    def _render_analyst_perspective(self, perspective: DirectorPerspective) -> List[str]:
+        """Render analyst-specific structured data.
+        
+        Args:
+            perspective: Analyst perspective with gaps/risk assessment.
+            
+        Returns:
+            List of formatted lines.
+        """
+        lines = []
+        
+        # Risk Level
+        if perspective.risk_level:
+            risk_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(
+                perspective.risk_level.upper(), "⚪"
+            )
+            lines.append(f"{risk_icon} Risk Level: {perspective.risk_level}")
+            lines.append("")
+        
+        # Security Gaps
+        if perspective.security_gaps:
+            lines.append("🔓 Security Gaps:")
+            for gap in perspective.security_gaps[:5]:
+                gap_id = gap.get("gap_id", "")
+                desc = gap.get("description", "")
+                severity = gap.get("severity", "")
+                lines.append(f"  • {gap_id}: {desc} [{severity}]")
+        
+        return lines
+    
+    def _render_creative_perspective(self, perspective: DirectorPerspective) -> List[str]:
+        """Render creative-specific structured data.
+        
+        Args:
+            perspective: Creative perspective with alternatives.
+            
+        Returns:
+            List of formatted lines.
+        """
+        lines = []
+        
+        # Creative Alternatives
+        if perspective.alternatives:
+            lines.append("💡 Creative Alternatives:")
+            for alt in perspective.alternatives[:5]:
+                alt_id = alt.get("alternative_id", "")
+                desc = alt.get("description", "")
+                novelty = alt.get("novelty_score", 0.0)
+                novelty_str = f"[{novelty:.0%}]" if novelty else ""
+                lines.append(f"  • {alt_id}: {desc} {novelty_str}")
+                if alt.get("rationale"):
+                    lines.append(f"    └─ {alt.get('rationale')}")
+        
+        return lines
     
     def _update_thinking_display(self) -> None:
         """Update the thinking content display based on toggle state."""
@@ -441,6 +587,8 @@ class DirectorDisplayWidget(Static):
     def update_strategy_sync(self, data: Dict[str, Any]) -> None:
         """Update strategy synchronously (for testing).
         
+        Story 11.1: Enhanced to parse per-perspective structured data.
+        
         Args:
             data: Strategy data dictionary from stream.
         """
@@ -458,14 +606,24 @@ class DirectorDisplayWidget(Static):
                 if role == DirectorRole.CREATIVE and content:
                     thinking, content = extract_thinking_content(content)
                 
-                self._perspectives[role] = DirectorPerspective(
+                # Story 11.1: Parse per-perspective structured fields
+                perspective = DirectorPerspective(
                     role=role,
                     content=content,
                     latency_ms=persp_data.get("latency_ms", 0),
                     success=persp_data.get("success", False),
                     error=persp_data.get("error"),
                     thinking_content=thinking if thinking else None,
+                    # Per-perspective structured data
+                    confidence=persp_data.get("confidence"),
+                    recommendations=persp_data.get("recommendations", []),
+                    rationale=persp_data.get("rationale"),
+                    attck_techniques=persp_data.get("attck_techniques", []),
+                    security_gaps=persp_data.get("security_gaps", []),
+                    risk_level=persp_data.get("risk_level"),
+                    alternatives=persp_data.get("alternatives", []),
                 )
+                self._perspectives[role] = perspective
             except ValueError:
                 self._log.warning("unknown_perspective_role", role=role_str)
         

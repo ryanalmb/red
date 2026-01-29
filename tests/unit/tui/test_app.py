@@ -799,36 +799,34 @@ class TestActionPanic:
         """Test action_panic publishes swarm:broadcast event."""
         from cyberred.tui.app import CyberRedApp
         
-        app = CyberRedApp()
         mock_bus = MagicMock()
-        # action_panic uses asyncio.create_task(bus.publish(...))
         mock_bus.publish = AsyncMock()
-        app.bus = mock_bus
+        mock_bus.subscribe = AsyncMock()
         
-        # Mock the notify method
-        app.notify = MagicMock()
+        app = CyberRedApp(event_bus=mock_bus)
+        app._killswitch = None  # Ensure fallback to event bus
         
-        # action_panic is sync but creates async task
-        app.action_panic()
-        
-        # Give time for task to be created
-        await asyncio.sleep(0.01)
-        
-        # Verify notify was called with PANIC
-        app.notify.assert_called()
-        assert "PANIC" in str(app.notify.call_args)
+        async with app.run_test() as pilot:
+            await app.action_panic()
+            
+            # Verify publish was called with ABORT command
+            calls = [c for c in mock_bus.publish.call_args_list 
+                     if c[0] == ("swarm:broadcast", {"command": "ABORT"})]
+            assert len(calls) == 1
 
-    def test_action_panic_without_bus(self) -> None:
+    @pytest.mark.asyncio
+    async def test_action_panic_without_bus(self) -> None:
         """Test action_panic handles missing bus."""
-        from cyberred.tui.app import CyberRedApp
+        from cyberred.tui.app import CyberRedApp, EngagementState
         
         app = CyberRedApp()
         app.bus = None
-        app.notify = MagicMock()
+        app._killswitch = None
         
-        # Should not raise
-        app.action_panic()
-        app.notify.assert_called()
+        async with app.run_test() as pilot:
+            # Should not raise and should set FROZEN state
+            await app.action_panic()
+            assert app.engagement_state == EngagementState.FROZEN
 
 
 class TestActionToggleThinking:

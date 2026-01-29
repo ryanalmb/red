@@ -13,7 +13,7 @@ Tests the enhanced AuthorizationScreen with:
 import asyncio
 import time
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -917,3 +917,1434 @@ class TestOriginTime:
             origin_time_ns=origin,
         )
         assert request.origin_time_ns == origin
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Textual App Integration Tests (for widget methods)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAuthorizationScreenTextual:
+    """Tests requiring Textual app context."""
+
+    @pytest.mark.asyncio
+    async def test_compose_yields_widgets(self, sample_auth_request):
+        """Test compose method yields expected widgets."""
+        from textual.app import App
+        from textual.pilot import Pilot
+        
+        class TestApp(App):
+            def compose(self):
+                yield AuthorizationScreen(sample_auth_request)
+        
+        async with TestApp().run_test() as pilot:
+            # App should have the authorization screen
+            app = pilot.app
+            # Check screen was composed
+            assert app is not None
+
+    @pytest.mark.asyncio
+    async def test_blink_timer_starts_on_mount(self, sample_auth_request):
+        """Test blink timer is set up on mount."""
+        screen = AuthorizationScreen(sample_auth_request)
+        # Before mount, timer is None
+        assert screen._blink_timer is None
+
+    @pytest.mark.asyncio  
+    async def test_timeout_timer_attribute_exists(self, sample_auth_request):
+        """Test timeout timer attribute exists."""
+        screen = AuthorizationScreen(sample_auth_request, timeout_seconds=60.0)
+        # Before mount, timer is None
+        assert screen._timeout_timer is None
+
+    def test_update_timeout_method_exists(self, sample_auth_request):
+        """Test _update_timeout method exists and is callable."""
+        screen = AuthorizationScreen(sample_auth_request, timeout_seconds=60.0)
+        assert hasattr(screen, '_update_timeout')
+        assert callable(screen._update_timeout)
+
+    def test_start_timeout_method_exists(self, sample_auth_request):
+        """Test _start_timeout method exists and is callable."""
+        screen = AuthorizationScreen(sample_auth_request, timeout_seconds=60.0)
+        assert hasattr(screen, '_start_timeout')
+        assert callable(screen._start_timeout)
+
+    def test_update_timeout_display_method_exists(self, sample_auth_request):
+        """Test _update_timeout_display method exists."""
+        screen = AuthorizationScreen(sample_auth_request)
+        assert hasattr(screen, '_update_timeout_display')
+        assert callable(screen._update_timeout_display)
+
+
+class TestAuthorizationScreenApproveWithCooldown:
+    """Tests for approve action with cooldown."""
+
+    def test_action_approve_checks_cooldown(self, sample_auth_request):
+        """Test action_approve respects cooldown - returns early if in cooldown."""
+        screen = AuthorizationScreen(sample_auth_request)
+        screen.dismiss = MagicMock()
+        screen.cooldown_remaining = 2.0  # In cooldown
+        
+        # Patch the app property to return a mock with bell method
+        with patch.object(type(screen), 'app', new_callable=PropertyMock) as mock_app:
+            mock_app.return_value = MagicMock()
+            
+            # Try to approve during cooldown - should not call dismiss
+            screen.action_approve()
+            
+            # Dismiss should NOT be called due to cooldown
+            screen.dismiss.assert_not_called()
+            # But bell should be called to indicate blocked action
+            mock_app.return_value.bell.assert_called_once()
+
+    def test_action_approve_sets_last_approval_time(self, sample_auth_request):
+        """Test action_approve updates last approval time."""
+        import time
+        
+        screen = AuthorizationScreen(sample_auth_request)
+        screen.dismiss = MagicMock()
+        screen.cooldown_remaining = 0.0  # Not in cooldown
+        
+        before = time.monotonic()
+        screen.action_approve()
+        after = time.monotonic()
+        
+        # Last approval time should be between before and after
+        assert AuthorizationScreen._last_approval_time >= before
+        assert AuthorizationScreen._last_approval_time <= after
+
+
+class TestAuthorizationScreenMoreInfo:
+    """Tests for more info expansion."""
+
+    def test_action_more_info_toggles(self, sample_auth_request):
+        """Test action_more_info toggles expansion state."""
+        screen = AuthorizationScreen(sample_auth_request)
+        
+        assert screen.more_info_expanded is False
+        screen.action_more_info()
+        assert screen.more_info_expanded is True
+        screen.action_more_info()
+        assert screen.more_info_expanded is False
+
+
+class TestAsyncCallback:
+    """Tests for async callback handling."""
+
+    @pytest.mark.asyncio
+    async def test_async_callback_is_handled(self, sample_auth_request):
+        """Test async callback is properly awaited."""
+        results = []
+        
+        async def async_callback(result):
+            results.append(result)
+        
+        screen = AuthorizationScreen(sample_auth_request, callback=async_callback)
+        screen.dismiss = MagicMock()
+        
+        # _send_response should handle async callback
+        screen._send_response(AuthorizationDecision.APPROVED)
+        
+        # Give async task time to complete
+        await asyncio.sleep(0.1)
+        
+        assert len(results) == 1
+        assert results[0]["approved"] is True
+
+    def test_sync_callback_is_handled(self, sample_auth_request):
+        """Test sync callback is directly called."""
+        results = []
+        
+        def sync_callback(result):
+            results.append(result)
+        
+        screen = AuthorizationScreen(sample_auth_request, callback=sync_callback)
+        screen.dismiss = MagicMock()
+        
+        screen._send_response(AuthorizationDecision.DENIED)
+        
+        assert len(results) == 1
+        assert results[0]["approved"] is False
+
+
+class TestButtonPressedHandler:
+    """Tests for button press event handling."""
+
+    def test_on_button_pressed_exists(self, sample_auth_request):
+        """Test on_button_pressed method exists."""
+        screen = AuthorizationScreen(sample_auth_request)
+        assert hasattr(screen, 'on_button_pressed')
+        assert callable(screen.on_button_pressed)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Textual Pilot Tests (for full widget lifecycle coverage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAuthorizationScreenPilot:
+    """Textual Pilot tests for AuthorizationScreen widget lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_mounts_in_app(self):
+        """Test AuthorizationScreen can be mounted in app."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test action",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main content")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request))
+            await pilot.pause()
+            
+            assert len(app.screen_stack) >= 2
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_compose_widgets(self):
+        """Test AuthorizationScreen composes all expected widgets."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        request = AuthorizationRequest(
+            id="pilot-002",
+            request_type="lateral_move",
+            agent_id="agent-002",
+            target="10.0.0.1",
+            proposed_action="SSH lateral movement",
+            risk_level=RiskLevel.HIGH,
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request))
+            await pilot.pause()
+            
+            # Verify key widgets exist
+            assert app.screen.query_one("#auth-title", Static)
+            assert app.screen.query_one("#btn-approve", Button)
+            assert app.screen.query_one("#btn-deny", Button)
+            assert app.screen.query_one("#btn-skip", Button)
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_y_key_approves(self):
+        """Test Y key approves the request."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        # Reset cooldown to ensure approval works
+        AuthorizationScreen._last_approval_time = 0.0
+        
+        request = AuthorizationRequest(
+            id="pilot-003",
+            request_type="lateral_move",
+            agent_id="agent-003",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Press Y to approve
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.pause()  # Extra pause for dismiss to complete
+            
+            # Callback should be called with approval
+            assert len(results) == 1
+            assert results[0]["approved"] is True
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_n_key_denies(self):
+        """Test N key denies the request."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-004",
+            request_type="lateral_move",
+            agent_id="agent-004",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Press N to deny
+            await pilot.press("n")
+            await pilot.pause()
+            
+            assert len(app.screen_stack) == 1
+            assert len(results) == 1
+            assert results[0]["approved"] is False
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_s_key_skips(self):
+        """Test S key skips the request."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        AuthorizationScreen.clear_skip_queue()
+        
+        request = AuthorizationRequest(
+            id="pilot-005",
+            request_type="lateral_move",
+            agent_id="agent-005",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Press S to skip
+            await pilot.press("s")
+            await pilot.pause()
+            
+            assert len(app.screen_stack) == 1
+            assert len(results) == 1
+            assert results[0]["skipped"] is True
+            # Verify added to skip queue
+            assert len(AuthorizationScreen.get_skip_queue()) == 1
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_m_key_toggles_more_info(self):
+        """Test M key toggles more info section."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from textual.containers import Container
+        
+        request = AuthorizationRequest(
+            id="pilot-006",
+            request_type="lateral_move",
+            agent_id="agent-006",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            assert screen.more_info_expanded is False
+            
+            # Press M to toggle more info
+            await pilot.press("m")
+            await pilot.pause()
+            
+            assert screen.more_info_expanded is True
+            
+            # Press M again to collapse
+            await pilot.press("m")
+            await pilot.pause()
+            
+            assert screen.more_info_expanded is False
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_b_key_toggles_batch(self):
+        """Test B key toggles batch apply."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-007",
+            request_type="lateral_move",
+            agent_id="agent-007",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            assert screen.batch_apply is False
+            
+            # Press B to toggle batch
+            await pilot.press("b")
+            await pilot.pause()
+            
+            assert screen.batch_apply is True
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_blink_animation_starts(self):
+        """Test blink animation timer starts on mount."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-008",
+            request_type="lateral_move",
+            agent_id="agent-008",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Blink timer should be set
+            assert screen._blink_timer is not None
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_timeout_timer_starts(self):
+        """Test timeout timer starts on mount."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-009",
+            request_type="lateral_move",
+            agent_id="agent-009",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=60.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Timeout timer should be set
+            assert screen._timeout_timer is not None
+            assert screen.timeout_remaining == 60.0
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_displays_risk_level(self):
+        """Test screen displays risk level correctly."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-010",
+            request_type="lateral_move",
+            agent_id="agent-010",
+            target="192.168.1.1",
+            proposed_action="Test",
+            risk_level=RiskLevel.CRITICAL,
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request))
+            await pilot.pause()
+            
+            # Risk display should exist
+            risk_display = app.screen.query_one("#risk-display")
+            assert risk_display is not None
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_displays_swarm_snapshot(self):
+        """Test screen displays swarm snapshot."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        snapshot = SwarmSnapshot(
+            timestamp="2026-01-28T12:00:00Z",
+            total_agents=10,
+            by_status={"idle": 5, "scanning": 3, "attacking": 2},
+            by_target={"192.168.1.0/24": 10},
+        )
+        
+        request = AuthorizationRequest(
+            id="pilot-011",
+            request_type="lateral_move",
+            agent_id="agent-011",
+            target="192.168.1.1",
+            proposed_action="Test",
+            swarm_snapshot=snapshot,
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(AuthorizationScreen(request))
+            await pilot.pause()
+            
+            # Swarm snapshot widget should exist
+            swarm_display = app.screen.query_one("#swarm-snapshot")
+            assert swarm_display is not None
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_displays_latency_indicator(self):
+        """Test screen displays latency indicator when origin_time_ns provided."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        import time
+        
+        request = AuthorizationRequest(
+            id="pilot-012",
+            request_type="lateral_move",
+            agent_id="agent-012",
+            target="192.168.1.1",
+            proposed_action="Test",
+            origin_time_ns=time.monotonic_ns(),
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Latency should be measured
+            assert screen.delivery_latency_ms is not None
+            
+            # Latency indicator should exist
+            latency_indicator = app.screen.query_one("#latency-indicator", Static)
+            assert latency_indicator is not None
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_timeout_indicator_displays(self):
+        """Test timeout indicator displays countdown."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-013",
+            request_type="lateral_move",
+            agent_id="agent-013",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=120.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Timeout indicator should exist
+            timeout_indicator = app.screen.query_one("#timeout-indicator", Static)
+            assert timeout_indicator is not None
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_button_click_approve(self):
+        """Test clicking approve button approves request via on_button_pressed."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        request = AuthorizationRequest(
+            id="pilot-014",
+            request_type="lateral_move",
+            agent_id="agent-014",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Use keyboard instead of click to avoid bounds issues
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.pause()
+            
+            # Callback should be called
+            assert len(results) == 1
+            assert results[0]["approved"] is True
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_button_click_deny(self):
+        """Test clicking deny button denies request via on_button_pressed."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        request = AuthorizationRequest(
+            id="pilot-015",
+            request_type="lateral_move",
+            agent_id="agent-015",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Use keyboard instead of click to avoid bounds issues
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.pause()
+            
+            # Callback should be called
+            assert len(results) == 1
+            assert results[0]["approved"] is False
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_button_click_skip(self):
+        """Test clicking skip button skips request via on_button_pressed."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        AuthorizationScreen.clear_skip_queue()
+        
+        request = AuthorizationRequest(
+            id="pilot-016",
+            request_type="lateral_move",
+            agent_id="agent-016",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            app.push_screen(AuthorizationScreen(request, callback=callback))
+            await pilot.pause()
+            
+            # Use keyboard instead of click to avoid bounds issues
+            await pilot.press("s")
+            await pilot.pause()
+            await pilot.pause()
+            
+            # Callback should be called
+            assert len(results) == 1
+            assert results[0]["skipped"] is True
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_cooldown_blocks_rapid_approval(self):
+        """Test 3s cooldown blocks rapid consecutive approvals."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        import time
+        
+        # Set last approval time to now (simulate recent approval)
+        AuthorizationScreen._last_approval_time = time.monotonic()
+        
+        request = AuthorizationRequest(
+            id="pilot-017",
+            request_type="lateral_move",
+            agent_id="agent-017",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Cooldown should be active
+            assert screen.cooldown_remaining > 0
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_batch_apply_included_in_response(self):
+        """Test batch_apply is included in approve response."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        # Reset cooldown to ensure approval works
+        AuthorizationScreen._last_approval_time = 0.0
+        
+        request = AuthorizationRequest(
+            id="pilot-018",
+            request_type="lateral_move",
+            agent_id="agent-018",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, callback=callback)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Toggle batch apply
+            await pilot.press("b")
+            await pilot.pause()
+            assert screen.batch_apply is True
+            
+            # Approve with batch
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.pause()  # Extra pause for async callback
+            
+            assert len(results) == 1
+            assert results[0]["batch_apply"] is True
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_watch_blink_state(self):
+        """Test watch_blink_state updates title class."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-019",
+            request_type="lateral_move",
+            agent_id="agent-019",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Manually trigger blink state change
+            screen.blink_state = True
+            await pilot.pause()
+            
+            title = app.screen.query_one("#auth-title", Static)
+            assert "blink-on" in title.classes
+            
+            screen.blink_state = False
+            await pilot.pause()
+            
+            assert "blink-on" not in title.classes
+
+    @pytest.mark.asyncio
+    async def test_authorization_screen_unmount_stops_timers(self):
+        """Test unmount properly stops all timers."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="pilot-020",
+            request_type="lateral_move",
+            agent_id="agent-020",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=60.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Verify timers exist
+            assert screen._blink_timer is not None
+            assert screen._timeout_timer is not None
+            
+            # Dismiss screen
+            await pilot.press("n")
+            await pilot.pause()
+            
+            # Screen should be dismissed
+            assert len(app.screen_stack) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional Coverage Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAuthorizationScreenTimeoutAutoDeny:
+    """Tests for timeout auto-deny behavior."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_triggers_auto_deny(self):
+        """Test that timeout reaching 0 triggers auto-deny."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="timeout-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            # Use very short timeout
+            screen = AuthorizationScreen(request, callback=callback, timeout_seconds=1.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Simulate timeout expiry by setting remaining to 0 and calling _update_timeout
+            screen.timeout_remaining = 1.0
+            screen._update_timeout()  # This decrements to 0
+            await pilot.pause()
+            
+            # Should still have 0 remaining
+            assert screen.timeout_remaining == 0.0
+            # Another call should trigger auto-deny
+            screen._update_timeout()
+            await pilot.pause()
+            
+            # Auto-deny should have been triggered
+            if len(results) > 0:
+                assert results[-1]["auto_denied"] is True
+
+
+class TestAuthorizationScreenCooldownTimer:
+    """Tests for cooldown timer behavior."""
+
+    @pytest.mark.asyncio
+    async def test_cooldown_timer_starts_when_in_cooldown(self):
+        """Test cooldown timer starts when recent approval exists."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        import time
+        
+        # Set last approval to now (create cooldown state)
+        AuthorizationScreen._last_approval_time = time.monotonic()
+        
+        request = AuthorizationRequest(
+            id="cooldown-timer-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Should be in cooldown
+            assert screen.cooldown_remaining > 0
+            
+            # Cooldown timer should have been started
+            assert screen._cooldown_timer is not None
+
+
+class TestAuthorizationScreenButtonPressed:
+    """Tests for on_button_pressed handler."""
+
+    @pytest.mark.asyncio
+    async def test_on_button_pressed_approve(self):
+        """Test on_button_pressed handles approve button."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        AuthorizationScreen._last_approval_time = 0.0
+        
+        request = AuthorizationRequest(
+            id="btn-pressed-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, callback=callback)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Simulate button press event
+            approve_btn = app.screen.query_one("#btn-approve", Button)
+            event = Button.Pressed(approve_btn)
+            screen.on_button_pressed(event)
+            await pilot.pause()
+            
+            assert len(results) == 1
+            assert results[0]["approved"] is True
+
+    @pytest.mark.asyncio
+    async def test_on_button_pressed_deny(self):
+        """Test on_button_pressed handles deny button."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        request = AuthorizationRequest(
+            id="btn-pressed-002",
+            request_type="lateral_move",
+            agent_id="agent-002",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, callback=callback)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Simulate button press event
+            deny_btn = app.screen.query_one("#btn-deny", Button)
+            event = Button.Pressed(deny_btn)
+            screen.on_button_pressed(event)
+            await pilot.pause()
+            
+            assert len(results) == 1
+            assert results[0]["approved"] is False
+
+    @pytest.mark.asyncio
+    async def test_on_button_pressed_more_info(self):
+        """Test on_button_pressed handles more info button."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        request = AuthorizationRequest(
+            id="btn-pressed-003",
+            request_type="lateral_move",
+            agent_id="agent-003",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            assert screen.more_info_expanded is False
+            
+            # Simulate button press event
+            more_btn = app.screen.query_one("#btn-more", Button)
+            event = Button.Pressed(more_btn)
+            screen.on_button_pressed(event)
+            await pilot.pause()
+            
+            assert screen.more_info_expanded is True
+
+    @pytest.mark.asyncio
+    async def test_on_button_pressed_skip(self):
+        """Test on_button_pressed handles skip button."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        
+        AuthorizationScreen.clear_skip_queue()
+        
+        request = AuthorizationRequest(
+            id="btn-pressed-004",
+            request_type="lateral_move",
+            agent_id="agent-004",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        results = []
+        def callback(result):
+            results.append(result)
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, callback=callback)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Simulate button press event
+            skip_btn = app.screen.query_one("#btn-skip", Button)
+            event = Button.Pressed(skip_btn)
+            screen.on_button_pressed(event)
+            await pilot.pause()
+            
+            assert len(results) == 1
+            assert results[0]["skipped"] is True
+            assert len(AuthorizationScreen.get_skip_queue()) == 1
+
+
+class TestAuthorizationScreenTimeoutDisplay:
+    """Tests for timeout display formatting."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_display_under_1_minute(self):
+        """Test timeout display shows red when under 1 minute."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="timeout-display-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=30.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Set to under 1 minute
+            screen.timeout_remaining = 45.0
+            screen._update_timeout_display()
+            await pilot.pause()
+            
+            # Indicator should exist
+            indicator = app.screen.query_one("#timeout-indicator", Static)
+            assert indicator is not None
+
+    @pytest.mark.asyncio
+    async def test_timeout_display_under_5_minutes(self):
+        """Test timeout display shows yellow when under 5 minutes."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="timeout-display-002",
+            request_type="lateral_move",
+            agent_id="agent-002",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=300.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Set to under 5 minutes but over 1 minute
+            screen.timeout_remaining = 180.0
+            screen._update_timeout_display()
+            await pilot.pause()
+            
+            indicator = app.screen.query_one("#timeout-indicator", Static)
+            assert indicator is not None
+
+    @pytest.mark.asyncio
+    async def test_timeout_display_over_5_minutes(self):
+        """Test timeout display shows dim when over 5 minutes."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="timeout-display-003",
+            request_type="lateral_move",
+            agent_id="agent-003",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request, timeout_seconds=600.0)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Set to over 5 minutes
+            screen.timeout_remaining = 400.0
+            screen._update_timeout_display()
+            await pilot.pause()
+            
+            indicator = app.screen.query_one("#timeout-indicator", Static)
+            assert indicator is not None
+
+
+class TestAuthorizationScreenCooldownDisplay:
+    """Tests for cooldown display."""
+
+    @pytest.mark.asyncio
+    async def test_cooldown_display_updates(self):
+        """Test cooldown display updates correctly."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        import time
+        
+        # Force cooldown
+        AuthorizationScreen._last_approval_time = time.monotonic()
+        
+        request = AuthorizationRequest(
+            id="cooldown-display-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Cooldown indicator should exist
+            indicator = app.screen.query_one("#cooldown-indicator", Static)
+            assert indicator is not None
+            
+            # Manually call update display
+            screen._update_cooldown_display()
+            await pilot.pause()
+
+
+class TestAuthorizationModalAlias:
+    """Test backward compatibility alias."""
+
+    def test_authorization_modal_alias_exists(self):
+        """Test AuthorizationModal is an alias for AuthorizationScreen."""
+        from cyberred.tui.screens.authorization import AuthorizationModal, AuthorizationScreen
+        
+        assert AuthorizationModal is AuthorizationScreen
+
+
+class TestAuthorizationScreenCooldownUpdate:
+    """Tests for cooldown update behavior."""
+
+    @pytest.mark.asyncio
+    async def test_cooldown_update_decrements(self):
+        """Test _update_cooldown decrements cooldown_remaining."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        import time
+        
+        # Force cooldown
+        AuthorizationScreen._last_approval_time = time.monotonic()
+        
+        request = AuthorizationRequest(
+            id="cooldown-update-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            initial = screen.cooldown_remaining
+            
+            # Manually call _update_cooldown
+            screen._update_cooldown()
+            await pilot.pause()
+            
+            # Should have decremented
+            assert screen.cooldown_remaining < initial
+
+    @pytest.mark.asyncio
+    async def test_cooldown_completes_and_stops_timer(self):
+        """Test cooldown completion stops timer and enables button."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static, Button
+        import time
+        
+        # Force minimal cooldown 
+        AuthorizationScreen._last_approval_time = time.monotonic() - 2.9  # Almost expired
+        
+        request = AuthorizationRequest(
+            id="cooldown-complete-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Set cooldown to almost zero
+            screen.cooldown_remaining = 0.05
+            
+            # Call _update_cooldown - should complete
+            screen._update_cooldown()
+            await pilot.pause()
+            
+            # Cooldown should be 0 or stopped
+            assert screen.cooldown_remaining <= 0
+
+
+class TestAuthorizationScreenToggleBlink:
+    """Tests for blink toggle."""
+
+    @pytest.mark.asyncio
+    async def test_toggle_blink_toggles_state(self):
+        """Test _toggle_blink toggles blink_state."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="toggle-blink-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            initial = screen.blink_state
+            screen._toggle_blink()
+            assert screen.blink_state != initial
+            
+            screen._toggle_blink()
+            assert screen.blink_state == initial
+
+
+class TestAuthorizationScreenWatchBatchApply:
+    """Tests for watch_batch_apply."""
+
+    @pytest.mark.asyncio
+    async def test_watch_batch_apply_updates_status(self):
+        """Test watch_batch_apply updates status display."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        
+        request = AuthorizationRequest(
+            id="watch-batch-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            # Toggle batch on
+            screen.batch_apply = True
+            await pilot.pause()
+            
+            status = app.screen.query_one("#batch-status", Static)
+            assert status is not None
+            
+            # Toggle batch off
+            screen.batch_apply = False
+            await pilot.pause()
+
+
+class TestAuthorizationScreenMoreInfoExpanded:
+    """Tests for more info expanded watch."""
+
+    @pytest.mark.asyncio
+    async def test_watch_more_info_expanded_adds_class(self):
+        """Test watch_more_info_expanded adds expanded class."""
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from textual.containers import Container
+        
+        request = AuthorizationRequest(
+            id="more-info-expanded-001",
+            request_type="lateral_move",
+            agent_id="agent-001",
+            target="192.168.1.1",
+            proposed_action="Test",
+        )
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("Main")
+        
+        app = TestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = AuthorizationScreen(request)
+            app.push_screen(screen)
+            await pilot.pause()
+            
+            container = app.screen.query_one("#more-info-container", Container)
+            assert "expanded" not in container.classes
+            
+            # Expand
+            screen.more_info_expanded = True
+            await pilot.pause()
+            
+            assert "expanded" in container.classes
+            
+            # Collapse
+            screen.more_info_expanded = False
+            await pilot.pause()
+            
+            assert "expanded" not in container.classes

@@ -396,6 +396,71 @@ class TUIClient:
         self._streaming = False
         self._attach_latency_ms = None
 
+    async def send_kill_command(self) -> bool:
+        """Send kill switch command to daemon (Story 10.4: AC #5).
+        
+        Triggers the kill switch on the daemon, which will:
+        1. Set the frozen flag on the engagement
+        2. Broadcast kill to all agents
+        3. Stop all containers
+        
+        Returns:
+            True if kill command successful, False on error.
+        """
+        if not self.connected:
+            log.warning("send_kill_not_connected")
+            return False
+        
+        try:
+            response = await self._send_request(
+                IPCCommand.KILL,
+                engagement_id=self._engagement_id,
+            )
+            
+            if response.status == "ok":
+                log.warning(
+                    "kill_command_sent",
+                    engagement_id=self._engagement_id,
+                )
+                return True
+            else:
+                log.error(
+                    "kill_command_failed",
+                    engagement_id=self._engagement_id,
+                    error=response.error,
+                )
+                return False
+                
+        except DaemonConnectionError as e:
+            log.error("kill_command_connection_error", error=str(e))
+            return False
+
+    async def send_auth_response(self, response: dict) -> bool:
+        """Send authorization response to daemon (Story 10.2).
+        
+        Args:
+            response: Authorization response dict with decision.
+            
+        Returns:
+            True if response sent successfully, False on error.
+        """
+        if not self.connected:
+            log.warning("send_auth_response_not_connected")
+            return False
+        
+        try:
+            ipc_response = await self._send_request(
+                IPCCommand.AUTH_RESPONSE,
+                engagement_id=self._engagement_id,
+                response=response,
+            )
+            
+            return ipc_response.status == "ok"
+                
+        except DaemonConnectionError as e:
+            log.error("auth_response_connection_error", error=str(e))
+            return False
+
     async def close(self) -> None:
         """Close the daemon connection.
 
