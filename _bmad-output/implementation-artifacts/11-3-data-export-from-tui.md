@@ -1,6 +1,6 @@
 # Story 11.3: Data Export from TUI
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -76,124 +76,124 @@ So that **I can save evidence to local filesystem**.
 
 ### 🔴 RED PHASE: Write Failing Tests First
 
-- [ ] Task 1: Write unit tests for DataExporter class (AC: #1, #2, #6)
-  - [ ] Test `DataExporter.__init__()` with store and audit logger
-  - [ ] Test `export_single_item()` decrypts and writes to path
-  - [ ] Test `export_single_item()` preserves original filename
-  - [ ] Test `export_single_item()` creates parent directories if needed
-  - [ ] Test `export_single_item()` logs to audit trail
-  - [ ] Test `export_single_item()` raises `ExportError` on permission denied
-  - [ ] Test `export_single_item()` raises `ExportError` on disk full
-  - [ ] Test `export_single_item()` cleans up partial files on failure
-  - [ ] Test `get_default_export_path()` returns expected format
+- [x] Task 1: Write unit tests for DataExporter class (AC: #1, #2, #6)
+  - [x] Test `DataExporter.__init__()` with store and audit logger
+  - [x] Test `export_single_item()` decrypts and writes to path
+  - [x] Test `export_single_item()` preserves original filename
+  - [x] Test `export_single_item()` creates parent directories if needed
+  - [x] Test `export_single_item()` logs to audit trail
+  - [x] Test `export_single_item()` raises `ExportError` on permission denied
+  - [x] Test `export_single_item()` raises `ExportError` on disk full
+  - [x] Test `export_single_item()` cleans up partial files on failure
+  - [x] Test `get_default_export_path()` returns expected format
 
-- [ ] Task 2: Write unit tests for archive export (AC: #3, #4)
-  - [ ] Test `export_archive()` creates valid ZIP file
-  - [ ] Test `export_archive()` includes all items with original names
-  - [ ] Test `export_archive()` generates manifest.json with correct schema
-  - [ ] Test `export_archive()` names archive with timestamp format
-  - [ ] Test `export_archive()` handles duplicate filenames (appends suffix)
-  - [ ] Test `export_archive()` logs to audit trail
-  - [ ] Test `export_archive()` cleans up partial archive on failure
-  - [ ] Test manifest.json contains: items metadata, export_timestamp, engagement_id
+- [x] Task 2: Write unit tests for archive export (AC: #3, #4)
+  - [x] Test `export_archive()` creates valid ZIP file
+  - [x] Test `export_archive()` includes all items with original names
+  - [x] Test `export_archive()` generates manifest.json with correct schema
+  - [x] Test `export_archive()` names archive with timestamp format
+  - [x] Test `export_archive()` handles duplicate filenames (appends suffix)
+  - [x] Test `export_archive()` logs to audit trail
+  - [x] Test `export_archive()` cleans up partial archive on failure
+  - [x] Test manifest.json contains: items metadata, export_timestamp, engagement_id
 
-- [ ] Task 3: Write unit tests for export progress tracking (AC: #5)
-  - [ ] Test `ExportProgress` dataclass tracks total/completed counts
-  - [ ] Test `ExportProgress` tracks total/completed bytes
-  - [ ] Test `ExportProgress.percentage` property calculates correctly
-  - [ ] Test `ExportProgress.is_large_export` (>10 items or >10MB)
-  - [ ] Test export cancellation via `CancellationToken`
-  - [ ] Test cancelled export cleans up partial output
+- [x] Task 3: Write unit tests for export progress tracking (AC: #5)
+  - [x] Test `ExportProgress` dataclass tracks total/completed counts
+  - [x] Test `ExportProgress` tracks total/completed bytes
+  - [x] Test `ExportProgress.percentage` property calculates correctly
+  - [x] Test `ExportProgress.is_large_export` (>10 items or >10MB)
+  - [x] Test export cancellation via `CancellationToken`
+  - [x] Test cancelled export cleans up partial output
 
-- [ ] Task 4: Write unit tests for ExportDialog TUI modal (AC: #1, #3, #5)
-  - [ ] Test `ExportDialog` compose() creates path input and buttons
-  - [ ] Test `ExportDialog` shows default path suggestion
-  - [ ] Test `ExportDialog` validates path input (non-empty, writable directory)
-  - [ ] Test `ExportDialog` emits `ExportRequested` message on confirm
-  - [ ] Test `ExportDialog` closes on cancel (Escape key)
-  - [ ] Test `ExportDialog` shows item count for multi-select
-  - [ ] Test `ExportDialog` archive vs individual files toggle
-  - [ ] Test `ExportDialog` progress bar rendering for large exports
+- [x] Task 4: Write unit tests for ExportDialog TUI modal (AC: #1, #3, #5)
+  - [x] Test `ExportDialog` compose() creates path input and buttons
+  - [x] Test `ExportDialog` shows default path suggestion
+  - [x] Test `ExportDialog` validates path input (non-empty, writable directory)
+  - [x] Test `ExportDialog` emits `ExportRequested` message on confirm
+  - [x] Test `ExportDialog` closes on cancel (Escape key)
+  - [x] Test `ExportDialog` shows item count for multi-select
+  - [x] Test `ExportDialog` archive vs individual files toggle
+  - [x] Test `ExportDialog` progress bar rendering for large exports
 
-- [ ] Task 5: Write unit tests for DataBrowserScreen export integration (AC: #1, #2, #7)
-  - [ ] Test `action_export_item()` opens ExportDialog for single item
-  - [ ] Test `action_export_selected()` opens ExportDialog for multiple items
-  - [ ] Test multi-select mode with Space key toggles selection
-  - [ ] Test selection state visual indicator in DataTable
-  - [ ] Test export success shows notification with path
-  - [ ] Test export failure shows error notification
+- [x] Task 5: Write unit tests for DataBrowserScreen export integration (AC: #1, #2, #7)
+  - [x] Test `action_export_item()` opens ExportDialog for single item
+  - [x] Test `action_export_selected()` opens ExportDialog for multiple items
+  - [x] Test multi-select mode with Space key toggles selection
+  - [x] Test selection state visual indicator in DataTable
+  - [x] Test export success shows notification with path
+  - [x] Test export failure shows error notification
 
-- [ ] Task 6: Write integration tests for full export flow (AC: #7)
-  - [ ] Test single item export end-to-end
-  - [ ] Test archive export end-to-end
-  - [ ] Test export with real encryption/decryption
-  - [ ] Test audit log entries are created
-  - [ ] Test error recovery (invalid path, then retry with valid path)
+- [x] Task 6: Write integration tests for full export flow (AC: #7)
+  - [x] Test single item export end-to-end
+  - [x] Test archive export end-to-end
+  - [x] Test export with real encryption/decryption
+  - [x] Test audit log entries are created
+  - [x] Test error recovery (invalid path, then retry with valid path)
 
 ---
 
 ### 🟢 GREEN PHASE: Implement Features to Pass Tests
 
-- [ ] Task 7: Implement DataExporter class (AC: #1, #2, #6)
-  - [ ] Create `src/cyberred/storage/exporter.py`
-  - [ ] Implement `DataExporter.__init__(store, audit_logger, engagement_name)`
-  - [ ] Implement `get_default_export_path(item)` returning `~/cyber-red-exports/{engagement}/{filename}`
-  - [ ] Implement `export_single_item(item_id, destination_path)` with decryption
-  - [ ] Implement atomic write pattern (write to temp, rename on success)
-  - [ ] Implement cleanup on failure (remove partial files)
-  - [ ] Add audit logging for all exports
+- [x] Task 7: Implement DataExporter class (AC: #1, #2, #6)
+  - [x] Create `src/cyberred/storage/exporter.py`
+  - [x] Implement `DataExporter.__init__(store, audit_logger, engagement_name)`
+  - [x] Implement `get_default_export_path(item)` returning `~/cyber-red-exports/{engagement}/{filename}`
+  - [x] Implement `export_single_item(item_id, destination_path)` with decryption
+  - [x] Implement atomic write pattern (write to temp, rename on success)
+  - [x] Implement cleanup on failure (remove partial files)
+  - [x] Add audit logging for all exports
 
-- [ ] Task 8: Implement archive export functionality (AC: #3, #4)
-  - [ ] Implement `export_archive(item_ids, destination_path)` 
-  - [ ] Generate manifest.json with export metadata schema
-  - [ ] Handle duplicate filenames by appending counter suffix
-  - [ ] Use atomic write for archive (write to temp .zip.tmp, rename on success)
-  - [ ] Implement proper ZIP compression (deflate)
+- [x] Task 8: Implement archive export functionality (AC: #3, #4)
+  - [x] Implement `export_archive(item_ids, destination_path)` 
+  - [x] Generate manifest.json with export metadata schema
+  - [x] Handle duplicate filenames by appending counter suffix
+  - [x] Use atomic write for archive (write to temp .zip.tmp, rename on success)
+  - [x] Implement proper ZIP compression (deflate)
 
-- [ ] Task 9: Implement export progress tracking (AC: #5)
-  - [ ] Create `ExportProgress` dataclass with counts and bytes tracking
-  - [ ] Implement `CancellationToken` for cooperative cancellation
-  - [ ] Add progress callback parameter to export methods
-  - [ ] Implement cleanup on cancellation
+- [x] Task 9: Implement export progress tracking (AC: #5)
+  - [x] Create `ExportProgress` dataclass with counts and bytes tracking
+  - [x] Implement `CancellationToken` for cooperative cancellation
+  - [x] Add progress callback parameter to export methods
+  - [x] Implement cleanup on cancellation
 
-- [ ] Task 10: Implement ExportDialog TUI modal (AC: #1, #3, #5)
-  - [ ] Create `src/cyberred/tui/widgets/export_dialog.py`
-  - [ ] Implement modal layout: title, path input, format toggle, buttons
-  - [ ] Implement path validation with real-time feedback
-  - [ ] Implement progress bar widget for large exports
-  - [ ] Emit `ExportRequested` message with export configuration
-  - [ ] Support keyboard navigation (Tab between fields, Enter to confirm)
+- [x] Task 10: Implement ExportDialog TUI modal (AC: #1, #3, #5)
+  - [x] Create `src/cyberred/tui/widgets/export_dialog.py`
+  - [x] Implement modal layout: title, path input, format toggle, buttons
+  - [x] Implement path validation with real-time feedback
+  - [x] Implement progress bar widget for large exports
+  - [x] Emit `ExportRequested` message with export configuration
+  - [x] Support keyboard navigation (Tab between fields, Enter to confirm)
 
-- [ ] Task 11: Implement multi-select in DataBrowserScreen (AC: #3)
-  - [ ] Add `_selected_items: set[str]` for multi-selection tracking
-  - [ ] Implement Space key toggle for selection
-  - [ ] Add visual indicator (checkbox column or row highlight) for selected items
-  - [ ] Implement `E` (Shift+E) binding for export all selected
-  - [ ] Update status bar to show selection count
+- [x] Task 11: Implement multi-select in DataBrowserScreen (AC: #3)
+  - [x] Add `_selected_items: set[str]` for multi-selection tracking
+  - [x] Implement Space key toggle for selection
+  - [x] Add visual indicator (checkbox column or row highlight) for selected items
+  - [x] Implement `E` (Shift+E) binding for export all selected
+  - [x] Update status bar to show selection count
 
-- [ ] Task 12: Integrate export into DataBrowserScreen (AC: #1, #2)
-  - [ ] Update `action_export_item()` to open ExportDialog
-  - [ ] Implement `action_export_selected()` for multi-item export
-  - [ ] Handle `ExportRequested` message and invoke DataExporter
-  - [ ] Show success/error notifications after export
-  - [ ] Run export in background to avoid blocking UI
+- [x] Task 12: Integrate export into DataBrowserScreen (AC: #1, #2)
+  - [x] Update `action_export_item()` to open ExportDialog
+  - [x] Implement `action_export_selected()` for multi-item export
+  - [x] Handle `ExportRequested` message and invoke DataExporter
+  - [x] Show success/error notifications after export
+  - [x] Run export in background to avoid blocking UI
 
 ---
 
 ### 🔵 REFACTOR PHASE: Clean Up While Keeping Tests Green
 
-- [ ] Task 13: Code quality and documentation
-  - [ ] Add comprehensive docstrings to all public methods
-  - [ ] Ensure type hints are complete and correct
-  - [ ] Run coverage report and add tests until 100% achieved
-  - [ ] Add logging for debugging export operations
-  - [ ] Optimize large export performance (streaming write for big files)
+- [x] Task 13: Code quality and documentation
+  - [x] Add comprehensive docstrings to all public methods
+  - [x] Ensure type hints are complete and correct
+  - [x] Run coverage report and add tests until 100% achieved
+  - [x] Add logging for debugging export operations
+  - [x] Optimize large export performance (streaming write for big files)
 
-- [ ] Task 14: Final validation
-  - [ ] Verify all acceptance criteria met
-  - [ ] Run full test suite
-  - [ ] Test with real encrypted data files
-  - [ ] Verify audit log entries are complete and accurate
+- [x] Task 14: Final validation
+  - [x] Verify all acceptance criteria met
+  - [x] Run full test suite
+  - [x] Test with real encrypted data files
+  - [x] Verify audit log entries are complete and accurate
 
 ---
 
@@ -676,10 +676,38 @@ Per project testing requirements:
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Claude (Anthropic)
 
 ### Debug Log References
 
+- All 44 tests pass (29 unit + 15 integration)
+
 ### Completion Notes List
 
+- Implemented `DataExporter` class with single item and archive export
+- Implemented `ExportProgress` and `CancellationToken` for progress tracking
+- Implemented `ExportDialog` TUI modal with path input and format toggle
+- Added `ExportError` exception to exception hierarchy
+- Integrated export into `DataBrowserScreen` with `e`, `E`, and Space keybindings
+- Added multi-select support for bulk exports
+
+### Code Review Fixes (2026-01-29)
+
+- **Fixed class variable bug**: `_selected_items` was a class variable causing shared state between instances; moved to instance variable in `__init__`
+- **Fixed multi-item individual export**: When `as_archive=False` with multiple items, now exports each item individually instead of only the first
+- **Fixed hardcoded engagement name**: Added `engagement_name` parameter to `DataBrowserScreen.__init__` and use it in export paths
+- **Fixed default export path**: Now uses `{engagement_name}` instead of hardcoded "export" subdirectory
+- **Added visual selection indicator**: Checkbox (☑) prefix on selected items in DataTable
+- **Added `ExportAuditLogger`**: New audit logger class in `core/audit.py` with `log_export()` and `log_archive_export()` methods
+- **Improved audit logging integration**: `_get_audit_logger()` now uses real `ExportAuditLogger` when available
+
 ### File List
+
+- `src/cyberred/storage/exporter.py` (NEW) - DataExporter, ExportProgress, CancellationToken
+- `src/cyberred/tui/widgets/export_dialog.py` (NEW) - ExportDialog modal
+- `src/cyberred/core/exceptions.py` (MODIFIED) - Added ExportError
+- `src/cyberred/core/audit.py` (MODIFIED) - Added ExportAuditLogger, ExportAuditEntry
+- `src/cyberred/tui/screens/data_browser.py` (MODIFIED) - Export integration with code review fixes
+- `tests/unit/storage/test_exporter.py` (NEW) - DataExporter unit tests
+- `tests/unit/tui/test_export_dialog.py` (NEW) - ExportDialog unit tests
+- `tests/integration/tui/test_data_export.py` (NEW) - Integration tests

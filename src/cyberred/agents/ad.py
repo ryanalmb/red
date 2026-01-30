@@ -20,15 +20,21 @@ from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
     from cyberred.core.event_bus import EventBus
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
 
 
 class ADAgent(StigmergicAgent):
     """Active Directory specialist agent - thin subclass with LLM-driven tool selection."""
 
+    INTELLIGENCE_TIMEOUT = 5.0
+
     def __init__(
         self, agent_id: str, engagement_id: str, event_bus: EventBus,
         specialty: str = "general", max_iterations: int = 30,
-        phase_complete_threshold: int = 75, **kwargs: Any,
+        phase_complete_threshold: int = 75,
+        intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             agent_name=f"ad-agent-{specialty}",
@@ -39,6 +45,7 @@ class ADAgent(StigmergicAgent):
         self.max_iterations = max_iterations
         self.phase_complete_threshold = phase_complete_threshold
         self.current_strategy = "standard"
+        self._intel_aggregator = intel_aggregator
         self._domain_info: dict[str, Any] = {}
         self._discovered_users: list[str] = []
         self._discovered_spns: list[dict[str, str]] = []
@@ -54,6 +61,11 @@ class ADAgent(StigmergicAgent):
         findings, actions, iteration = [], [], 0
         await self._enumerate_domain(domain_controller, context.get("credentials"))
 
+        # Query intelligence for AD/Kerberos attack techniques
+        service = context.get("service", "ldap")
+        version = context.get("version", "")
+        intel = await self._select_intel(await self._query_intelligence(service, version))
+
         while not self._stop_event.is_set() and iteration < self.max_iterations:
             tool_context = self._build_tool_context(domain_controller, context, actions)
             if await self._phase_complete(tool_context):
@@ -61,7 +73,7 @@ class ADAgent(StigmergicAgent):
             iteration += 1
             try:
                 tool_selection = await self.select_tool(tool_context)
-                decision_context = self._build_decision_context(tool_selection)
+                decision_context = self._build_decision_context(tool_selection, intel)
                 result = await kali_execute(tool_selection.command)
                 action = AgentAction(
                     id=str(uuid.uuid4()), agent_id=self.agent_id,
@@ -88,6 +100,24 @@ class ADAgent(StigmergicAgent):
                 ))
                 break
         return findings, actions
+
+    async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for AD/Kerberos attack techniques."""
+        if not self._intel_aggregator or not service:
+            return []
+        try:
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(service, version),
+                timeout=self.INTELLIGENCE_TIMEOUT
+            )
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        if not results:
+            return None
+        return sorted(results, key=lambda r: r.priority)[0]
 
     async def _enumerate_domain(self, domain_controller: str, credentials: dict[str, str] | None) -> None:
         """Perform initial domain enumeration."""
@@ -158,7 +188,7 @@ class ADAgent(StigmergicAgent):
         except Exception as e:
             self._log.warning("domain_admin_publish_failed", error=str(e))
 
-    def _build_decision_context(self, tool_selection: Any) -> list[str]:
+    def _build_decision_context(self, tool_selection: Any, intel: "IntelResult | None" = None) -> list[str]:
         """Build decision context list for NFR37 compliance."""
         ctx = [f"initial_spawn:{self.agent_id}"]
         if self._domain_info.get("domain_name"):
@@ -167,6 +197,8 @@ class ADAgent(StigmergicAgent):
             ctx.append(f"ticket:{ticket_type}:{spn}")
         for cred in self._obtained_credentials:
             ctx.append(f"creds:{cred.get('username', 'unknown')}")
+        if intel:
+            ctx.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
         return ctx
 
     def _build_tool_context(self, dc: str, context: dict[str, Any], actions: list[AgentAction]) -> ToolSelectionContext:

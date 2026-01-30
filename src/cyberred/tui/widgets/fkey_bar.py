@@ -3,7 +3,7 @@
 Story 9.11: Keyboard Navigation (F-Keys) - Task 1
 
 Displays F-key mappings in the footer area per UX spec lines 386-387:
-[F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]Drop [F10]KILL
+[F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]Drop [F7]Dir [F8]Scope [F9]Data [F10]KILL [F11]RAG
 
 Features:
 - Configurable mappings via FKeyMapping dataclass
@@ -46,7 +46,7 @@ class FKeyMapping:
 
 # Default F-key mappings per UX spec and story AC #3
 # F1=Dashboard, F2=Config, F3=Logs, F4=Report, F5=Pause/Resume,
-# F6=Drop Box, F7=Director, F10=Kill Switch
+# F6=Drop Box, F7=Director, F8=Scope, F9=Data, F10=Kill Switch, F11=RAG
 DEFAULT_FKEY_MAPPINGS: List[FKeyMapping] = [
     FKeyMapping(key="f1", action="dashboard", label="Dash"),
     FKeyMapping(key="f2", action="config", label="Cfg"),
@@ -55,14 +55,17 @@ DEFAULT_FKEY_MAPPINGS: List[FKeyMapping] = [
     FKeyMapping(key="f5", action="pause_resume", label="Pause"),
     FKeyMapping(key="f6", action="show_dropbox", label="Drop"),
     FKeyMapping(key="f7", action="director_panel", label="Dir"),
+    FKeyMapping(key="f8", action="scope_editor", label="Scope"),  # Story 10.5
+    FKeyMapping(key="f9", action="data_browser", label="Data"),  # Story 11.2
     FKeyMapping(key="f10", action="kill_switch_confirm", label="KILL"),
+    FKeyMapping(key="f11", action="rag_panel", label="RAG"),  # Story 11.5
 ]
 
 
 class FKeyBar(Static):
     """F-key mapping display bar per UX spec lines 386-387.
     
-    Displays: [F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]Drop [F10]KILL
+    Displays: [F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]Drop [F7]Dir [F8]Scope [F9]Data [F10]KILL [F11]RAG
     
     Supports:
     - Custom mappings via constructor or reactive property

@@ -964,6 +964,57 @@ class ToolSelectionError(CyberRedError):
 # === Director Ensemble Exceptions (Story 8.6) ===
 
 
+class ExportError(CyberRedError):
+    """Export operation failed.
+
+    Story 11.3: Data Export from TUI.
+
+    Raised when exporting data fails due to permission denied, disk full,
+    invalid path, or cancellation.
+
+    Attributes:
+        reason: Description of why export failed.
+        destination: Optional path where export was attempted.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        destination: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Initialize ExportError.
+
+        Args:
+            reason: Description of failure cause.
+            destination: Optional destination path.
+            message: Optional custom message.
+        """
+        self.reason = reason
+        self.destination = destination
+
+        if message is None:
+            dest_info = f" to {destination}" if destination else ""
+            message = f"Export failed{dest_info}: {reason}"
+
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for export error."""
+        return {
+            "reason": self.reason,
+            "destination": self.destination,
+        }
+
+    def __repr__(self) -> str:
+        """Return debug representation."""
+        return f"ExportError(reason={self.reason!r}, destination={self.destination!r})"
+
+
+# === Director Ensemble Exceptions (Story 8.6) ===
+
+
 class NoModelsAvailableError(CyberRedError):
     """No Director models are available for synthesis.
 
@@ -1012,3 +1063,47 @@ class NoModelsAvailableError(CyberRedError):
             f"NoModelsAvailableError(excluded_models={self.excluded_models!r}, "
             f"last_errors={self.last_errors!r})"
         )
+
+
+class DeletionError(CyberRedError):
+    """Secure deletion operation failed.
+
+    Story 11.4: Manual Data Deletion.
+
+    Raised when secure file deletion fails due to permission denied,
+    file locked, verification failure, or other I/O errors.
+
+    Attributes:
+        item_id: ID of the item that failed to delete.
+        reason: Description of why deletion failed.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        item_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """Initialize DeletionError.
+
+        Args:
+            message: Error description.
+            item_id: ID of the item that failed.
+            reason: Reason code for the failure.
+        """
+        self.item_id = item_id
+        self.reason = reason
+
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for deletion error."""
+        return {
+            "item_id": self.item_id,
+            "reason": self.reason,
+        }
+
+    def __repr__(self) -> str:
+        """Return debug representation."""
+        return f"DeletionError(item_id={self.item_id!r}, reason={self.reason!r})"

@@ -528,3 +528,71 @@ class ExfiltratedDataStore:
             Sum of size_bytes for all items.
         """
         return sum(item.size_bytes for item in self._items.values())
+
+    def _remove_from_manifest(self, item_id: str) -> None:
+        """Remove an item from the manifest file atomically.
+
+        Story 11.4: Manual Data Deletion
+
+        Uses atomic write pattern: read -> filter -> write to tmp -> rename.
+        This prevents partial state on crash.
+
+        Args:
+            item_id: ID of the item to remove from manifest.
+
+        Raises:
+            KeyError: If item_id not found in manifest.
+            IOError: If manifest update fails.
+        """
+        import shutil
+        import tempfile
+
+        manifest_path = self._evidence_path / self.MANIFEST_FILE
+
+        if not manifest_path.exists():
+            raise KeyError(f"Manifest not found: {manifest_path}")
+
+        try:
+            # Read current manifest
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+
+            # Filter out the item
+            original_count = len(manifest.get("exfiltrated_data", []))
+            manifest["exfiltrated_data"] = [
+                item for item in manifest.get("exfiltrated_data", [])
+                if item.get("id") != item_id
+            ]
+            new_count = len(manifest["exfiltrated_data"])
+
+            if original_count == new_count:
+                raise KeyError(f"Item not found in manifest: {item_id}")
+
+            # Write to temp file first (atomic pattern)
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=".json",
+                dir=self._evidence_path,
+            )
+            try:
+                with os.fdopen(temp_fd, "w") as f:
+                    json.dump(manifest, f, indent=2)
+
+                # Atomic rename
+                shutil.move(temp_path, str(manifest_path))
+
+            except Exception:
+                # Clean up temp file on error
+                if Path(temp_path).exists():
+                    Path(temp_path).unlink()
+                raise
+
+            logger.info(f"Removed item {item_id} from manifest")
+
+        except json.JSONDecodeError as e:
+            raise IOError(f"Failed to parse manifest: {e}") from e
+        except KeyError:
+            raise
+        except IOError:
+            raise
+        except Exception as e:
+            raise IOError(f"Failed to update manifest: {e}") from e

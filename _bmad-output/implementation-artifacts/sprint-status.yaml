@@ -219,25 +219,26 @@ development_status:
   epic-10-retrospective: done
 
   # Epic 11: War Room TUI - Data & Strategy
-  epic-11: in-progress
-  11-1-director-ensemble-display-three-perspectives: review
-  11-2-exfiltrated-data-browser: in-progress
-  11-3-data-export-from-tui: in-progress
-  11-4-manual-data-deletion: backlog
-  11-5-rag-management-panel: backlog
-  11-6-engagement-statistics-dashboard: backlog
-  epic-11-retrospective: optional
+  epic-11: done
+  11-1-director-ensemble-display-three-perspectives: done
+  11-2-exfiltrated-data-browser: done
+  11-3-data-export-from-tui: done # Code review completed 2026-01-29
+  11-4-manual-data-deletion: done # Completed 2026-01-29
+  11-5-rag-management-panel: done # Dev completed 2026-01-29
+  11-6-engagement-statistics-dashboard: done
+  epic-11-retrospective: done
 
   # POST-TUI ENHANCEMENT: Expand Intelligence Module to All Agents
-  # Current: Only ExploitAgent and PostExAgent use CachedIntelligenceAggregator
-  # TODO: After TUI epics (9-11), integrate intelligence into:
-  #   - WebAppAgent: web-specific CVEs, OWASP techniques
-  #   - WirelessAgent: WiFi/wireless protocol vulnerabilities
-  #   - ADAgent: Active Directory attack techniques, Kerberos exploits
-  #   - CredentialAgent: credential dumping techniques, hash cracking intel
-  #   - ForensicsAgent: persistence mechanisms, artifact locations
-  #   - ReconAgent: service fingerprinting intel (lower priority)
-  # Priority: LOW - See epic-8-retro-2026-01-28.md for details
+  # COMPLETED 2026-01-30: Intelligence integration added to all 6 remaining agents:
+  #   - WebAppAgent: web-specific CVEs, OWASP techniques ✓
+  #   - WirelessAgent: WiFi/wireless protocol vulnerabilities ✓
+  #   - ADAgent: Active Directory attack techniques, Kerberos exploits ✓
+  #   - CredentialAgent: credential dumping techniques, hash cracking intel ✓
+  #   - ForensicsAgent: persistence mechanisms, artifact locations ✓
+  #   - ReconAgent: service fingerprinting intel ✓
+  # All agents now accept intel_aggregator, have _query_intelligence and _select_intel methods,
+  # and include intelligence context in decision_context for NFR37 compliance.
+  # Tests: 30 new tests + 1046 existing agent tests passing
 
   # Epic 12: Drop Box & C2
   epic-12: backlog

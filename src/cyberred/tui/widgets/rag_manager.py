@@ -8,9 +8,9 @@ from datetime import datetime
 
 import structlog
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import Button, DataTable, Static
+from textual.widgets import Button, DataTable, Static, ProgressBar
 
 if TYPE_CHECKING:
     from cyberred.rag.store import RAGStore
@@ -57,7 +57,13 @@ class RAGManagerWidget(Static):
             table.add_columns("Source", "Chunks", "Last Updated", "Status")
             yield table
             
-            yield Static("Ready", id="progress-display")
+            # Story 11.5: Enhanced progress display with progress bar
+            with Vertical(id="progress-container"):
+                yield Static("Ready", id="progress-display")
+                progress_bar = ProgressBar(id="progress-bar", total=100, show_eta=False)
+                progress_bar.display = False  # Hidden until update starts
+                yield progress_bar
+                yield Static("", id="source-progress")  # Per-source progress
             
             with Horizontal(id="rag-buttons"):
                 yield Button("Update All", id="btn-update-all", variant="primary")
@@ -166,7 +172,10 @@ class RAGManagerWidget(Static):
                 self.remove()
 
     async def _run_ingestion(self, sources: Optional[List[str]] = None) -> None:
-        """Run ingestion with progress updates."""
+        """Run ingestion with progress updates.
+        
+        Story 11.5: Enhanced with real-time progress bar and per-source tracking.
+        """
         import importlib
         
         self.is_updating = True
@@ -174,6 +183,8 @@ class RAGManagerWidget(Static):
         update_all_btn = self.query_one("#btn-update-all", Button)
         update_sel_btn = self.query_one("#btn-update-selected", Button)
         progress_widget = self.query_one("#progress-display", Static)
+        progress_bar = self.query_one("#progress-bar", ProgressBar)
+        source_progress = self.query_one("#source-progress", Static)
         
         cancel_btn.disabled = False
         update_all_btn.disabled = True
@@ -182,19 +193,28 @@ class RAGManagerWidget(Static):
         # Use class constant for sources, validate against allowlist
         targets = sources if sources else self.KNOWN_SOURCES
         
-        self._log.info("ingestion_started", sources=targets)
-        
         try:
+            total_sources = len(targets)
+            
+            # Story 11.5: Show progress bar during update
+            progress_bar.display = True
+            progress_bar.update(total=total_sources * 100, progress=0)
+            
+            self._log.info("ingestion_started", sources=targets)
             errors = []
             completed = []
             
-            for source_name in targets:
+            for idx, source_name in enumerate(targets):
                 # Sanitize and validate against allowlist (security)
                 source_name = source_name.replace("-", "_")
                 
                 if source_name not in self.KNOWN_SOURCES:
                     self._log.warning("unknown_source_skipped", source=source_name)
                     continue
+                
+                # Story 11.5: Update per-source progress
+                source_progress.update(f"[{idx + 1}/{total_sources}] {source_name}")
+                progress_bar.update(progress=idx * 100)
                 
                 try:
                     progress_widget.update(f"Loading source: {source_name}...")
@@ -207,14 +227,19 @@ class RAGManagerWidget(Static):
                         progress_widget.update(msg)
                         self._log.warning("source_missing_ingest", source=source_name)
                         continue
-                        
+                    
+                    # Update progress bar to 50% for this source (loading done)
+                    progress_bar.update(progress=idx * 100 + 50)
                     progress_widget.update(f"Ingesting {source_name}...")
+                    
                     await module.ingest(
                         store=self._store,
                         embeddings=self._pipeline._embeddings,
                         incremental=True
                     )
                     
+                    # Update progress bar to 100% for this source
+                    progress_bar.update(progress=(idx + 1) * 100)
                     progress_widget.update(f"Completed {source_name}.")
                     completed.append(source_name)
                     self._log.info("source_ingestion_complete", source=source_name)
@@ -222,11 +247,13 @@ class RAGManagerWidget(Static):
                 except ImportError as e:
                     # Log but allow skipping if source module doesn't exist yet
                     self._log.warning("source_import_error", source=source_name, error=str(e))
+                    progress_bar.update(progress=(idx + 1) * 100)  # Move progress forward
                 except Exception as e:
                     msg = f"Error ingesting {source_name}: {e}"
                     progress_widget.update(msg)
                     errors.append(msg)
                     self._log.error("source_ingestion_error", source=source_name, error=str(e))
+                    progress_bar.update(progress=(idx + 1) * 100)  # Move progress forward
             
             if errors:
                 progress_widget.update(f"Completed with {len(errors)} errors. Last: {errors[-1]}")
@@ -248,6 +275,9 @@ class RAGManagerWidget(Static):
             cancel_btn.disabled = True
             update_all_btn.disabled = False
             update_sel_btn.disabled = False
+            # Story 11.5: Hide progress bar and clear source progress
+            progress_bar.display = False
+            source_progress.update("")
             await self.refresh_stats()
 
     def _on_progress(self, progress: IngestionProgress) -> None:

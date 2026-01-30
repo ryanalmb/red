@@ -25,7 +25,16 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 
 from .rag_manager import RAGManagerWidget
+from .dashboard import (
+    DashboardWidget,
+    render_sparkline,
+    format_uptime,
+    format_metric,
+    SPARKLINE_CHARS,
+    EMERGENCE_THRESHOLD,
+)
 from .director_display import DirectorDisplayWidget, DirectorPerspective
+from .timeline import TimelineScrubber, TimelineMarker
 from .stale_indicator import StaleStateIndicator
 from .attach_progress import AttachProgressIndicator
 from .war_room_layout import (

@@ -16,11 +16,14 @@ from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
     from cyberred.tools.manifest import ManifestLoader
 
 log = structlog.get_logger().bind(component="wireless_agent")
 DEFAULT_HMAC_KEY = b"cyber-red-wireless-agent-key-v1"
+INTELLIGENCE_TIMEOUT = 5.0
 
 
 class WirelessAgent(StigmergicAgent):
@@ -31,7 +34,9 @@ class WirelessAgent(StigmergicAgent):
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
                  specialty: str = "general", llm_gateway: "LLMGateway | None" = None,
-                 manifest_loader: "ManifestLoader | None" = None, max_iterations: int | None = None,
+                 manifest_loader: "ManifestLoader | None" = None,
+                 intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+                 max_iterations: int | None = None,
                  phase_complete_threshold: int | None = None,
                  hmac_key: bytes = DEFAULT_HMAC_KEY, **kwargs: Any) -> None:
         super().__init__(agent_name="WirelessAgent", agent_id=agent_id, engagement_id=engagement_id,
@@ -39,6 +44,7 @@ class WirelessAgent(StigmergicAgent):
                          llm_gateway=llm_gateway, manifest_loader=manifest_loader, **kwargs)
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
         self._hmac_key = hmac_key
+        self._intel_aggregator = intel_aggregator
         self.max_iterations = max_iterations or self.DEFAULT_MAX_ITERATIONS
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy, self._finding_buffer = "standard", []
@@ -60,6 +66,11 @@ class WirelessAgent(StigmergicAgent):
         all_findings: list[Finding] = []
         all_actions: list[AgentAction] = []
 
+        # Query intelligence for wireless protocol vulnerabilities
+        protocol = target_info.get("protocol", "802.11")
+        encryption = target_info.get("encryption", "")
+        intel = await self._select_intel(await self._query_intelligence(protocol, encryption))
+
         context = ToolSelectionContext(
             objective="Discover and test wireless networks for vulnerabilities",
             target_info={"interface": interface, "phase": "wireless", "strategy": self.current_strategy,
@@ -79,6 +90,8 @@ class WirelessAgent(StigmergicAgent):
             decision_context.append(f"interface:{interface}")
             for bssid in self._captured_handshakes:
                 decision_context.append(f"handshake:{bssid}")
+            if intel:
+                decision_context.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
 
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
@@ -91,7 +104,7 @@ class WirelessAgent(StigmergicAgent):
                 result = await kali_execute(selection.command)
 
                 if result.success and result.stdout:
-                    finding = self._create_finding(interface, selection, result)
+                    finding = self._create_finding(interface, selection, result, intel)
                     all_findings.append(finding)
                     await self.on_finding(finding)
                     result_finding_id = finding.id
@@ -120,14 +133,36 @@ class WirelessAgent(StigmergicAgent):
 
         return all_findings, all_actions
 
-    def _create_finding(self, interface: str, selection: Any, result: Any) -> Finding:
+    async def _query_intelligence(self, protocol: str = "", encryption: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for wireless protocol vulnerabilities."""
+        if not self._intel_aggregator or not protocol:
+            return []
+        try:
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(protocol, encryption),
+                timeout=INTELLIGENCE_TIMEOUT
+            )
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        if not results:
+            return None
+        return sorted(results, key=lambda r: r.priority)[0]
+
+    def _create_finding(self, interface: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding:
+        import json
         finding_data = {
             "id": str(uuid.uuid4()), "target": interface, "type": "wireless",
             "tool": selection.tool_name, "severity": "medium",
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(self.agent_id),
             "topic": f"findings:{self._hash_target(interface)}:wireless",
-            "evidence": result.stdout[:2000] if result.stdout else "",
+            "evidence": json.dumps({
+                "stdout": result.stdout[:2000] if result.stdout else "",
+                "cve_id": intel.cve_id if intel else None
+            }),
         }
         finding_data["signature"] = compute_hmac_signature(
             {k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key

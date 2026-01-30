@@ -365,3 +365,89 @@ class TestGetMappingForKey:
         result = get_mapping_for_key("f1", [])
         
         assert result is None
+
+
+class TestF11RAGPanelKeybinding:
+    """Tests for F11 keybinding to RAG Management Panel.
+    
+    Story 11.5: RAG Management Panel - AC #6 (Subtask 6.1)
+    Tests that F11 keybinding correctly opens RAG panel.
+    """
+
+    def test_f11_mapping_exists_in_defaults(self) -> None:
+        """Test F11 mapping exists in default keybindings (Story 11.5: AC #6)."""
+        from cyberred.tui.keybindings import get_mapping_for_key, DEFAULT_FKEY_MAPPINGS
+        
+        result = get_mapping_for_key("f11", DEFAULT_FKEY_MAPPINGS)
+        
+        assert result is not None
+        assert result.key == "f11"
+        assert result.action == "rag_panel"
+        assert "RAG" in result.label
+
+    def test_f11_binding_in_app(self) -> None:
+        """Test F11 is bound to rag_panel action in CyberRedApp (Story 11.5: AC #6)."""
+        from cyberred.tui.app import CyberRedApp
+        
+        app = CyberRedApp()
+        
+        # Find F11 binding
+        f11_binding = None
+        for binding in app.BINDINGS:
+            if binding[0] == "f11":
+                f11_binding = binding
+                break
+        
+        assert f11_binding is not None, "F11 binding not found in CyberRedApp.BINDINGS"
+        assert f11_binding[1] == "rag_panel", f"F11 should map to 'rag_panel', got '{f11_binding[1]}'"
+        assert "RAG" in f11_binding[2], "F11 label should contain 'RAG'"
+
+    @pytest.mark.asyncio
+    async def test_f11_action_opens_rag_panel(self) -> None:
+        """Test pressing F11 opens RAG Management panel (Story 11.5: AC #6)."""
+        from cyberred.tui.app import CyberRedApp
+        from unittest.mock import AsyncMock, patch, MagicMock
+        
+        app = CyberRedApp()
+        
+        # Mock the dependencies that action_rag_panel uses (patch in their source modules)
+        with patch("cyberred.rag.store.RAGStore") as mock_store, \
+             patch("cyberred.rag.embeddings.RAGEmbeddings") as mock_embeddings, \
+             patch("cyberred.rag.ingest.RAGIngestPipeline") as mock_pipeline:
+            
+            # Mock push_screen to capture what's pushed
+            app.push_screen = MagicMock()
+            
+            # Mock query_one to raise NoMatches (no existing screen)
+            from textual.css.query import NoMatches
+            app.query_one = MagicMock(side_effect=NoMatches())
+            
+            # Call the action
+            await app.action_rag_panel()
+            
+            # Verify push_screen was called
+            assert app.push_screen.called, "push_screen should be called to show RAG panel"
+            
+            # Verify it's the RAG manager screen
+            pushed_screen = app.push_screen.call_args[0][0]
+            assert pushed_screen.id == "rag-manager-screen"
+
+    @pytest.mark.asyncio
+    async def test_f11_toggles_rag_panel(self) -> None:
+        """Test F11 toggles RAG panel (opens if closed, closes if open)."""
+        from cyberred.tui.app import CyberRedApp
+        from unittest.mock import MagicMock
+        from textual.css.query import NoMatches
+        
+        app = CyberRedApp()
+        
+        # Test: Panel already open - should close
+        mock_screen = MagicMock()
+        mock_screen.id = "rag-manager-screen"
+        app.query_one = MagicMock(return_value=mock_screen)
+        app.pop_screen = MagicMock()
+        
+        await app.action_rag_panel()
+        
+        # Should pop the screen (close)
+        assert app.pop_screen.called, "Should pop screen when RAG panel is already open"

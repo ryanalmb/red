@@ -384,7 +384,7 @@ Combines Director Ensemble output + Stigmergic activity:
 Three-pane War Room layout with enhancements:
 
 **Header:**
-- F-key bar: [F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Stats [F6]Drop
+- F-key bar: [F1]Dash [F2]Cfg [F3]Log [F4]Rpt [F5]Pause [F6]Drop [F7]Dir [F8]Scope [F9]Data [F10]Kill [F11]RAG
 - Status: ●/◐/○ C2 heartbeat (latency indicator) | [AUTH: n] | [ESC] KILL
 - Info: MODE | ENGAGEMENT | STATE
 
@@ -396,9 +396,20 @@ Three-pane War Room layout with enhancements:
 **Bottom:** TERMINAL (raw tool output)
 
 **F-Key Screens (separate from War Room):**
-- F2: Config screen
-- F3: Logs screen
-- F6: Drop Box setup/status screen
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| F1 | Dashboard | Main dashboard view |
+| F2 | Config | Configuration screen |
+| F3 | Logs | Log viewer screen |
+| F4 | Report | Report generation |
+| F5 | Pause/Resume | Toggle engagement pause |
+| F6 | Drop Box | Drop Box setup/status |
+| F7 | Director | Director Ensemble panel |
+| F8 | Scope | Runtime scope adjustment |
+| F9 | Data | Exfiltrated data browser |
+| F10 | Kill | Kill switch (with confirmation) |
+| F11 | RAG | RAG Management panel (Story 11.5) |
 
 ### Design Rationale
 
@@ -559,7 +570,7 @@ Three-pane War Room layout with enhancements:
 
 | Pattern | Trigger | Behavior |
 |---------|---------|----------|
-| **F-key screens** | F1-F6 | Switch screen, preserve state |
+| **F-key screens** | F1-F11 | Switch screen, preserve state |
 | **Modal overlay** | Action | Focus trap, ESC to close |
 | **Tree navigation** | j/k ↑/↓ | Move selection, Enter expand |
 | **Pane focus** | Tab/click | Cycle between panes |

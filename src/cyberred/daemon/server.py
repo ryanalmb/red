@@ -134,8 +134,8 @@ class DaemonServer:
         self._shutdown_callback = shutdown_callback
 
         # Initialize RAG Scheduler (Story 6.12)
-        from cyberred.core.config import get_settings
-        self._rag_scheduler = RAGScheduler(get_settings().rag)
+        # Note: get_settings already imported at module level
+        self._rag_scheduler = RAGScheduler(settings.rag)
 
     @property
     def session_manager(self) -> SessionManager:

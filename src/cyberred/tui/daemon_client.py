@@ -39,6 +39,7 @@ from cyberred.daemon.streaming import (
     StreamEventType,
     decode_stream_event,
 )
+from cyberred.tui.catchup import CatchupManager, CatchupEvent, CatchupEventType
 
 log = structlog.get_logger()
 
@@ -98,6 +99,8 @@ class TUIClient:
         self._attach_latency_ms: Optional[float] = None
         self._streaming: bool = False
         self._last_activity_time: float = 0.0  # Story 9.7: Track last event timestamp
+        # Story 11.5: CatchupManager for event replay on reattach
+        self._catchup_manager: CatchupManager = CatchupManager()
 
     @property
     def connected(self) -> bool:
@@ -168,6 +171,47 @@ class TUIClient:
         This is the public API for updating activity time externally.
         """
         self._last_activity_time = time.monotonic()
+
+    @property
+    def catchup_manager(self) -> CatchupManager:
+        """Return the CatchupManager for event replay (Story 11.5: AC #4).
+        
+        Returns:
+            CatchupManager instance for queuing and replaying missed events.
+        """
+        return self._catchup_manager
+
+    def queue_for_catchup(self, event: StreamEvent) -> None:
+        """Queue a stream event for catch-up replay (Story 11.5: AC #4).
+        
+        Called when TUI is disconnected to buffer events for later replay.
+        Converts StreamEvent to CatchupEvent and queues it.
+        
+        Args:
+            event: StreamEvent to queue for replay
+        """
+        from datetime import datetime
+        
+        # Map StreamEventType to CatchupEventType
+        type_map = {
+            StreamEventType.FINDING: CatchupEventType.FINDING,
+            StreamEventType.AUTH_REQUEST: CatchupEventType.AUTH_REQUEST,
+            StreamEventType.STRATEGY_UPDATE: CatchupEventType.STRATEGY_UPDATE,
+            StreamEventType.AGENT_STATUS: CatchupEventType.AGENT_STATE,
+        }
+        
+        catchup_type = type_map.get(event.event_type)
+        if catchup_type is None:
+            # Skip events that don't need catch-up (heartbeats, etc.)
+            return
+        
+        catchup_event = CatchupEvent(
+            event_type=catchup_type,
+            timestamp=datetime.now(),
+            payload=event.data,
+            source=event.data.get("agent_id", "unknown"),
+        )
+        self._catchup_manager.queue_event(catchup_event)
 
     async def connect(self, socket_path: Path) -> None:
         """Connect to the daemon via Unix socket.

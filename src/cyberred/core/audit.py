@@ -447,3 +447,475 @@ def init_alert_audit_logger(redis_client: "RedisClient") -> AlertAuditLogger:
     alert_logger = AlertAuditLogger(redis_client)
     set_alert_audit_logger(alert_logger)
     return alert_logger
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ExportAuditLogger - Story 11.3
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXPORT_AUDIT_STREAM_NAME = "cyberred:audit:exports"
+
+
+@dataclass
+class ExportAuditEntry:
+    """Audit entry for data export events.
+    
+    Story 11.3: Data Export from TUI
+    
+    Captures export operations for audit trail compliance per FR50-54.
+    Per AC #2: Export is logged to audit trail with item_id, destination, timestamp.
+    
+    Attributes:
+        event_type: Type of export event (single_export, archive_export).
+        timestamp: ISO 8601 timestamp of the export.
+        item_id: ID of exported item (for single exports).
+        item_ids: List of item IDs (for archive exports).
+        filename: Original filename of exported item.
+        destination: Destination path where file was exported.
+        item_count: Number of items exported (for archives).
+        engagement_name: Name of the engagement.
+        operator: Who initiated the export.
+    """
+    event_type: str
+    destination: str
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    item_id: str | None = None
+    item_ids: list[str] | None = None
+    filename: str | None = None
+    item_count: int | None = None
+    engagement_name: str | None = None
+    operator: str = "operator"
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert audit entry to dictionary for storage.
+        
+        Returns:
+            Dictionary representation of the audit entry.
+        """
+        result = {
+            "event_type": self.event_type,
+            "timestamp": self.timestamp,
+            "destination": self.destination,
+            "operator": self.operator,
+        }
+        if self.item_id is not None:
+            result["item_id"] = self.item_id
+        if self.item_ids is not None:
+            result["item_ids"] = self.item_ids
+        if self.filename is not None:
+            result["filename"] = self.filename
+        if self.item_count is not None:
+            result["item_count"] = self.item_count
+        if self.engagement_name is not None:
+            result["engagement_name"] = self.engagement_name
+        return result
+
+
+class ExportAuditLogger:
+    """Audit logger for data export operations.
+    
+    Story 11.3: Data Export from TUI
+    
+    Writes export audit entries to Redis Streams for append-only audit trail.
+    Implements AC #2: Export is logged to audit trail.
+    
+    Attributes:
+        _redis_client: Redis client for stream operations (optional).
+        _stream_name: Name of the audit stream.
+    """
+    
+    def __init__(
+        self,
+        redis_client: Optional["RedisClient"] = None,
+        stream_name: str = EXPORT_AUDIT_STREAM_NAME,
+    ) -> None:
+        """Initialize ExportAuditLogger.
+        
+        Args:
+            redis_client: Redis client for stream operations (optional for offline mode).
+            stream_name: Name of the audit stream.
+        """
+        self._redis_client = redis_client
+        self._stream_name = stream_name
+    
+    def log_export(
+        self,
+        item_id: str,
+        filename: str,
+        destination: str,
+        engagement_name: str | None = None,
+        operator: str = "operator",
+    ) -> None:
+        """Log a single item export to audit trail.
+        
+        Per AC #2: Export is logged to audit trail with item_id, destination, timestamp.
+        
+        Args:
+            item_id: ID of the exported item.
+            filename: Original filename of the item.
+            destination: Path where file was exported.
+            engagement_name: Name of the engagement.
+            operator: Who initiated the export.
+        """
+        entry = ExportAuditEntry(
+            event_type="single_export",
+            item_id=item_id,
+            filename=filename,
+            destination=destination,
+            engagement_name=engagement_name,
+            operator=operator,
+        )
+        
+        self._write_entry(entry)
+    
+    def log_archive_export(
+        self,
+        item_ids: list[str],
+        destination: str,
+        item_count: int,
+        engagement_name: str | None = None,
+        operator: str = "operator",
+    ) -> None:
+        """Log an archive export to audit trail.
+        
+        Per AC #4: Archive includes manifest.json with metadata.
+        
+        Args:
+            item_ids: List of exported item IDs.
+            destination: Path where archive was exported.
+            item_count: Number of items in the archive.
+            engagement_name: Name of the engagement.
+            operator: Who initiated the export.
+        """
+        entry = ExportAuditEntry(
+            event_type="archive_export",
+            item_ids=item_ids,
+            destination=destination,
+            item_count=item_count,
+            engagement_name=engagement_name,
+            operator=operator,
+        )
+        
+        self._write_entry(entry)
+    
+    def _write_entry(self, entry: ExportAuditEntry) -> None:
+        """Write audit entry to storage.
+        
+        Handles both sync and async contexts gracefully:
+        - In async context (loop running): Creates a task to write asynchronously
+        - In sync context (no loop): Runs the coroutine to completion
+        - Fallback: Logs locally if Redis write fails
+        
+        This pattern ensures audit logging never blocks the main export operation
+        while still attempting to persist to Redis when available.
+        
+        Args:
+            entry: ExportAuditEntry to write.
+        """
+        entry_dict = entry.to_dict()
+        
+        # Log locally regardless of Redis availability
+        logger.info(
+            "Export audit: %s -> %s (type=%s)",
+            entry.item_id or f"{entry.item_count} items",
+            entry.destination,
+            entry.event_type,
+        )
+        
+        # Write to Redis if available
+        if self._redis_client is not None:
+            try:
+                import asyncio
+                try:
+                    # Python 3.10+: Use get_running_loop() to check if we're in async context
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, schedule the write as a task
+                    asyncio.create_task(
+                        self._redis_client.xadd(self._stream_name, entry_dict)
+                    )
+                except RuntimeError:
+                    # No running loop - we're in sync context, run to completion
+                    asyncio.run(
+                        self._redis_client.xadd(self._stream_name, entry_dict)
+                    )
+            except Exception as e:
+                # Log error but don't raise - audit logging should not block operation
+                logger.warning("Failed to write export audit to Redis: %s", e)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level export audit logger instance (singleton pattern)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_export_audit_logger_instance: ExportAuditLogger | None = None
+
+
+def get_export_audit_logger() -> ExportAuditLogger | None:
+    """Get the global export audit logger instance.
+    
+    Returns:
+        ExportAuditLogger instance, or None if not initialized.
+    """
+    return _export_audit_logger_instance
+
+
+def set_export_audit_logger(logger_instance: ExportAuditLogger | None) -> None:
+    """Set the global export audit logger instance.
+    
+    Args:
+        logger_instance: ExportAuditLogger instance to set, or None to reset.
+    """
+    global _export_audit_logger_instance
+    _export_audit_logger_instance = logger_instance
+
+
+def init_export_audit_logger(
+    redis_client: Optional["RedisClient"] = None,
+) -> ExportAuditLogger:
+    """Initialize and set the global export audit logger.
+    
+    Args:
+        redis_client: Redis client for stream operations (optional).
+        
+    Returns:
+        Initialized ExportAuditLogger instance.
+    """
+    export_logger = ExportAuditLogger(redis_client)
+    set_export_audit_logger(export_logger)
+    return export_logger
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DeletionAuditLogger - Story 11.4
+# ─────────────────────────────────────────────────────────────────────────────
+
+DELETION_AUDIT_STREAM_NAME = "cyberred:audit:deletions"
+
+
+@dataclass
+class DeletionAuditEntry:
+    """Audit entry for data deletion events.
+    
+    Story 11.4: Manual Data Deletion
+    
+    Captures deletion operations for audit trail compliance per FR50-54.
+    Per FR45: All deletions logged to audit trail with item_id, timestamp.
+    
+    Attributes:
+        event_type: Type of deletion event (single_deletion, bulk_deletion).
+        timestamp: ISO 8601 timestamp of the deletion.
+        item_id: ID of deleted item (for single deletions).
+        item_ids: List of item IDs (for bulk deletions).
+        filename: Original filename of deleted item.
+        target: Target host where data originated.
+        size_bytes: Size of deleted data.
+        total_deleted: Number of items deleted (for bulk).
+        total_failed: Number of items that failed (for bulk).
+        operator: Who initiated the deletion.
+    """
+    event_type: str
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    item_id: str | None = None
+    item_ids: list[str] | None = None
+    filename: str | None = None
+    target: str | None = None
+    size_bytes: int | None = None
+    total_deleted: int | None = None
+    total_failed: int | None = None
+    operator: str = "operator"
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert audit entry to dictionary for storage.
+        
+        Returns:
+            Dictionary representation of the audit entry.
+        """
+        result = {
+            "event_type": self.event_type,
+            "timestamp": self.timestamp,
+            "operator": self.operator,
+        }
+        if self.item_id is not None:
+            result["item_id"] = self.item_id
+        if self.item_ids is not None:
+            result["item_ids"] = self.item_ids
+        if self.filename is not None:
+            result["filename"] = self.filename
+        if self.target is not None:
+            result["target"] = self.target
+        if self.size_bytes is not None:
+            result["size_bytes"] = self.size_bytes
+        if self.total_deleted is not None:
+            result["total_deleted"] = self.total_deleted
+        if self.total_failed is not None:
+            result["total_failed"] = self.total_failed
+        return result
+
+
+class DeletionAuditLogger:
+    """Audit logger for data deletion operations.
+    
+    Story 11.4: Manual Data Deletion
+    
+    Writes deletion audit entries to Redis Streams for append-only audit trail.
+    Implements FR45: All deletions logged to audit trail.
+    
+    Attributes:
+        _redis_client: Redis client for stream operations (optional).
+        _stream_name: Name of the audit stream.
+    """
+    
+    def __init__(
+        self,
+        redis_client: Optional["RedisClient"] = None,
+        stream_name: str = DELETION_AUDIT_STREAM_NAME,
+    ) -> None:
+        """Initialize DeletionAuditLogger.
+        
+        Args:
+            redis_client: Redis client for stream operations (optional for offline mode).
+            stream_name: Name of the audit stream.
+        """
+        self._redis_client = redis_client
+        self._stream_name = stream_name
+    
+    def log_deletion(
+        self,
+        item_id: str,
+        filename: str,
+        target: str,
+        size_bytes: int,
+        operator: str = "operator",
+    ) -> None:
+        """Log a single item deletion to audit trail.
+        
+        Per FR45: All deletions logged to audit trail with item_id, timestamp.
+        
+        Args:
+            item_id: ID of the deleted item.
+            filename: Original filename of the item.
+            target: Target host where data originated.
+            size_bytes: Size of deleted data.
+            operator: Who initiated the deletion.
+        """
+        entry = DeletionAuditEntry(
+            event_type="single_deletion",
+            item_id=item_id,
+            filename=filename,
+            target=target,
+            size_bytes=size_bytes,
+            operator=operator,
+        )
+        
+        self._write_entry(entry)
+    
+    def log_bulk_deletion(
+        self,
+        item_ids: list[str],
+        total_deleted: int,
+        total_failed: int,
+        operator: str = "operator",
+    ) -> None:
+        """Log a bulk deletion to audit trail.
+        
+        Args:
+            item_ids: List of deleted item IDs.
+            total_deleted: Number of items successfully deleted.
+            total_failed: Number of items that failed to delete.
+            operator: Who initiated the deletion.
+        """
+        entry = DeletionAuditEntry(
+            event_type="bulk_deletion",
+            item_ids=item_ids,
+            total_deleted=total_deleted,
+            total_failed=total_failed,
+            operator=operator,
+        )
+        
+        self._write_entry(entry)
+    
+    def _write_entry(self, entry: DeletionAuditEntry) -> None:
+        """Write audit entry to storage.
+        
+        Handles both sync and async contexts gracefully:
+        - In async context (loop running): Creates a task to write asynchronously
+        - In sync context (no loop): Runs the coroutine to completion
+        - Fallback: Logs locally if Redis write fails
+        
+        This pattern ensures audit logging never blocks the main deletion operation
+        while still attempting to persist to Redis when available.
+        
+        Args:
+            entry: DeletionAuditEntry to write.
+        """
+        entry_dict = entry.to_dict()
+        
+        # Log locally regardless of Redis availability
+        logger.info(
+            "Deletion audit: %s (type=%s, operator=%s)",
+            entry.item_id or f"{entry.total_deleted} items",
+            entry.event_type,
+            entry.operator,
+        )
+        
+        # Write to Redis if available
+        if self._redis_client is not None:
+            try:
+                import asyncio
+                try:
+                    # Python 3.10+: Use get_running_loop() to check if we're in async context
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, schedule the write as a task
+                    asyncio.create_task(
+                        self._redis_client.xadd(self._stream_name, entry_dict)
+                    )
+                except RuntimeError:
+                    # No running loop - we're in sync context, run to completion
+                    asyncio.run(
+                        self._redis_client.xadd(self._stream_name, entry_dict)
+                    )
+            except Exception as e:
+                # Log error but don't raise - audit logging should not block operation
+                logger.warning("Failed to write deletion audit to Redis: %s", e)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level deletion audit logger instance (singleton pattern)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_deletion_audit_logger_instance: DeletionAuditLogger | None = None
+
+
+def get_deletion_audit_logger() -> DeletionAuditLogger | None:
+    """Get the global deletion audit logger instance.
+    
+    Returns:
+        DeletionAuditLogger instance, or None if not initialized.
+    """
+    return _deletion_audit_logger_instance
+
+
+def set_deletion_audit_logger(logger_instance: DeletionAuditLogger | None) -> None:
+    """Set the global deletion audit logger instance.
+    
+    Args:
+        logger_instance: DeletionAuditLogger instance to set, or None to reset.
+    """
+    global _deletion_audit_logger_instance
+    _deletion_audit_logger_instance = logger_instance
+
+
+def init_deletion_audit_logger(
+    redis_client: Optional["RedisClient"] = None,
+) -> DeletionAuditLogger:
+    """Initialize and set the global deletion audit logger.
+    
+    Args:
+        redis_client: Redis client for stream operations (optional).
+        
+    Returns:
+        Initialized DeletionAuditLogger instance.
+    """
+    deletion_logger = DeletionAuditLogger(redis_client)
+    set_deletion_audit_logger(deletion_logger)
+    return deletion_logger

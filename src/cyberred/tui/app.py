@@ -36,7 +36,10 @@ from cyberred.tui.widgets import (
     DirectorDisplayWidget,
     StatusBarWidget,
     AttachProgressIndicator,
+    TimelineScrubber,
+    DashboardWidget,
 )
+from cyberred.tui.catchup import CatchupManager, CatchupEvent
 from cyberred.tui.screens.authorization import (
     AuthorizationScreen,
     AuthorizationRequest,
@@ -128,6 +131,7 @@ class CyberRedApp(App):
         ("f8", "scope_editor", "Scope"),  # Story 10.5: Runtime Scope Adjustment
         ("f9", "data_browser", "Data"),  # Story 11.2: Exfiltrated Data Browser
         ("f10", "kill_switch_confirm", "Kill"),  # Story 9.11: F10 kill switch with confirmation
+        ("f11", "rag_panel", "RAG"),  # Story 11.5: RAG Management Panel
         ("question_mark", "help", "Help"),  # Story 9.11: ? for help overlay
         ("ctrl+t", "toggle_thinking", "Toggle Thinking"),  # Story 8.11: Toggle <think> tags
         ("r", "refresh_state", "Refresh"),  # Story 9.7: Refresh stale state
@@ -292,6 +296,8 @@ class CyberRedApp(App):
                 yield ThinkingLog(id="brain-stream")
                 yield Static("KILL CHAIN", classes="pane-title")
                 yield KillChainLog(id="kill-chain")
+                # Story 11.5: Timeline Scrubber for Strategy Stream (AC #5)
+                yield TimelineScrubber(id="timeline-scrubber")
                 # Story 8.11: Director Ensemble Display (hidden by default)
                 director = DirectorDisplayWidget(daemon_client=self._daemon_client)
                 director.display = False
@@ -308,6 +314,11 @@ class CyberRedApp(App):
             id="cmd-input",
         )
         yield Footer()
+
+        # Story 11.6: Dashboard widget (hidden by default, toggled via F1)
+        dashboard = DashboardWidget(id="dashboard-widget")
+        dashboard.display = False
+        yield dashboard
 
     async def on_input_submitted(self, message: Input.Submitted) -> None:
         user_text = message.value
@@ -370,6 +381,7 @@ class CyberRedApp(App):
         
         Story 9.8: Shows progress indicator during attach and displays
         latency on completion (AC #1, #3).
+        Story 11.5: Integrates CatchupManager for event replay on reattach (AC #4).
         """
         if not self._daemon_client or not self._engagement_id:
             return
@@ -380,6 +392,26 @@ class CyberRedApp(App):
             progress.start(self._engagement_id)
         except NoMatches:
             progress = None
+
+        # Story 11.5: Start catch-up replay if there are queued events (AC #4)
+        catchup_manager = self._daemon_client.catchup_manager
+        if catchup_manager.pending_count > 0:
+            self.notify(f"Catching up: {catchup_manager.pending_count} events...", severity="information")
+            
+            async def catchup_handler(event: CatchupEvent) -> None:
+                """Handle replayed catch-up events."""
+                await self._handle_catchup_event(event)
+            
+            def on_catchup_progress(current: int, total: int) -> None:
+                """Update progress during catch-up."""
+                try:
+                    timeline = self.query_one("#timeline-scrubber", TimelineScrubber)
+                    timeline.add_marker(f"Catchup {current}/{total}")
+                except NoMatches:
+                    pass
+            
+            replayed = await catchup_manager.start_catchup(catchup_handler, on_catchup_progress)
+            self.notify(f"Catch-up complete: {replayed} events replayed", severity="information")
 
         try:
             # Story 9.8: Use incremental sync for faster attach (AC #2)
@@ -485,6 +517,40 @@ class CyberRedApp(App):
             self.notify(f"Strategy Updated (confidence: {confidence:.0%})", severity="information")
         except NoMatches:
             # Director panel not visible or not found, log but don't error
+            pass
+
+    async def _handle_catchup_event(self, event: CatchupEvent) -> None:
+        """Handle a replayed catch-up event (Story 11.5: AC #4).
+        
+        Routes catch-up events to appropriate handlers based on event type.
+        Also adds timeline markers for significant events.
+        
+        Args:
+            event: CatchupEvent being replayed
+        """
+        from cyberred.tui.catchup import CatchupEventType
+        
+        # Add timeline marker for this event
+        try:
+            timeline = self.query_one("#timeline-scrubber", TimelineScrubber)
+            timeline.add_marker(
+                label=f"{event.event_type.value}: {event.source}",
+                timestamp=event.timestamp,
+            )
+        except NoMatches:
+            pass
+        
+        # Route to appropriate handler based on event type
+        if event.event_type == CatchupEventType.FINDING:
+            await self._handle_finding(event.payload)
+        elif event.event_type == CatchupEventType.AUTH_REQUEST:
+            await self.handle_auth_request(event.payload)
+        elif event.event_type == CatchupEventType.STRATEGY_UPDATE:
+            await self._handle_strategy_update(event.payload)
+        elif event.event_type == CatchupEventType.AGENT_STATE:
+            await self.handle_status_update(event.payload)
+        elif event.event_type == CatchupEventType.RAG_UPDATE:
+            # RAG updates don't need special handling - state is in RAG store
             pass
 
     async def handle_status_update(self, data: dict) -> None:
@@ -755,43 +821,45 @@ class CyberRedApp(App):
         self.push_screen(DataBrowserScreen(daemon_client=self._daemon_client))
 
     async def action_rag_manager(self) -> None:
-        """Open RAG Management modal."""
-        # Check if already open to toggle? Or just strict open
-        if self.query("RAGManagerWidget"):
-            # Close it if open
-            if self.screen.id == "rag-modal":
-                 self.pop_screen()
-            return
-            
-        # Create dependencies for widget
-        # Note: In real app, these should be singletons or provided by context
-        # Ideally, RAGStore and RAGIngestPipeline should be initialized once
-        # For now, we initialize them here if not available on self.
-        # But RAGStore creates connection on init.
+        """Open RAG Management modal (legacy method, use action_rag_panel)."""
+        await self.action_rag_panel()
+
+    async def action_rag_panel(self) -> None:
+        """Open RAG Management panel (F11) - Story 11.5.
         
+        Per UX spec: F11 opens RAG Management panel for corpus management.
+        Toggle behavior: If already open, close it.
+        """
+        from textual.screen import ModalScreen
+        
+        # Toggle if already open
+        try:
+            existing = self.query_one("#rag-manager-screen")
+            if existing:
+                self.pop_screen()
+                return
+        except NoMatches:
+            pass
+        
+        # Create dependencies for widget
         from cyberred.rag.store import RAGStore
         from cyberred.rag.ingest import RAGIngestPipeline
         from cyberred.rag.embeddings import RAGEmbeddings
-        from textual.screen import ModalScreen
 
-        # We probably want to hold these instances on the app to avoid reconnection overhead 
-        # but the request didn't specify app-level state changes for this.
-        # We'll create them fresh for the widget.
-        
-        # We need a ModalScreen to wrap the widget
+        # Create modal screen wrapper following Epic 11 patterns
         class RAGManagerScreen(ModalScreen):
+            """RAG Manager modal screen (Story 11.5)."""
+            
+            BINDINGS = [("escape", "dismiss", "Close")]
+            
             def compose(self) -> ComposeResult:
-                # We need to initialize components.
-                # Embedding model loading might take time (slow startup).
-                # Ideally this is done in background or already loaded.
-                # Story 6.2 implemented RAGEmbeddings lazy loading, so init is fast?
-                # Yes, "Lazy loading of model prevents startup delay".
-                store = RAGStore() 
+                # RAGEmbeddings uses lazy loading (Story 6.2)
+                store = RAGStore()
                 embeddings = RAGEmbeddings()
                 pipeline = RAGIngestPipeline(store, embeddings)
                 yield RAGManagerWidget(store, pipeline)
 
-        self.push_screen(RAGManagerScreen(id="rag-modal"))
+        self.push_screen(RAGManagerScreen(id="rag-manager-screen"))
 
     async def action_director_panel(self) -> None:
         """Toggle Director Ensemble panel visibility (Story 8.11)."""
@@ -832,17 +900,20 @@ class CyberRedApp(App):
         self.notify("State refreshed", severity="information")
 
     def action_dashboard(self) -> None:
-        """Show dashboard view (Story 9.1: F1 keybinding).
-        
-        Focuses the main hive grid and status displays.
+        """Show dashboard overlay (Story 11.6: AC #1).
+
+        Per UX spec line 401: F1 for Dashboard.
+        Toggle behavior: If already shown, hide it.
         """
-        self.notify("Dashboard view (F1)", severity="information")
-        # Focus the main content area
         try:
-            grid = self.query_one("#hive-grid", HiveGrid)
-            grid.focus()
+            dashboard = self.query_one("#dashboard-widget", DashboardWidget)
+            dashboard.display = not dashboard.display
+            if dashboard.display:
+                self.notify("Dashboard shown (F1 to hide)")
+            else:
+                self.notify("Dashboard hidden (F1 to show)")
         except NoMatches:
-            pass
+            self.notify("Dashboard not available", severity="error")
 
     def action_config(self) -> None:
         """Show configuration panel (Story 9.1: F2 keybinding).

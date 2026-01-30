@@ -15,6 +15,8 @@ from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
     from cyberred.core.events import EventBus
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
 
 
 class ForensicsAgent(StigmergicAgent):
@@ -22,6 +24,7 @@ class ForensicsAgent(StigmergicAgent):
 
     DEFAULT_MAX_ITERATIONS: int = 20  # Covers typical artifact analysis cycle
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50  # Prevents infinite collection loops
+    INTELLIGENCE_TIMEOUT: float = 5.0
 
     def __init__(
         self,
@@ -31,6 +34,7 @@ class ForensicsAgent(StigmergicAgent):
         specialty: str = "general",
         max_iterations: int | None = None,
         phase_complete_threshold: int | None = None,
+        intel_aggregator: "CachedIntelligenceAggregator | None" = None,
         **kwargs: Any,
     ) -> None:
         """Initialize ForensicsAgent with role=FORENSICS and optional specialty."""
@@ -49,6 +53,7 @@ class ForensicsAgent(StigmergicAgent):
             phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         )
         self.current_strategy = "standard"
+        self._intel_aggregator = intel_aggregator
         self._collected_artifacts: list[dict[str, Any]] = []
         self._finding_buffer: list[dict[str, Any]] = []
         self._stop_event = asyncio.Event()
@@ -63,6 +68,11 @@ class ForensicsAgent(StigmergicAgent):
         if self._stop_event.is_set():
             return findings, actions
 
+        # Query intelligence for persistence mechanisms and artifact locations
+        os_type = context.get("os_type", "")
+        artifact_type = context.get("artifact_type", "")
+        intel = await self._select_intel(await self._query_intelligence(os_type, artifact_type))
+
         tool_context = self._build_tool_context(target, context, actions)
 
         for _iteration in range(self.max_iterations):
@@ -72,7 +82,7 @@ class ForensicsAgent(StigmergicAgent):
             if await self._phase_complete(tool_context):
                 break
 
-            decision_context = self._build_decision_context(target, context)
+            decision_context = self._build_decision_context(target, context, intel)
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
@@ -144,13 +154,28 @@ class ForensicsAgent(StigmergicAgent):
 
         return findings, actions
 
-    def _build_decision_context(self, target: str, context: dict[str, Any]) -> list[str]:
+    async def _query_intelligence(self, os_type: str = "", artifact_type: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for persistence mechanisms and artifact locations."""
+        if not self._intel_aggregator or not os_type:
+            return []
+        try:
+            return await asyncio.wait_for(self._intel_aggregator.query(os_type, artifact_type), timeout=self.INTELLIGENCE_TIMEOUT)
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        return sorted(results, key=lambda r: r.priority)[0] if results else None
+
+    def _build_decision_context(self, target: str, context: dict[str, Any], intel: "IntelResult | None" = None) -> list[str]:
         """Build decision context list for NFR37 compliance."""
         ctx = [f"initial_spawn:{self.agent_id}", f"target:{target}"]
         if context.get("memory_image"):
             ctx.append(f"memory_image:{context['memory_image']}")
         for artifact in self._collected_artifacts[-3:]:
             ctx.append(f"artifact:{artifact.get('artifact_id', 'unknown')[:8]}")
+        if intel:
+            ctx.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
         return ctx
 
     def _build_tool_context(

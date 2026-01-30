@@ -18,11 +18,14 @@ from cyberred.tools.kali_executor import kali_execute
 from cyberred.tools.scope import ScopeConfig, ScopeValidator
 
 if TYPE_CHECKING:
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
     from cyberred.tools.manifest import ManifestLoader
 
 log = structlog.get_logger().bind(component="webapp_agent")
 DEFAULT_HMAC_KEY = b"cyber-red-webapp-agent-key-v1"
+INTELLIGENCE_TIMEOUT = 5.0
 
 
 class WebAppAgent(StigmergicAgent):
@@ -33,7 +36,9 @@ class WebAppAgent(StigmergicAgent):
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
                  specialty: str = "general", llm_gateway: "LLMGateway | None" = None,
-                 manifest_loader: "ManifestLoader | None" = None, max_iterations: int | None = None,
+                 manifest_loader: "ManifestLoader | None" = None,
+                 intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+                 max_iterations: int | None = None,
                  phase_complete_threshold: int | None = None,
                  hmac_key: bytes = DEFAULT_HMAC_KEY, **kwargs: Any) -> None:
         super().__init__(agent_name="WebAppAgent", agent_id=agent_id, engagement_id=engagement_id,
@@ -41,6 +46,7 @@ class WebAppAgent(StigmergicAgent):
                          llm_gateway=llm_gateway, manifest_loader=manifest_loader, **kwargs)
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
         self._hmac_key = hmac_key
+        self._intel_aggregator = intel_aggregator
         self.max_iterations = max_iterations or self.DEFAULT_MAX_ITERATIONS
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy, self._finding_buffer = "standard", []
@@ -59,6 +65,11 @@ class WebAppAgent(StigmergicAgent):
         all_findings: list[Finding] = []
         all_actions: list[AgentAction] = []
         has_credentials = bool(target_info.get("credentials"))
+
+        # Query intelligence for web application CVEs
+        service = target_info.get("service", "http")
+        version = target_info.get("version", "")
+        intel = await self._select_intel(await self._query_intelligence(service, version))
 
         context = ToolSelectionContext(
             objective="Test web application for OWASP Top 10 vulnerabilities",
@@ -79,6 +90,8 @@ class WebAppAgent(StigmergicAgent):
                 decision_context.append(f"waf:{self._waf_type}")
             if has_credentials:
                 decision_context.append("auth:credentials_provided")
+            if intel:
+                decision_context.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
 
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
@@ -91,7 +104,7 @@ class WebAppAgent(StigmergicAgent):
                 result = await kali_execute(selection.command)
 
                 if result.success and result.stdout:
-                    finding = self._create_finding(target, selection, result)
+                    finding = self._create_finding(target, selection, result, intel)
                     all_findings.append(finding)
                     await self.on_finding(finding)
                     result_finding_id = finding.id
@@ -119,14 +132,36 @@ class WebAppAgent(StigmergicAgent):
 
         return all_findings, all_actions
 
-    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding:
+    async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for web application CVEs."""
+        if not self._intel_aggregator or not service:
+            return []
+        try:
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(service, version),
+                timeout=INTELLIGENCE_TIMEOUT
+            )
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        if not results:
+            return None
+        return sorted(results, key=lambda r: r.priority)[0]
+
+    def _create_finding(self, target: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding:
+        import json
         finding_data = {
             "id": str(uuid.uuid4()), "target": target, "type": "webapp",
             "tool": selection.tool_name, "severity": "medium",
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(self.agent_id),
             "topic": f"findings:{self._hash_target(target)}:webapp",
-            "evidence": result.stdout[:2000] if result.stdout else "",
+            "evidence": json.dumps({
+                "stdout": result.stdout[:2000] if result.stdout else "",
+                "cve_id": intel.cve_id if intel else None
+            }),
         }
         finding_data["signature"] = compute_hmac_signature(
             {k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key

@@ -20,6 +20,8 @@ from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
     from cyberred.core.events import EventBus
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
 
 
 # Hash type detection patterns
@@ -43,6 +45,7 @@ class CredentialAgent(StigmergicAgent):
     DEFAULT_LOCKOUT_THRESHOLD: int = 3  # Max attempts before lockout risk
     DEFAULT_LOCKOUT_WINDOW: int = 30    # Minutes to wait between spray rounds
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 75
+    INTELLIGENCE_TIMEOUT: float = 5.0
 
     def __init__(
         self,
@@ -54,6 +57,7 @@ class CredentialAgent(StigmergicAgent):
         lockout_threshold: int | None = None,
         lockout_window: int | None = None,
         phase_complete_threshold: int | None = None,
+        intel_aggregator: "CachedIntelligenceAggregator | None" = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the CredentialAgent.
@@ -67,6 +71,7 @@ class CredentialAgent(StigmergicAgent):
             lockout_threshold: Max attempts per user before lockout risk.
             lockout_window: Minutes to wait between spray rounds.
             phase_complete_threshold: Number of results before phase considered complete.
+            intel_aggregator: Intelligence aggregator for vulnerability data.
             **kwargs: Additional arguments passed to StigmergicAgent.
         """
         super().__init__(
@@ -84,6 +89,7 @@ class CredentialAgent(StigmergicAgent):
         self.lockout_window = lockout_window or self.DEFAULT_LOCKOUT_WINDOW
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy = "standard"
+        self._intel_aggregator = intel_aggregator
         self._cracked_credentials: list[dict[str, Any]] = []
         self._harvested_credentials: list[dict[str, Any]] = []
         self._pending_hashes: list[dict[str, Any]] = []
@@ -108,6 +114,11 @@ class CredentialAgent(StigmergicAgent):
         if self._stop_event.is_set():
             return findings, actions
 
+        # Query intelligence for credential attack techniques
+        service = context.get("service", "")
+        hash_type = context.get("hash_type", "")
+        intel = await self._select_intel(await self._query_intelligence(service, hash_type))
+
         tool_context = self._build_tool_context(target, context, actions)
 
         for _iteration in range(self.max_iterations):
@@ -117,7 +128,7 @@ class CredentialAgent(StigmergicAgent):
             if await self._phase_complete(tool_context):
                 break
 
-            decision_context = self._build_decision_context(context)
+            decision_context = self._build_decision_context(context, intel)
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
@@ -163,7 +174,25 @@ class CredentialAgent(StigmergicAgent):
 
         return findings, actions
 
-    def _build_decision_context(self, context: dict[str, Any]) -> list[str]:
+    async def _query_intelligence(self, service: str = "", hash_type: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for credential attack techniques."""
+        if not self._intel_aggregator or not service:
+            return []
+        try:
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(service, hash_type),
+                timeout=self.INTELLIGENCE_TIMEOUT
+            )
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        if not results:
+            return None
+        return sorted(results, key=lambda r: r.priority)[0]
+
+    def _build_decision_context(self, context: dict[str, Any], intel: "IntelResult | None" = None) -> list[str]:
         """Build decision context list for NFR37 compliance."""
         ctx = [f"initial_spawn:{self.agent_id}"]
 
@@ -178,6 +207,10 @@ class CredentialAgent(StigmergicAgent):
         # Add cracked credentials context
         for cred in self._cracked_credentials:
             ctx.append(f"cracked:{cred.get('username', 'unknown')}")
+
+        # Add intelligence context
+        if intel:
+            ctx.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
 
         return ctx
 

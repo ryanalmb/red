@@ -28,6 +28,8 @@ from cyberred.tools.parsers.nmap import nmap_parser
 from cyberred.tools.scope import ScopeConfig, ScopeValidator
 
 if TYPE_CHECKING:
+    from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
+    from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
     from cyberred.tools.manifest import ManifestLoader
 
@@ -46,6 +48,8 @@ class ReconAgent(StigmergicAgent):
     DEFAULT_MAX_ITERATIONS: int = 20
     #: Default findings threshold to consider phase complete
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50
+    #: Intelligence query timeout
+    INTELLIGENCE_TIMEOUT: float = 5.0
 
     def __init__(
         self,
@@ -55,6 +59,7 @@ class ReconAgent(StigmergicAgent):
         specialty: str = "network",
         llm_gateway: "LLMGateway | None" = None,
         manifest_loader: "ManifestLoader | None" = None,
+        intel_aggregator: "CachedIntelligenceAggregator | None" = None,
         max_iterations: int | None = None,
         phase_complete_threshold: int | None = None,
         **kwargs: Any,
@@ -69,6 +74,7 @@ class ReconAgent(StigmergicAgent):
                        Valid: network, osint, dns, subdomain.
             llm_gateway: Optional LLMGateway for tool selection.
             manifest_loader: Optional ManifestLoader for tool lookup.
+            intel_aggregator: Optional intelligence aggregator for service intel.
             max_iterations: Max LLM selection iterations (default: 20).
             phase_complete_threshold: Findings count to end phase (default: 50).
             **kwargs: Additional kwargs for StigmergicAgent.
@@ -85,6 +91,7 @@ class ReconAgent(StigmergicAgent):
             **kwargs,
         )
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
+        self._intel_aggregator = intel_aggregator
         self.output_processor = OutputProcessor()
         self.output_processor.register_parser("nmap", nmap_parser)
 
@@ -97,23 +104,30 @@ class ReconAgent(StigmergicAgent):
         self._finding_buffer: list[dict[str, Any]] = []
         self._stop_event = asyncio.Event()
 
-    async def execute_recon(self, target: str) -> tuple[list[Finding], list[AgentAction]]:
+    async def execute_recon(self, target: str, target_info: dict[str, Any] | None = None) -> tuple[list[Finding], list[AgentAction]]:
         """Execute LLM-driven reconnaissance against target.
 
         Args:
             target: Target IP, hostname, CIDR, or domain to scan.
+            target_info: Optional target info with service/version for intelligence lookup.
 
         Returns:
             Tuple of (findings, actions) discovered during reconnaissance.
         """
         self._validate_target_scope(target)
+        target_info = target_info or {}
 
         all_findings: list[Finding] = []
         all_actions: list[AgentAction] = []
 
+        # Query intelligence for service fingerprinting info
+        service = target_info.get("service", "")
+        version = target_info.get("version", "")
+        intel = await self._select_intel(await self._query_intelligence(service, version))
+
         context = ToolSelectionContext(
             objective="Discover hosts, services, and attack surface",
-            target_info={"target": target, "phase": "recon", "strategy": self.current_strategy},
+            target_info={"target": target, "phase": "recon", "strategy": self.current_strategy, **target_info},
             available_tools=[],
             phase="reconnaissance",
             constraints=self._get_constraints(),
@@ -129,6 +143,8 @@ class ReconAgent(StigmergicAgent):
                 break
 
             decision_context = self.get_decision_context().copy() or [f"initial_spawn:{self.agent_id}"]
+            if intel:
+                decision_context.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
@@ -181,6 +197,26 @@ class ReconAgent(StigmergicAgent):
                 result_finding_id=result_finding_id,
             )
             all_actions.append(action)
+
+        return all_findings, all_actions
+
+    async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
+        """Query intelligence aggregator for service fingerprinting info."""
+        if not self._intel_aggregator or not service:
+            return []
+        try:
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(service, version),
+                timeout=self.INTELLIGENCE_TIMEOUT
+            )
+        except Exception:
+            return []
+
+    async def _select_intel(self, results: list["IntelResult"] | None) -> "IntelResult | None":
+        """Select highest priority intelligence result."""
+        if not results:
+            return None
+        return sorted(results, key=lambda r: r.priority)[0]
 
         return all_findings, all_actions
 
