@@ -229,16 +229,15 @@ development_status:
   epic-11-retrospective: done
 
   # POST-TUI ENHANCEMENT: Expand Intelligence Module to All Agents
-  # COMPLETED 2026-01-30: Intelligence integration added to all 6 remaining agents:
-  #   - WebAppAgent: web-specific CVEs, OWASP techniques ✓
-  #   - WirelessAgent: WiFi/wireless protocol vulnerabilities ✓
-  #   - ADAgent: Active Directory attack techniques, Kerberos exploits ✓
-  #   - CredentialAgent: credential dumping techniques, hash cracking intel ✓
-  #   - ForensicsAgent: persistence mechanisms, artifact locations ✓
-  #   - ReconAgent: service fingerprinting intel ✓
-  # All agents now accept intel_aggregator, have _query_intelligence and _select_intel methods,
-  # and include intelligence context in decision_context for NFR37 compliance.
-  # Tests: 30 new tests + 1046 existing agent tests passing
+  # Current: Only ExploitAgent and PostExAgent use CachedIntelligenceAggregator
+  # TODO: After TUI epics (9-11), integrate intelligence into:
+  #   - WebAppAgent: web-specific CVEs, OWASP techniques
+  #   - WirelessAgent: WiFi/wireless protocol vulnerabilities
+  #   - ADAgent: Active Directory attack techniques, Kerberos exploits
+  #   - CredentialAgent: credential dumping techniques, hash cracking intel
+  #   - ForensicsAgent: persistence mechanisms, artifact locations
+  #   - ReconAgent: service fingerprinting intel (lower priority)
+  # Priority: LOW - See epic-8-retro-2026-01-28.md for details
 
   # Epic 12: Drop Box & C2
   epic-12: backlog
