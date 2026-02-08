@@ -24,6 +24,7 @@ msgpack>=1.0.0
 lancedb>=0.3.0
 sentence-transformers>=2.2.0
 stix2>=3.0.0
+prometheus_client>=0.20.0
 
 [dev]
 pytest>=8.0.0

@@ -41,9 +41,11 @@ from cyberred.daemon.preflight import PreFlightRunner
 
 # Import CheckpointManager for conditional use (avoid circular import)
 # Import is done conditionally in methods to allow testing without storage module
-TYPE_CHECKING = False
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cyberred.storage.checkpoint import CheckpointManager
+    from cyberred.core.orchestrator import Orchestrator
+    from cyberred.core.worker_pool import WorkerPool
 
 
 
@@ -81,21 +83,35 @@ class EngagementContext:
         state_machine: Engagement lifecycle state machine.
         config_path: Path to engagement configuration file.
         created_at: UTC timestamp when engagement was created.
-        agent_count: Current active agent count (placeholder for Epic 7).
-        finding_count: Current finding count (placeholder for Epic 7).
+        orchestrator: Active orchestrator for this engagement (if running).
+        engagement_config: Loaded engagement configuration dict.
     """
 
     id: str
     state_machine: EngagementStateMachine
     config_path: Path
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    agent_count: int = 0
-    finding_count: int = 0
+    orchestrator: "Orchestrator | None" = None
+    engagement_config: dict | None = None
 
     @property
     def state(self) -> EngagementState:
         """Current engagement state."""
         return self.state_machine.current_state
+
+    @property
+    def agent_count(self) -> int:
+        """Current active agent count (dynamic from orchestrator)."""
+        if self.orchestrator:
+            return len(self.orchestrator.agents)
+        return 0
+
+    @property
+    def finding_count(self) -> int:
+        """Current finding count (jobs processed by orchestrator)."""
+        if self.orchestrator:
+            return self.orchestrator._jobs_processed
+        return 0
 
     @property
     def is_active(self) -> bool:
@@ -135,11 +151,12 @@ class SessionManager:
     """
 
     def __init__(
-        self, 
-        max_engagements: int = 10, 
+        self,
+        max_engagements: int = 10,
         max_history: int = 50,
-        event_bus: Optional[EventBus] = None,
-        checkpoint_manager: Optional[Any] = None,
+        event_bus: EventBus | None = None,
+        checkpoint_manager: "CheckpointManager | None" = None,
+        worker_pool: "WorkerPool | None" = None,
     ) -> None:
         """Initialize SessionManager.
 
@@ -148,11 +165,13 @@ class SessionManager:
             max_history: Maximum total engagements to track (active + stopped) (default: 50).
             event_bus: Optional EventBus for state propagation.
             checkpoint_manager: Optional CheckpointManager for cold state persistence.
+            worker_pool: Optional shared WorkerPool for orchestrators.
         """
         self._max_engagements = max_engagements
         self._max_history = max_history
         self._event_bus = event_bus
         self._checkpoint_manager = checkpoint_manager
+        self._worker_pool = worker_pool
         self._engagements: dict[str, EngagementContext] = {}
         # Subscriptions: engagement_id -> {subscription_id -> callback}
         self._subscriptions: dict[str, dict[str, Callable]] = {}
@@ -380,7 +399,8 @@ class SessionManager:
     async def start_engagement(self, engagement_id: str, ignore_warnings: bool = False) -> EngagementState:
         """Start an engagement (INITIALIZING → RUNNING).
 
-        Runs pre-flight checks before starting.
+        Runs pre-flight checks before starting, then creates and starts
+        the Orchestrator to begin executing scans.
 
         Args:
             engagement_id: Engagement ID to start.
@@ -396,21 +416,22 @@ class SessionManager:
             PreFlightWarningError: If P1 checks warn and not ignore_warnings.
         """
         context = self.get_engagement_or_raise(engagement_id)
-        
+
         # Verify state first
         if context.state != EngagementState.INITIALIZING:
-             # Let state machine raise generic error, or check here
-             # State machine raises InvalidStateTransition
-             pass
+            # Let state machine raise generic error, or check here
+            # State machine raises InvalidStateTransition
+            pass
 
         # Load config for pre-flight checks
-        # Assuming config is valid YAML since we checked at creation, 
+        # Assuming config is valid YAML since we checked at creation,
         # but file might have changed. Catch errors.
         try:
             with context.config_path.open() as f:
                 config = yaml.safe_load(f) or {}
-                # Inject config path for ScopeCheck
-                config["scope_path"] = config.get("scope_path") or str(context.config_path.parent / "scope.yaml")
+                # Only set default scope_path if no embedded scope
+                if "scope" not in config and "scope_path" not in config:
+                    config["scope_path"] = str(context.config_path.parent / "scope.yaml")
                 # Also pass the config path itself if needed
                 config["engagement_config_path"] = str(context.config_path)
         except Exception as e:
@@ -418,6 +439,9 @@ class SessionManager:
                 config_path=str(context.config_path),
                 message=f"Failed to load config for pre-flight: {e}"
             )
+
+        # Store config for later use
+        context.engagement_config = config
 
         # Run Pre-Flight Checks
         runner = PreFlightRunner()
@@ -432,6 +456,37 @@ class SessionManager:
             results=[{"name": r.name, "status": str(r.status), "priority": str(r.priority)} for r in results]
         )
 
+        # Create and start Orchestrator
+        from cyberred.core.orchestrator import Orchestrator
+
+        orchestrator = Orchestrator(self._event_bus)
+
+        # Inject shared worker pool if available — must propagate to
+        # ToolOrchestrator and every adapter, otherwise they keep a stale
+        # reference to the empty pool created in Orchestrator.__init__.
+        if self._worker_pool:
+            orchestrator.pool = self._worker_pool
+            orchestrator.tool_orchestrator.worker_pool = self._worker_pool
+            orchestrator.tool_orchestrator.generic.worker_pool = self._worker_pool
+            for adapter in orchestrator.tool_orchestrator.adapters.values():
+                adapter.worker_pool = self._worker_pool
+
+        # Store engagement context in orchestrator
+        orchestrator._engagement_id = engagement_id
+        orchestrator._engagement_config = config
+
+        try:
+            await orchestrator.start()
+            context.orchestrator = orchestrator
+            log.info("orchestrator_started", engagement_id=engagement_id)
+
+            # Trigger initial jobs from config
+            await self._trigger_initial_jobs(context, orchestrator, config)
+        except Exception as e:
+            log.error("orchestrator_start_failed", engagement_id=engagement_id, error=str(e))
+            # Don't fail engagement start - continue with manual mode
+
+        # Transition state
         context.state_machine.start()
 
         log.info(
@@ -441,6 +496,42 @@ class SessionManager:
         )
 
         return context.state
+
+    async def _trigger_initial_jobs(
+        self,
+        context: EngagementContext,
+        orchestrator: "Orchestrator",
+        config: dict,
+    ) -> None:
+        """Trigger initial scan jobs from engagement config targets.
+
+        Args:
+            context: The engagement context.
+            orchestrator: The active orchestrator.
+            config: Loaded engagement configuration.
+        """
+        targets = config.get("targets", {})
+        directive = config.get("directive", "")
+
+        if targets:
+            # Queue job for each target
+            for target_name, target_info in targets.items():
+                target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
+                if target_ip:
+                    await orchestrator.bus.publish("job:new", {
+                        "target": target_ip,
+                        "action": "scan",
+                        "full_attack": True,
+                        "target_name": target_name,
+                        "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
+                    })
+                    log.info("initial_job_queued",
+                        engagement_id=context.id,
+                        target=target_ip)
+        elif directive:
+            # No targets - parse directive via NLP
+            await orchestrator.bus.publish("cmd:nlp", {"text": directive})
+            log.info("directive_submitted", engagement_id=context.id)
 
     def pause_engagement(self, engagement_id: str) -> EngagementState:
         """Pause an engagement (RUNNING → PAUSED).
@@ -459,6 +550,12 @@ class SessionManager:
             InvalidStateTransition: If not in RUNNING state.
         """
         context = self.get_engagement_or_raise(engagement_id)
+
+        # Pause orchestrator agents
+        if context.orchestrator:
+            for agent in context.orchestrator.agents.values():
+                agent.is_active = False
+
         context.state_machine.pause()
 
         log.info(
@@ -496,38 +593,43 @@ class SessionManager:
 
         return context.state
 
-    async def stop_engagement(self, engagement_id: str) -> tuple[EngagementState, Optional[Path]]:
+    async def stop_engagement(self, engagement_id: str) -> tuple[EngagementState, Path | None]:
         """Stop an engagement with checkpoint (RUNNING/PAUSED → STOPPED).
-        
+
         This is a COLD STATE operation - full state is persisted to SQLite
         checkpoint file for later recovery. Contrast with pause_engagement()
         which preserves hot state in RAM only.
-        
+
         Args:
             engagement_id: Engagement ID to stop.
-            
+
         Returns:
             Tuple of (new_state, checkpoint_path). checkpoint_path is None
             if no CheckpointManager is configured.
-            
+
         Raises:
             EngagementNotFoundError: If engagement not found.
             InvalidStateTransition: If not in RUNNING or PAUSED state.
         """
         context = self.get_engagement_or_raise(engagement_id)
-        
+
         # Optimization: Pre-check state validity before expensive checkpoint save
         # This prevents wasted I/O if the engagement is already stopped or completed
         from cyberred.daemon.state_machine import is_valid_transition
         if not is_valid_transition(context.state, EngagementState.STOPPED):
-             raise InvalidStateTransition(
+            raise InvalidStateTransition(
                 engagement_id=engagement_id,
                 from_state=str(context.state),
                 to_state=str(EngagementState.STOPPED),
             )
-        
+
+        # Shutdown orchestrator before checkpointing
+        if context.orchestrator:
+            await context.orchestrator.shutdown()
+            context.orchestrator = None
+
         # Create checkpoint before state transition
-        checkpoint_path: Optional[Path] = None
+        checkpoint_path: Path | None = None
         if self._checkpoint_manager:
             # Get scope path from config if available
             scope_path = None

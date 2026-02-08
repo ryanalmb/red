@@ -456,6 +456,81 @@ class CyberRedApp(App):
         elif event.event_type == StreamEventType.STRATEGY_UPDATE:
             # Story 8.11: Handle Director strategy updates
             await self._handle_strategy_update(event.data)
+        # Daemon-to-TUI streaming parity with standalone mode
+        elif event.event_type == StreamEventType.LOG_UPDATE:
+            await self.handle_log_update(event.data)
+        elif event.event_type == StreamEventType.BRAIN_UPDATE:
+            await self.handle_brain_update(event.data)
+        elif event.event_type == StreamEventType.TERMINAL_UPDATE:
+            await self.handle_terminal_update(event.data)
+        elif event.event_type == StreamEventType.WORKER_STATUS:
+            await self.handle_worker_status(event.data)
+        elif event.event_type == StreamEventType.TOOL_UPDATE:
+            await self.handle_tool_event(event.data)
+        # Story 12.4: C2 Heartbeat Monitoring
+        elif event.event_type == StreamEventType.C2_HEARTBEAT:
+            await self._handle_c2_heartbeat(event.data)
+
+    async def _handle_c2_heartbeat(self, data: dict) -> None:
+        """Handle C2 heartbeat monitor events (Story 12.4).
+        
+        Updates TUI widgets with heartbeat status:
+        - HeartbeatIndicator: latency and missed count
+        - DropBoxStatusPanel: connection state
+        - Status notifications for warning/critical/lost
+        
+        Args:
+            data: Event payload with drop_box_id, status, missed_count, etc.
+        """
+        from cyberred.tui.widgets.dropbox_status import ConnectionState, DropBoxStatus
+        
+        status = data.get("status", "")
+        drop_box_id = data.get("drop_box_id", "unknown")
+        missed_count = data.get("missed_count", 0)
+        latency_ms = data.get("latency_ms")
+        
+        # Update heartbeat indicator if available
+        try:
+            from cyberred.tui.widgets.heartbeat_indicator import HeartbeatIndicator
+            heartbeat = self.query_one("#heartbeat", HeartbeatIndicator)
+            heartbeat.missed_heartbeats = missed_count
+            if latency_ms is not None:
+                heartbeat.on_heartbeat(latency_ms)
+        except NoMatches:
+            pass
+        
+        # Handle different status types with notifications
+        if status == "warning":
+            self.notify(
+                f"⚠️ Drop box {drop_box_id}: {missed_count} heartbeats missed",
+                severity="warning",
+                timeout=10,
+            )
+        elif status == "C2 critical":
+            self.notify(
+                f"🔴 Drop box {drop_box_id}: C2 link critical ({missed_count} missed)",
+                severity="error",
+                timeout=15,
+            )
+        elif status == "C2 lost":
+            self.notify(
+                f"❌ Drop box {drop_box_id}: C2 link LOST - reconnection failed",
+                severity="error",
+                timeout=0,  # Persistent notification
+            )
+        
+        # Log to kill chain
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+            severity_map = {
+                "warning": "WARNING",
+                "C2 critical": "ERROR",
+                "C2 lost": "CRITICAL",
+            }
+            log_severity = severity_map.get(status, "INFO")
+            log.log_event("now", log_severity, f"C2 {drop_box_id}: {status}")
+        except NoMatches:
+            pass
 
     async def _handle_finding(self, data: dict) -> None:
         """Handle finding discovery event."""
@@ -814,11 +889,17 @@ class CyberRedApp(App):
 
     def action_data_browser(self) -> None:
         """Show exfiltrated data browser screen (Story 11.2: AC #7).
-        
+
         Per UX spec: F9 opens data browser for viewing exfiltrated data.
         Screen can be opened from War Room via F-key binding.
+
+        Per Story 11.2: Connect to ExfiltratedDataStore via daemon IPC.
         """
-        self.push_screen(DataBrowserScreen(daemon_client=self._daemon_client))
+        self.push_screen(DataBrowserScreen(
+            daemon_client=self._daemon_client,
+            engagement_id=self._engagement_id,
+            engagement_name=self._engagement_id or "engagement",
+        ))
 
     async def action_rag_manager(self) -> None:
         """Open RAG Management modal (legacy method, use action_rag_panel)."""

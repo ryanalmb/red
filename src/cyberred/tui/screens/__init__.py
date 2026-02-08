@@ -15,6 +15,10 @@ Story 10.5: Runtime Scope Adjustment
 
 Story 11.2: Exfiltrated Data Browser
 - DataBrowserScreen: Full-screen data browser with categories, search, preview (F9)
+
+Story 12.8: Natural Language Drop Box Setup
+- DropBoxWizardScreen: NL-based drop box deployment wizard
+- DeploymentResultScreen: Deployment results with instructions and QR code
 """
 from .dropbox import DropBoxScreen
 from .kill_confirm import KillSwitchConfirmScreen
@@ -40,6 +44,8 @@ from .scope_editor import (
     is_production_range,
 )
 from .data_browser import DataBrowserScreen
+from .dropbox_wizard import DropBoxWizardScreen
+from .deployment_result import DeploymentResultScreen
 
 __all__ = [
     "DropBoxScreen",
@@ -64,4 +70,7 @@ __all__ = [
     "is_production_range",
     # Story 11.2
     "DataBrowserScreen",
+    # Story 12.8
+    "DropBoxWizardScreen",
+    "DeploymentResultScreen",
 ]

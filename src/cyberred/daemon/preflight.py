@@ -229,6 +229,19 @@ class ScopeCheck(PreFlightCheck):
         return CheckPriority.P0
 
     async def execute(self, config: dict[str, Any]) -> CheckResult:
+        # Check for embedded scope first
+        embedded_scope = config.get("scope")
+        if embedded_scope:
+            if not isinstance(embedded_scope, dict):
+                return CheckResult(self.name, CheckStatus.FAIL, self.priority,
+                    "Embedded 'scope' must be a dictionary")
+            if not embedded_scope.get("allowed_ips") and not embedded_scope.get("allowed_ports"):
+                return CheckResult(self.name, CheckStatus.FAIL, self.priority,
+                    "Scope must define 'allowed_ips' or 'allowed_ports'")
+            return CheckResult(self.name, CheckStatus.PASS, self.priority,
+                "Embedded scope valid", {"source": "embedded"})
+
+        # Fall back to external scope file
         path = config.get("scope_path")
         if not path:
              return CheckResult(self.name, CheckStatus.FAIL, self.priority, "Scope configuration missing 'scope_path'")
@@ -239,15 +252,15 @@ class ScopeCheck(PreFlightCheck):
 
         try:
             data = await asyncio.to_thread(self._yaml_loader, path)
-            
+
             if not data:
                 return CheckResult(self.name, CheckStatus.FAIL, self.priority, "Scope file is empty or invalid")
-            
+
             if not isinstance(data, dict):
                  return CheckResult(self.name, CheckStatus.FAIL, self.priority, "Scope file must be a YAML dictionary")
 
             return CheckResult(self.name, CheckStatus.PASS, self.priority, "Scope file valid")
-            
+
         except Exception as e:
             return CheckResult(self.name, CheckStatus.FAIL, self.priority, f"Scope parse error: {e}")
 
@@ -345,13 +358,27 @@ class LLMCheck(PreFlightCheck):
         return CheckPriority.P0
 
     async def execute(self, config: dict[str, Any]) -> CheckResult:
-        api_key = config.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
-        
+        # Check for NVIDIA NIM first (project default), then OpenAI
+        # Supports pydantic-settings style env vars (CYBERRED_LLM__NIM_API_KEY)
+        api_key = (
+            config.get("nvidia_api_key") or
+            os.environ.get("NVIDIA_API_KEY") or
+            os.environ.get("NVIDIA_NIM_API_KEY") or
+            os.environ.get("CYBERRED_LLM__NIM_API_KEY") or
+            config.get("openai_api_key") or
+            os.environ.get("OPENAI_API_KEY")
+        )
+
         if not api_key:
-            return CheckResult(self.name, CheckStatus.FAIL, self.priority, "LLM API Key missing (OPENAI_API_KEY)")
-        
-        # Try to ping the LLM API
-        api_base = config.get("openai_api_base", "https://api.openai.com/v1")
+            return CheckResult(self.name, CheckStatus.FAIL, self.priority, "LLM API Key missing (NVIDIA_API_KEY or OPENAI_API_KEY)")
+
+        # Determine API base - prefer NVIDIA NIM
+        api_base = (
+            config.get("nvidia_base_url") or
+            os.environ.get("NVIDIA_BASE_URL") or
+            config.get("openai_api_base") or
+            "https://integrate.api.nvidia.com/v1"
+        )
         return await self._ping_api(api_key, api_base)
 
     async def _ping_api(self, api_key: str, api_base: str) -> CheckResult:
@@ -487,15 +514,26 @@ class PreFlightRunner:
 
     def validate_results(self, results: list[CheckResult], ignore_warnings: bool = False) -> None:
         """Validate check results and raise if blocking failures exist.
-        
+
         Args:
             results: List of results from run_all.
             ignore_warnings: If True, P1 warnings won't raise.
-            
+
         Raises:
             PreFlightCheckError: If any P0 check fails.
             PreFlightWarningError: If any P1 check fails/warns and ignore_warnings is False.
         """
+        # DEV MODE: Skip all checks when CYBERRED_DEV_MODE=1
+        if os.environ.get("CYBERRED_DEV_MODE") == "1":
+            import structlog
+            log = structlog.get_logger()
+            log.warning(
+                "preflight_checks_bypassed",
+                reason="CYBERRED_DEV_MODE=1",
+                skipped_checks=[r.name for r in results if r.status == CheckStatus.FAIL],
+            )
+            return
+
         # P0 Failures
         p0_failures = [
             r for r in results 

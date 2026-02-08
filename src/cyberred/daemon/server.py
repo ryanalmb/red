@@ -45,7 +45,9 @@ from cyberred.daemon.ipc import (
 )
 from cyberred.daemon.session_manager import SessionManager
 from cyberred.core.event_bus import EventBus
+from cyberred.core.worker_pool import WorkerPool
 from cyberred.daemon.state_machine import EngagementState
+from cyberred.daemon.streaming import StreamEvent, StreamEventType, encode_stream_event
 from cyberred.rag import RAGScheduler
 
 
@@ -121,21 +123,28 @@ class DaemonServer:
         settings = get_settings()
         redis_url = f"redis://{settings.redis.host}:{settings.redis.port}"
         self._event_bus = EventBus(redis_url=redis_url)
-        
+
         # Initialize CheckpointManager
         from cyberred.storage.checkpoint import CheckpointManager
         checkpoint_manager = CheckpointManager(base_path=settings.storage.base_path)
+
+        # WorkerPool will be initialized in start() after async setup
+        self._worker_pool: WorkerPool | None = None
 
         self._session_manager = SessionManager(
             max_engagements=max_engagements,
             event_bus=self._event_bus,
             checkpoint_manager=checkpoint_manager,
+            worker_pool=None,  # Will be set in start() after initialization
         )
         self._shutdown_callback = shutdown_callback
 
         # Initialize RAG Scheduler (Story 6.12)
         # Note: get_settings already imported at module level
         self._rag_scheduler = RAGScheduler(settings.rag)
+
+        # Track streaming clients: writer -> (engagement_id, streaming_task)
+        self._streaming_clients: dict[asyncio.StreamWriter, tuple[str, asyncio.Task]] = {}
 
     @property
     def session_manager(self) -> SessionManager:
@@ -171,7 +180,22 @@ class DaemonServer:
         self._pid_path.write_text(str(os.getpid()))
 
         self._running = True
-        
+
+        # Initialize shared worker pool for all engagements
+        self._worker_pool = WorkerPool(
+            event_bus=self._event_bus,
+            pool_size=10,
+            container_prefix="red-kali-worker"
+        )
+        try:
+            await self._worker_pool.initialize()
+            # Pass to session manager for use by orchestrators
+            self._session_manager._worker_pool = self._worker_pool
+            log.info("worker_pool_initialized", pool_size=10)
+        except Exception as e:
+            log.warning("worker_pool_init_failed", error=str(e))
+            # Continue without Docker - agents can still do LLM work
+
         # Start config file watcher for hot reload (Story 2.13)
         from cyberred.core.config import _SettingsHolder
         settings = get_settings()
@@ -224,6 +248,13 @@ class DaemonServer:
                         timeout=READ_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
+                    # Don't timeout clients with active streaming sessions.
+                    # The streaming task manages its own heartbeats and
+                    # connection health. Once streaming ends, the entry is
+                    # removed from _streaming_clients and the next timeout
+                    # will break normally.
+                    if writer in self._streaming_clients:
+                        continue
                     log.warning("client_read_timeout", client_id=client_id)
                     break
                 except (asyncio.LimitOverrunError, ValueError):
@@ -254,7 +285,7 @@ class DaemonServer:
                     if not isinstance(request, IPCRequest):
                         raise IPCProtocolError("Expected IPCRequest")
 
-                    response = await self._handle_command(request)
+                    response = await self._handle_command(request, writer)
                     writer.write(encode_message(response))
                     await writer.drain()
 
@@ -265,6 +296,12 @@ class DaemonServer:
         except (ConnectionResetError, BrokenPipeError):
             log.warning("client_disconnected_abruptly", client_id=client_id)
         finally:
+            # Cancel any streaming task for this client
+            if writer in self._streaming_clients:
+                _, streaming_task = self._streaming_clients.pop(writer)
+                streaming_task.cancel()
+                log.info("streaming_task_cancelled", client_id=client_id)
+
             self._clients.discard(writer)
             writer.close()
             try:
@@ -273,11 +310,14 @@ class DaemonServer:
                 pass  # Ignore errors during close
             log.info("client_disconnected", client_id=client_id)
 
-    async def _handle_command(self, request: IPCRequest) -> IPCResponse:
+    async def _handle_command(
+        self, request: IPCRequest, writer: asyncio.StreamWriter | None = None
+    ) -> IPCResponse:
         """Route and handle IPC command.
 
         Args:
             request: The IPC request to handle.
+            writer: Optional stream writer for streaming commands.
 
         Returns:
             IPCResponse with result or error.
@@ -297,10 +337,14 @@ class DaemonServer:
             )
 
         try:
+            # Special handling for attach - needs writer for streaming
+            if command == IPCCommand.ENGAGEMENT_ATTACH and writer:
+                return await self._handle_engagement_attach(request, writer)
+
             handler_map = {
                 IPCCommand.SESSIONS_LIST: self._handle_sessions_list,
                 IPCCommand.ENGAGEMENT_START: self._handle_engagement_start,
-                IPCCommand.ENGAGEMENT_ATTACH: self._handle_engagement_attach,
+                IPCCommand.ENGAGEMENT_ATTACH: lambda r: self._handle_engagement_attach(r, None),
                 IPCCommand.ENGAGEMENT_DETACH: self._handle_engagement_detach,
                 IPCCommand.ENGAGEMENT_PAUSE: self._handle_engagement_pause,
                 IPCCommand.ENGAGEMENT_RESUME: self._handle_engagement_resume,
@@ -367,17 +411,19 @@ class DaemonServer:
         except (PreFlightCheckError, PreFlightWarningError) as e:
             return IPCResponse.create_error(str(e), request.request_id)
 
-    async def _handle_engagement_attach(self, request: IPCRequest) -> IPCResponse:
+    async def _handle_engagement_attach(
+        self, request: IPCRequest, writer: asyncio.StreamWriter | None = None
+    ) -> IPCResponse:
         engagement_id = request.params.get("engagement_id")
         if not engagement_id:
             return IPCResponse.create_error(
                 "Missing required parameter: engagement_id",
                 request.request_id,
             )
-        
+
         # Get engagement context for state snapshot
         context = self._session_manager.get_engagement_or_raise(engagement_id)
-        
+
         # Validate state allows attachment
         if context.state not in (EngagementState.RUNNING, EngagementState.PAUSED):
             return IPCResponse.create_error(
@@ -385,15 +431,15 @@ class DaemonServer:
                 "Engagement must be RUNNING or PAUSED.",
                 request.request_id,
             )
-        
+
         # Create subscription for streaming (noop callback)
         def _noop_callback(event: object) -> None:
             pass
-        
+
         subscription_id = self._session_manager.subscribe_to_engagement(
             engagement_id, _noop_callback
         )
-        
+
         # Build initial state snapshot
         snapshot = {
             "engagement_id": engagement_id,
@@ -404,14 +450,115 @@ class DaemonServer:
             "agents": [],
             "findings": [],
         }
-        
+
         log.info(
             "client_attached",
             engagement_id=engagement_id,
             subscription_id=subscription_id,
         )
-        
+
+        # If writer is provided, start streaming EventBus events to client
+        if writer and context.orchestrator:
+            streaming_task = asyncio.create_task(
+                self._stream_events_to_client(writer, engagement_id)
+            )
+            self._streaming_clients[writer] = (engagement_id, streaming_task)
+            log.info("streaming_started", engagement_id=engagement_id)
+
         return IPCResponse.create_ok(snapshot, request.request_id)
+
+    async def _stream_events_to_client(
+        self, writer: asyncio.StreamWriter, engagement_id: str
+    ) -> None:
+        """Stream EventBus events to an attached TUI client.
+
+        Subscribes to swarm:* channels and forwards events as StreamEvents.
+        Runs until the writer is closed or an error occurs.
+        """
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        async def queue_event(channel: str, data: dict) -> None:
+            """Queue an event for sending to client."""
+            await event_queue.put((channel, data))
+
+        # Subscribe to relevant EventBus channels
+        channels = [
+            "swarm:log",
+            "swarm:brain",
+            "swarm:status",
+            "swarm:terminal",
+            "swarm:worker_status",
+            "swarm:tool",
+            # Story 12.4: C2 Heartbeat Monitoring
+            "c2:heartbeat:warning",
+            "c2:heartbeat:critical",
+            "c2:heartbeat:lost",
+            "c2:reconnecting",
+        ]
+        # Keep subscription tasks alive - they run background listeners
+        subscription_tasks = []
+        for channel in channels:
+            task = await self._event_bus.subscribe(channel, lambda d, c=channel: queue_event(c, d))
+            subscription_tasks.append(task)
+
+        log.info("event_subscriptions_started", engagement_id=engagement_id, channels=channels)
+
+        try:
+            while True:
+                try:
+                    # Wait for events with timeout for heartbeat
+                    channel, data = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+
+                    # Map channel to StreamEventType
+                    event_type_map = {
+                        "swarm:log": StreamEventType.LOG_UPDATE,
+                        "swarm:brain": StreamEventType.BRAIN_UPDATE,
+                        "swarm:status": StreamEventType.AGENT_STATUS,
+                        "swarm:terminal": StreamEventType.TERMINAL_UPDATE,
+                        "swarm:worker_status": StreamEventType.WORKER_STATUS,
+                        "swarm:tool": StreamEventType.TOOL_UPDATE,
+                        # Story 12.4: C2 Heartbeat Monitoring
+                        "c2:heartbeat:warning": StreamEventType.C2_HEARTBEAT,
+                        "c2:heartbeat:critical": StreamEventType.C2_HEARTBEAT,
+                        "c2:heartbeat:lost": StreamEventType.C2_HEARTBEAT,
+                        "c2:reconnecting": StreamEventType.C2_HEARTBEAT,
+                    }
+                    event_type = event_type_map.get(channel, StreamEventType.AGENT_STATUS)
+
+                    # Create and send StreamEvent
+                    stream_event = StreamEvent(
+                        event_type=event_type,
+                        data=data,
+                    )
+                    writer.write(encode_stream_event(stream_event))
+                    await writer.drain()
+
+                except asyncio.TimeoutError:
+                    # Send heartbeat to keep connection alive
+                    heartbeat = StreamEvent(
+                        event_type=StreamEventType.HEARTBEAT,
+                        data={"engagement_id": engagement_id},
+                    )
+                    try:
+                        writer.write(encode_stream_event(heartbeat))
+                        await writer.drain()
+                    except (ConnectionResetError, BrokenPipeError):
+                        log.info("client_disconnected_during_heartbeat", engagement_id=engagement_id)
+                        break
+
+                except (ConnectionResetError, BrokenPipeError):
+                    log.info("client_disconnected_during_stream", engagement_id=engagement_id)
+                    break
+
+        except asyncio.CancelledError:
+            log.info("streaming_cancelled", engagement_id=engagement_id)
+        finally:
+            # Cancel subscription tasks
+            for task in subscription_tasks:
+                task.cancel()
+            # Cleanup: remove from streaming clients
+            self._streaming_clients.pop(writer, None)
+            log.info("streaming_stopped", engagement_id=engagement_id)
 
     async def _handle_engagement_detach(self, request: IPCRequest) -> IPCResponse:
         subscription_id = request.params.get("subscription_id")

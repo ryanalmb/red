@@ -1,0 +1,15 @@
+# Scope definition for cyber-range engagement
+allowed_ips:
+  - "172.28.0.0/16"
+  - "127.0.0.1"
+allowed_ports:
+  - 80
+  - 8082
+  - 21
+  - 22
+  - 2222
+  - 139
+  - 445
+  - 3306
+forbidden_ips:
+  - "0.0.0.0/0"

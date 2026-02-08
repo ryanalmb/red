@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Header, Footer, Static
+from textual.widgets import Button, Header, Footer, Static
 
 from cyberred.tui.widgets.dropbox_status import DropBoxStatusPanel, DropBoxStatus
 
@@ -40,6 +41,7 @@ class DropBoxScreen(Screen):
     
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back", show=True),
+        Binding("n", "new_dropbox", "New Drop Box", show=True),
     ]
     
     DEFAULT_CSS = """
@@ -56,6 +58,17 @@ class DropBoxScreen(Screen):
     
     DropBoxScreen DropBoxStatusPanel {
         margin: 1 2;
+    }
+    
+    DropBoxScreen #button-row {
+        align: center middle;
+        height: auto;
+        padding: 1;
+        dock: bottom;
+    }
+    
+    DropBoxScreen #deploy-btn {
+        background: $success;
     }
     """
     
@@ -83,7 +96,19 @@ class DropBoxScreen(Screen):
         yield Header()
         yield Static("Drop Box Status", id="screen-title")
         yield DropBoxStatusPanel(id="dropbox-status-panel")
+        with Horizontal(id="button-row"):
+            yield Button("🚀 Deploy New Drop Box", id="deploy-btn", variant="success")
         yield Footer()
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press events."""
+        if event.button.id == "deploy-btn":
+            self.action_new_dropbox()
+    
+    def action_new_dropbox(self) -> None:
+        """Open the drop box deployment wizard."""
+        from cyberred.tui.screens.dropbox_wizard import DropBoxWizardScreen
+        self.app.push_screen(DropBoxWizardScreen())
     
     def on_mount(self) -> None:
         """Handle mount event."""

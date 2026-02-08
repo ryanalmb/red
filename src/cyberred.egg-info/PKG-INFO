@@ -33,6 +33,7 @@ Requires-Dist: msgpack>=1.0.0
 Requires-Dist: lancedb>=0.3.0
 Requires-Dist: sentence-transformers>=2.2.0
 Requires-Dist: stix2>=3.0.0
+Requires-Dist: prometheus_client>=0.20.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"

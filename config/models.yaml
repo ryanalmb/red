@@ -15,8 +15,9 @@ brain:
 
   
   # Deep analysis and multi-step planning
-  # DeepSeek v3.2: 685B reasoning LLM, sparse attention, agentic tools
-  strategist: "deepseek-ai/deepseek-v3.2"
+  # Kimi K2 0905: Strong reasoning, reliable NIM availability
+  # (DeepSeek v3.2 has strict NIM rate limits — moved to fallback)
+  strategist: "moonshotai/kimi-k2-instruct-0905"
   
   # Evasion and stealth optimization
   # MiniMax M2: 230B MoE, 10B active, optimized for tool-use/agents
@@ -38,8 +39,9 @@ governance:
 # -----------------------------------------------------------------------------
 code_generation:
   # Primary exploit/payload generation
-  # DeepSeek v3.2 excels at code reasoning
-  engineer: "deepseek-ai/deepseek-v3.2"
+  # Devstral 123B: Strong code reasoning, reliable NIM availability
+  # (DeepSeek v3.2 has strict NIM rate limits — moved to fallback)
+  engineer: "mistralai/devstral-2-123b-instruct-2512"
   
   # Alternative for pure code tasks
   coder: "qwen/qwen2.5-coder-32b-instruct"
@@ -78,11 +80,11 @@ parameters:
 # In case primary models are unavailable or rate-limited
 # -----------------------------------------------------------------------------
 fallback:
-  architect: "deepseek-ai/deepseek-v3.1"
-  strategist: "moonshotai/kimi-k2-instruct"
+  architect: "moonshotai/kimi-k2-instruct-0905"
+  strategist: "deepseek-ai/deepseek-v3.2"
   ghost: "meta/llama-3.3-70b-instruct"
   critic: "nvidia/llama-3.1-nemotron-70b-instruct"
-  engineer: "mistralai/devstral-2-123b-instruct-2512"
+  engineer: "deepseek-ai/deepseek-v3.2"
 
 # -----------------------------------------------------------------------------
 # RAG CONFIGURATION

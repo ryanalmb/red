@@ -48,9 +48,9 @@ class NIMProvider(LLMProvider):
     # Director Ensemble models - separate from agent pool per architecture
     # Used exclusively by DirectorEnsemble for multi-perspective strategy synthesis
     DIRECTOR_MODELS = {
-        "STRATEGIST": "deepseek-ai/deepseek-v3.2",      # Strategic planning
-        "ANALYST": "moonshotai/kimi-k2-instruct",       # Deep reasoning
-        "CREATIVE": "minimaxai/minimax-m2",             # Lateral thinking
+        "STRATEGIST": "moonshotai/kimi-k2-instruct-0905",  # Strategic planning (reliable NIM availability)
+        "ANALYST": "moonshotai/kimi-k2-instruct",           # Deep reasoning
+        "CREATIVE": "minimaxai/minimax-m2",                  # Lateral thinking
     }
 
     def __init__(

@@ -281,12 +281,25 @@ def daemon_status() -> None:
 
 @app.command()
 def sessions() -> None:
-    """List all engagements."""
-    # Placeholder - actual implementation will query daemon via IPC
+    """List all engagements with details."""
     try:
         data = asyncio.run(_send_ipc_request(IPCCommand.SESSIONS_LIST))
         engagements = data.get("engagements", []) if data else []
-        typer.echo(f"{len(engagements)} engagements")
+
+        if not engagements:
+            typer.echo("No active engagements")
+            return
+
+        typer.echo(f"\n{'ID':<45} {'STATE':<12} {'CREATED':<20}")
+        typer.echo("-" * 77)
+
+        for eng in engagements:
+            eng_id = eng.get("id", "unknown")[:43]
+            state = eng.get("state", "unknown")
+            created = eng.get("created_at", "unknown")[:19]
+            typer.echo(f"{eng_id:<45} {state:<12} {created:<20}")
+
+        typer.echo(f"\nTotal: {len(engagements)} engagement(s)")
     except typer.Exit:
         raise
 
@@ -310,26 +323,25 @@ def attach(
     async def run_attached_tui() -> None:
         client = TUIClient()
         try:
+            # Verify engagement exists and is attachable before launching TUI
+            sessions_data = await _send_ipc_request(IPCCommand.SESSIONS_LIST)
+            engagements = sessions_data.get("engagements", []) if sessions_data else []
+            matching = [e for e in engagements if e.get("id") == engagement_id]
+            if not matching:
+                typer.echo(f"Error: Engagement '{engagement_id}' not found", err=True)
+                raise typer.Exit(code=1)
+            state = matching[0].get("state", "")
+            if state not in ("RUNNING", "PAUSED"):
+                typer.echo(
+                    f"Error: Cannot attach to engagement in {state} state. "
+                    "Engagement must be RUNNING or PAUSED.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
             await client.connect(socket_path)
 
-            # Verify engagement exists and is attachable by checking via IPC first
-            # This gives us a nice error message before launching TUI
-            response = await _send_ipc_request(
-                IPCCommand.ENGAGEMENT_ATTACH,
-                {"engagement_id": engagement_id},
-            )
-
-            # Get subscription_id from response
-            if response:
-                sub_id = response.get("subscription_id")
-                if sub_id:
-                    # Detach immediately since we'll reattach in TUI
-                    await _send_ipc_request(
-                        IPCCommand.ENGAGEMENT_DETACH,
-                        {"subscription_id": sub_id, "engagement_id": engagement_id},
-                    )
-
-            # Now launch TUI with the client
+            # Launch TUI with the client - it handles attach in on_mount
             app = CyberRedApp(daemon_client=client, engagement_id=engagement_id)
             await app.run_async()
 
@@ -368,6 +380,9 @@ def new_engagement(
     config: Path = typer.Option(
         ..., "--config", "-c", help="Path to engagement configuration file"
     ),
+    ignore_warnings: bool = typer.Option(
+        False, "--ignore-warnings", "-y", help="Ignore pre-flight warnings and start anyway"
+    ),
 ) -> None:
     """Start a new engagement."""
     if not config.exists():
@@ -384,8 +399,24 @@ def new_engagement(
         raise typer.Exit(code=1)
 
     log.info("new_engagement", config=str(config))
-    # Placeholder - actual implementation in Story 2.6
     typer.echo(f"Starting engagement from {config}...")
+
+    # Send IPC request to daemon to start engagement
+    try:
+        result = asyncio.run(_send_ipc_request(
+            IPCCommand.ENGAGEMENT_START,
+            {"config_path": str(config.absolute()), "ignore_warnings": ignore_warnings}
+        ))
+        # Response contains id and state directly
+        engagement_id = result.get("id", "unknown")
+        state = result.get("state", "unknown")
+        typer.echo(f"Engagement started: {engagement_id} (state: {state})")
+        typer.echo(f"   Attach with: cyber-red attach {engagement_id}")
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"Error starting engagement: {e}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

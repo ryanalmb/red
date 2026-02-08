@@ -1,15 +1,8 @@
 import asyncio
 import json
 import logging
-import os
-import yaml
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
 from cyberred.core.throttler import SwarmBrain
 from cyberred.core.war_room import WarRoom
-
-# Load environment variables
-load_dotenv()
 
 # Model configuration
 DEFAULT_CRITIC_MODEL = "meta/llama-3.3-70b-instruct"
@@ -25,15 +18,9 @@ class CouncilOfExperts:
         
         # Pending authorization requests
         self._pending_auth = {}
-        
-        # Initialize NVIDIA NIM Client
-        self.client = AsyncOpenAI(
-            base_url=os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-            api_key=os.getenv("NVIDIA_API_KEY")
-        )
-        
-        # Initialize War Room
-        self.war_room = WarRoom(self.client, self.bus)
+
+        # Initialize War Room (uses LLMGateway singleton)
+        self.war_room = WarRoom(event_bus=self.bus)
         
         # Subscribe to authorization responses
         if self.bus:
@@ -160,13 +147,16 @@ class CouncilOfExperts:
             "modification": "New Command (if MODIFY)"
         }}
         """
-        response = await self.client.chat.completions.create(
-            model=DEFAULT_CRITIC_MODEL,  # Upgraded from 3.1 to 3.3
-            messages=[{"role": "user", "content": prompt}],
+        from cyberred.llm import get_gateway, LLMRequest
+        gateway = get_gateway()
+        request = LLMRequest(
+            prompt=prompt,
+            model=DEFAULT_CRITIC_MODEL,
             temperature=0.1,
-            max_tokens=200
+            max_tokens=200,
         )
-        return response.choices[0].message.content
+        response = await gateway.director_complete(request)
+        return response.content
 
     async def parse_intent(self, user_input: str) -> dict:
         """Parse user input to extract target and action with brain stream logging."""
@@ -191,13 +181,16 @@ class CouncilOfExperts:
                     "text": f"📡 Calling {DEFAULT_DISPATCHER_MODEL}..."
                 })
             
-            response = await self.client.chat.completions.create(
+            from cyberred.llm import get_gateway, LLMRequest
+            gateway = get_gateway()
+            llm_request = LLMRequest(
+                prompt=prompt,
                 model=DEFAULT_DISPATCHER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=150
+                max_tokens=150,
             )
-            content = response.choices[0].message.content
+            llm_response = await gateway.director_complete(llm_request)
+            content = llm_response.content
             self.logger.info(f"Parse intent response: {content}")
             
             if self.bus:

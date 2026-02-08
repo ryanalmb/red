@@ -5,6 +5,9 @@ htmlcov/
 venv/
 .venv/
 
+# Drop Box Go build artifacts (Story 12.5)
+dropbox/build/
+
 # Python cache
 __pycache__/
 *.py[cod]

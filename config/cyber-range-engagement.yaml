@@ -1,0 +1,64 @@
+# Cyber Range Vulnerability Enumeration Engagement
+# Authorized testing against local cyber-range containers
+
+engagement_id: "cyber-range-001"
+name: "cyber-range-vuln-enum"
+
+# Mission directive (natural language)
+directive: |
+  Enumerate all vulnerabilities on the cyber-range targets.
+  Focus on web application vulnerabilities, SSH, SMB, and FTP services.
+  Document all findings with severity ratings.
+
+# Scope - ONLY the cyber-range containers
+scope:
+  allowed_ips:
+    - "172.28.0.0/16"    # Cyber-range network
+    - "127.0.0.1"        # Localhost
+  allowed_ports:
+    - 80       # DVWA web
+    - 8082     # DVWA (host port)
+    - 21       # FTP
+    - 22       # SSH
+    - 2222     # SSH (host port)
+    - 139      # SMB
+    - 445      # SMB
+    - 3306     # MySQL (internal)
+  forbidden_ips:
+    - "0.0.0.0/0"        # Block everything else by default
+
+# Rules of Engagement
+roe:
+  aggression_level: "MEDIUM"
+  max_concurrent_tools: 5
+  semantic_rules: |
+    - Only scan authorized cyber-range targets
+    - Do not attempt denial of service
+    - Document all findings
+    - Focus on vulnerability discovery, not exploitation
+
+# Target details (for reference)
+targets:
+  dvwa:
+    ip: "172.28.0.7"
+    host_port: 8082
+    services: ["http"]
+    description: "Damn Vulnerable Web Application - SQLi, XSS, Command Injection"
+  ssh:
+    ip: "172.28.0.3"
+    host_port: 2222
+    services: ["ssh"]
+    description: "SSH server for brute-force testing"
+  smb:
+    ip: "172.28.0.2"
+    host_ports: [139, 445]
+    services: ["smb"]
+    description: "Samba share for SMB enumeration"
+  ftp:
+    ip: "172.28.0.6"
+    host_port: 21
+    services: ["ftp"]
+    description: "FTP server for anonymous access testing"
+
+# Mock mode disabled - real scanning
+mock_mode: false

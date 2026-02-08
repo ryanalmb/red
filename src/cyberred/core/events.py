@@ -53,6 +53,7 @@ CHANNEL_PATTERNS = [
     re.compile(r"^auth:[a-zA-Z0-9_-]+:response$"),  # auth:request_id:response (Story 7.16)
     re.compile(r"^strategies:[a-zA-Z0-9_-]+$"),  # strategies:engagement_id
     re.compile(r"^audit:stream$"),  # audit:stream (Story 3.4)
+    re.compile(r"^c2:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$"),  # c2:heartbeat:* (Story 12.4)
 ]
 
 

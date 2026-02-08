@@ -27,13 +27,16 @@ def initialize_gateway(
     router: ModelRouter,
     queue: LLMPriorityQueue,
     retry_policy: Optional[RetryPolicy] = None,
+    fallback_models: Optional[Dict[str, str]] = None,
 ) -> "LLMGateway":
     """Initialize the singleton gateway instance."""
     global _gateway_instance
     with _gateway_lock:
         if _gateway_instance is not None:
             raise RuntimeError("Gateway already initialized")
-        _gateway_instance = LLMGateway(rate_limiter, router, queue, retry_policy)
+        _gateway_instance = LLMGateway(
+            rate_limiter, router, queue, retry_policy, fallback_models
+        )
         return _gateway_instance
 
 
@@ -69,6 +72,7 @@ class LLMGateway:
         router: ModelRouter,
         queue: LLMPriorityQueue,
         retry_policy: Optional[RetryPolicy] = None,
+        fallback_models: Optional[Dict[str, str]] = None,
     ) -> None:
         self._rate_limiter = rate_limiter
         self._router = router
@@ -78,11 +82,14 @@ class LLMGateway:
         except AttributeError:
             pass
         self._queue = queue
-        
+
         self._retry_policy = retry_policy or RetryPolicy()
         self._request_timeout = self._retry_policy.request_timeout
         self._max_retries = self._retry_policy.max_retries
-        
+
+        # Model fallback mapping: primary_model -> fallback_model
+        self._fallback_models = fallback_models or {}
+
         # Metrics
         self._metrics_lock = threading.Lock()
         self._total_requests = 0
@@ -95,10 +102,10 @@ class LLMGateway:
         self._model_failures: Dict[str, int] = {}
         self._model_excluded_until: Dict[str, float] = {}
         self._cb_lock = threading.Lock()
-        
+
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
-        
+
         log.info("gateway_initialized")
     
     async def director_complete(self, request: LLMRequest) -> LLMResponse:
@@ -213,110 +220,128 @@ class LLMGateway:
                     self._total_failures += 1
     
     async def _execute_with_retry(self, request: LLMRequest) -> LLMResponse:
-        """Execute request with retry and exponential backoff.
-        
+        """Execute request with retry, exponential backoff, and model fallback.
+
         Per ERR2: 3x retry with exponential backoff (1s, 2s, 4s).
-        
+        If all retries fail with 429, try the fallback model (if configured).
+
         If request.model is explicitly set, creates a provider for that specific
         model (used by Director Ensemble). Otherwise, routes via complexity tier.
         """
-        
+        response = await self._try_model_with_retries(request)
+        if response is not None:
+            return response
+
+        # Primary model exhausted — try fallback if available and error was rate limit
+        if request.model and request.model in self._fallback_models:
+            fallback = self._fallback_models[request.model]
+            log.warning(
+                "gateway_model_fallback",
+                primary=request.model,
+                fallback=fallback,
+            )
+            fallback_request = LLMRequest(
+                prompt=request.prompt,
+                system_prompt=request.system_prompt,
+                model=fallback,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                frequency_penalty=request.frequency_penalty,
+                stop_sequences=request.stop_sequences,
+            )
+            response = await self._try_model_with_retries(fallback_request)
+            if response is not None:
+                return response
+
+        raise self._last_exception if self._last_exception else RuntimeError("Unknown error")
+
+    async def _try_model_with_retries(self, request: LLMRequest) -> Optional[LLMResponse]:
+        """Try a model with retries. Returns response on success, None on exhaustion."""
         backoff_delays = self._retry_policy.backoff_delays
-        last_exception: Optional[Exception] = None
-        
+        self._last_exception: Optional[Exception] = None
+
         for attempt in range(self._max_retries + 1):
             try:
-                # Rate limit
-                # We acquire rate limit for each attempt
-                # Timeout on rate limit acquisition to prevent indefinite hanging
+                # Rate limit — acquire token for each attempt
                 if not await self._rate_limiter.acquire_async(timeout=60.0):
                     raise LLMRateLimitExceeded("gateway", 30)
-                
+
                 # Check if explicit model requested (e.g., Director Ensemble)
                 if request.model and request.model != "auto":
-                    # Create provider for specific model
                     from cyberred.llm.nim import NIMProvider
                     import os
                     api_key = os.environ.get("NVIDIA_API_KEY", "")
                     provider = NIMProvider(api_key=api_key, model=request.model)
                 else:
-                    # Router-based selection by complexity
                     complexity = self._router.infer_complexity(request.prompt)
                     provider = self._router.select_model(complexity)
-                
+
                 # Execute with timeout
                 response = await asyncio.wait_for(
                     provider.complete_async(request),
                     timeout=self._request_timeout,
                 )
-                
+
                 # Reset circuit breaker on success
                 model_name = getattr(provider, "model_name", None)
                 if model_name:
                     self._record_success(model_name)
-                    
+
                 return response
-                
+
             except LLMRateLimitExceeded as e:
-                # Retry but don't record model failure (usually local limit or global bucket)
-                last_exception = e
-                # Task 10: Respect retry_after if provided, capped at 60s
+                self._last_exception = e
                 retry_after = getattr(e, "retry_after", None)
                 if retry_after is not None and attempt < self._max_retries:
-                    # Cap at 60s to prevent excessive waits
                     capped_delay = min(float(retry_after), 60.0)
                     log.warning(
                         "gateway_retry_rate_limit",
                         attempt=attempt + 1,
                         retry_after=retry_after,
                         capped_delay=capped_delay,
+                        model=request.model,
                     )
                     await asyncio.sleep(capped_delay)
                     with self._metrics_lock:
                         self._total_retries += 1
-                    continue  # Skip the normal backoff logic below
+                    continue
             except asyncio.TimeoutError:
-                last_exception = LLMTimeoutError(
+                self._last_exception = LLMTimeoutError(
                     provider="gateway",
                     timeout_seconds=self._request_timeout,
                 )
             except (LLMProviderUnavailable, LLMTimeoutError) as e:
-                # Record failure for CB
-                # We need to access provider model name. 
-                # Since provider was selected inside loop, we need to ensure we can access it.
                 model_name = getattr(provider, "model_name", None)
                 if model_name:
                     self._record_failure(model_name)
-                    
-                last_exception = e
+                self._last_exception = e
             except Exception as e:
-                # Non-retryable error
                 raise
-            
+
             # Apply backoff if retry remaining
             if attempt < self._max_retries:
-                # Use exponential backoff capped at 4.0s
-                # Or use the predefined list if retries <= 3
                 if attempt < len(backoff_delays):
                     delay = backoff_delays[attempt]
                 else:
                     delay = backoff_delays[-1] if backoff_delays else 1.0
-                
+
                 log.warning(
                     "gateway_retry",
                     attempt=attempt + 1,
                     max_retries=self._max_retries,
                     delay=delay,
-                    error=str(last_exception),
+                    error=str(self._last_exception),
+                    model=request.model,
                 )
-                
+
                 await asyncio.sleep(delay)
-                
+
                 with self._metrics_lock:
                     self._total_retries += 1
-        
-        # All retries exhausted
-        raise last_exception if last_exception else RuntimeError("Unknown error")
+
+        # All retries exhausted for this model
+        return None
 
     def _record_failure(self, model_name: str) -> None:
         """Record a failure for a model and trigger CB if threshold reached."""

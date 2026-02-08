@@ -240,15 +240,15 @@ development_status:
   # Priority: LOW - See epic-8-retro-2026-01-28.md for details
 
   # Epic 12: Drop Box & C2
-  epic-12: backlog
-  12-1-mtls-c2-server: backlog
-  12-2-c2-message-protocol: backlog
-  12-3-certificate-manager: backlog
-  12-4-heartbeat-monitoring: backlog
-  12-5-drop-box-go-module-structure: backlog
-  12-6-drop-box-mtls-client: backlog
-  12-7-wifi-toolkit-wrapper: backlog
-  12-8-natural-language-drop-box-setup: backlog
+  epic-12: in-progress
+  12-1-mtls-c2-server: review
+  12-2-c2-message-protocol: done
+  12-3-certificate-manager: review
+  12-4-heartbeat-monitoring: done
+  12-5-drop-box-go-module-structure: done
+  12-6-drop-box-mtls-client: review
+  12-7-wifi-toolkit-wrapper: done
+  12-8-natural-language-drop-box-setup: review
   12-9-pre-flight-protocol: backlog
   12-10-drop-box-abort-and-wipe: backlog
   12-11-drop-box-reconnection-handling: backlog

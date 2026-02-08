@@ -6,6 +6,7 @@ manages job queues, and coordinates between agents, tools, and the AI council.
 """
 import asyncio
 import logging
+import os
 from cyberred.core.event_bus import EventBus
 from cyberred.core.council import CouncilOfExperts
 from cyberred.core.worker_pool import WorkerPool
@@ -13,23 +14,32 @@ from cyberred.core.tool_orchestrator import ToolOrchestrator
 from cyberred.agents.ghost_agent import GhostAgent
 from cyberred.core.throttler import SwarmBrain
 from cyberred.core.roe_loader import RoELoader
+from cyberred.llm import (
+    initialize_gateway, get_gateway, shutdown_gateway,
+    RateLimiter, ModelRouter, LLMPriorityQueue, RetryPolicy,
+    NIMProvider, TaskComplexity,
+)
 
 
 class Orchestrator:
     """
     Central coordinator for the Cyber-Red attack platform.
-    
+
     Responsibilities:
     - Initialize all core components
     - Manage job queue and agent lifecycle
     - Route commands from TUI to agents
     - Coordinate between AI council and tool execution
     """
-    
+
     def __init__(self, event_bus: EventBus):
         self.bus = event_bus
         self.logger = logging.getLogger("Orchestrator")
-        
+
+        # Engagement context (set by SessionManager)
+        self._engagement_id: str | None = None
+        self._engagement_config: dict | None = None
+
         # Initialize Core Components
         self.brain = SwarmBrain(limit=30)
         self.roe_loader = RoELoader()
@@ -67,7 +77,58 @@ class Orchestrator:
     async def start(self):
         """Start the Orchestrator and initialize all subsystems."""
         self.logger.info("Orchestrator initializing...")
-        
+
+        # Initialize LLM Gateway singleton (rate limiting, retry, priority queue)
+        try:
+            api_key = os.environ.get("NVIDIA_API_KEY", "")
+            if not api_key:
+                from dotenv import load_dotenv
+                load_dotenv()
+                api_key = os.environ.get("NVIDIA_API_KEY", "")
+
+            providers = {
+                TaskComplexity.FAST: NIMProvider.for_tier("FAST", api_key),
+                TaskComplexity.STANDARD: NIMProvider.for_tier("STANDARD", api_key),
+                TaskComplexity.COMPLEX: NIMProvider.for_tier("COMPLEX", api_key),
+            }
+            router = ModelRouter(providers=providers)
+            rate_limiter = RateLimiter(rpm=30, burst=5)
+            queue = LLMPriorityQueue()
+            retry_policy = RetryPolicy()
+
+            # Load model fallback mapping from config/models.yaml
+            fallback_models = {}
+            try:
+                import yaml
+                config_path = "config/models.yaml"
+                if os.path.exists(config_path):
+                    with open(config_path, "r") as f:
+                        models_cfg = yaml.safe_load(f) or {}
+                    fallback_cfg = models_cfg.get("fallback", {})
+                    # Map primary model -> fallback model for each role
+                    role_sections = {
+                        "brain": ["architect", "strategist", "ghost"],
+                        "governance": ["critic", "dispatcher"],
+                        "code_generation": ["engineer", "coder"],
+                    }
+                    for section, roles in role_sections.items():
+                        for role in roles:
+                            primary = models_cfg.get(section, {}).get(role)
+                            fallback = fallback_cfg.get(role)
+                            if primary and fallback and primary != fallback:
+                                fallback_models[primary] = fallback
+                    self.logger.info(f"Loaded {len(fallback_models)} model fallbacks")
+            except Exception as e:
+                self.logger.warning(f"Could not load model fallbacks: {e}")
+
+            gateway = initialize_gateway(
+                rate_limiter, router, queue, retry_policy, fallback_models
+            )
+            await gateway.start()
+            self.logger.info("LLM Gateway initialized (30 RPM, priority queue active)")
+        except RuntimeError:
+            self.logger.info("LLM Gateway already initialized (reusing existing)")
+
         # Initialize worker pool
         await self.pool.initialize()
         
@@ -244,7 +305,7 @@ class Orchestrator:
     def get_status(self) -> dict:
         """Get orchestrator status."""
         pool_status = self.pool.get_pool_status()
-        
+
         return {
             "agents": {
                 "total": len(self.agents),
@@ -257,3 +318,24 @@ class Orchestrator:
                 "active_jobs": self._active_jobs
             }
         }
+
+    async def shutdown(self) -> None:
+        """Graceful shutdown - stop all agents and LLM gateway."""
+        self.logger.info("Orchestrator shutting down...")
+
+        for agent_id, agent in list(self.agents.items()):
+            agent.is_active = False
+            self.logger.info(f"Stopped agent {agent_id}")
+
+        self.agents.clear()
+
+        # Shutdown LLM Gateway
+        try:
+            gateway = get_gateway()
+            await gateway.stop()
+            shutdown_gateway()
+            self.logger.info("LLM Gateway shutdown complete")
+        except RuntimeError:
+            pass  # Gateway was never initialized
+
+        self.logger.info("Orchestrator shutdown complete")

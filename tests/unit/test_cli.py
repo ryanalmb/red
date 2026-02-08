@@ -396,14 +396,18 @@ class TestSessionCommands:
 
             mock_socket_path.return_value = socket_file
 
-            # Mock IPC responses for attach checks
+            # Mock IPC response for sessions.list validation check
             mock_reader = MagicMock()
             mock_writer = MagicMock()
 
             async def mock_readline():
                 from cyberred.daemon.ipc import IPCResponse, encode_message
                 return encode_message(IPCResponse.create_ok(
-                    data={"subscription_id": "sub-123", "state": "RUNNING"},
+                    data={"engagements": [
+                        {"id": "test-engagement", "state": "RUNNING",
+                         "agent_count": 0, "finding_count": 0,
+                         "created_at": "2026-01-01T00:00:00"}
+                    ]},
                     request_id="req"
                 ))
 
@@ -424,7 +428,7 @@ class TestSessionCommands:
             mock_app_cls.return_value = mock_app
 
             result: Result = runner.invoke(app, ["attach", "test-engagement"])
-            
+
             # The command should complete (TUI mocked)
             assert result.exit_code == 0
             # TUIClient should be created and used

@@ -532,10 +532,15 @@ def create_settings(
     else:
         config_base = Path.home() / ".cyber-red"
     
-    # Load .env file for secrets
+    # Load .env files (project first, system overrides)
+    project_env = Path.cwd() / ".env"
+    if project_env.exists():
+        load_dotenv(project_env, override=False)
+
+    # System .env (existing behavior)
     env_path = config_base / ".env"
     if env_path.exists():
-        load_dotenv(env_path)
+        load_dotenv(env_path, override=True)
     
     # Load system config
     system_config = load_system_config(system_config_path)

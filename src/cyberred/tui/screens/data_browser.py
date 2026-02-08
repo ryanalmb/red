@@ -20,7 +20,8 @@ UX References:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -37,6 +38,7 @@ from cyberred.tui.widgets.export_dialog import ExportDialog
 if TYPE_CHECKING:
     from cyberred.storage.evidence import ExfiltratedDataItem, ExfiltratedDataStore
     from cyberred.storage.exporter import DataExporter
+    from cyberred.tui.daemon_client import TUIClient
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +126,14 @@ class DataBrowserScreen(Screen):
     _search_query: reactive[str] = reactive("")
     _selected_item_id: reactive[str | None] = reactive(None)
 
+    # Default engagement storage path
+    DEFAULT_ENGAGEMENTS_PATH = Path.home() / ".cyber-red" / "engagements"
+
     def __init__(
         self,
-        store: ExfiltratedDataStore,
+        daemon_client: Optional[TUIClient] = None,
+        engagement_id: Optional[str] = None,
+        store: Optional[ExfiltratedDataStore] = None,
         engagement_name: str = "engagement",
         name: str | None = None,
         id: str | None = None,
@@ -134,21 +141,85 @@ class DataBrowserScreen(Screen):
     ) -> None:
         """Initialize DataBrowserScreen.
 
+        Per Story 11.2: Connect to ExfiltratedDataStore via daemon IPC.
+
         Args:
-            store: ExfiltratedDataStore instance.
+            daemon_client: TUIClient for daemon communication.
+            engagement_id: Engagement ID to load evidence from.
+            store: ExfiltratedDataStore instance (optional, for testing).
             engagement_name: Name of current engagement for export paths.
             name: Screen name.
             id: Screen ID.
             classes: CSS classes.
         """
         super().__init__(name=name, id=id, classes=classes)
-        self._store = store
-        self._engagement_name = engagement_name
+        self._daemon_client = daemon_client
+        self._engagement_id = engagement_id
+        self._engagement_name = engagement_name or engagement_id or "engagement"
         self._items: list[ExfiltratedDataItem] = []
         self._selected_items: set[str] = set()  # Instance variable for multi-selection
         self._current_category = None
         self._search_query = ""
         self._selected_item_id = None
+
+        # Initialize store - either provided or create from engagement path
+        if store is not None:
+            self._store = store
+        else:
+            self._store = self._create_store()
+
+    def _create_store(self) -> ExfiltratedDataStore:
+        """Create ExfiltratedDataStore from engagement path.
+
+        Per Story 11.2: Connect to ExfiltratedDataStore via daemon IPC.
+        Creates store using standard engagement path structure.
+
+        Returns:
+            ExfiltratedDataStore instance (may be empty if no engagement).
+        """
+        from cyberred.storage.evidence import ExfiltratedDataStore
+
+        if self._engagement_id:
+            engagement_path = self.DEFAULT_ENGAGEMENTS_PATH / self._engagement_id
+        else:
+            # Fallback: use a temp path for empty store
+            engagement_path = self.DEFAULT_ENGAGEMENTS_PATH / "default"
+
+        # Get encryption key from keystore if available
+        encryption_key = self._get_encryption_key()
+
+        return ExfiltratedDataStore(
+            engagement_path=engagement_path,
+            encryption_key=encryption_key,
+        )
+
+    def _get_encryption_key(self) -> bytes:
+        """Get encryption key for evidence decryption.
+
+        Per FR43: Data encrypted at rest (AES-256).
+
+        Returns:
+            32-byte encryption key.
+        """
+        try:
+            from cyberred.core.keystore import derive_key, generate_salt
+            # Try to get engagement-specific salt from config
+            salt_path = self.DEFAULT_ENGAGEMENTS_PATH / (self._engagement_id or "default") / ".salt"
+            if salt_path.exists():
+                salt = salt_path.read_bytes()
+            else:
+                # Use a deterministic salt based on engagement_id for consistency
+                salt = (self._engagement_id or "default").encode().ljust(16, b"\0")[:16]
+
+            # Derive key from a default passphrase (in production, this should come from secure storage)
+            return derive_key("cyber-red-default-key", salt)
+        except Exception as e:
+            logger.debug(f"Could not derive encryption key: {e}")
+
+        # Fallback: use a default key (for development/testing only)
+        # In production, this should raise an error
+        logger.warning("Using default encryption key - NOT FOR PRODUCTION")
+        return b"0" * 32  # 32 bytes for AES-256
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout."""

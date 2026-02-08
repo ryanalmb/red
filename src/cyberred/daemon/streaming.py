@@ -49,6 +49,14 @@ class StreamEventType(StrEnum):
     DAEMON_SHUTDOWN = "daemon_shutdown"  # Story 2.11: Graceful shutdown notification
     STRATEGY_UPDATE = "strategy_update"  # Story 8.11: Director strategy updates
     AUTH_QUEUE_UPDATED = "auth_queue_updated"  # Story 10.3: Queue count changed
+    # Daemon-to-TUI streaming parity
+    LOG_UPDATE = "log_update"           # Maps to swarm:log
+    BRAIN_UPDATE = "brain_update"       # Maps to swarm:brain
+    TERMINAL_UPDATE = "terminal_update" # Maps to swarm:terminal
+    WORKER_STATUS = "worker_status"     # Maps to swarm:worker_status
+    TOOL_UPDATE = "tool_update"         # Maps to swarm:tool
+    # Story 12.4: C2 Heartbeat Monitoring
+    C2_HEARTBEAT = "c2_heartbeat"       # Maps to c2:heartbeat:* events
 
 
 @dataclass

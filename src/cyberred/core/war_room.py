@@ -10,7 +10,6 @@ import json
 import os
 import yaml
 from typing import Optional, Dict, Any, Tuple
-from openai import AsyncOpenAI
 
 # API timeout with retry
 API_TIMEOUT = 120  # 120 seconds for thinking models
@@ -28,8 +27,7 @@ class WarRoom:
     Strategist/Ghost are called only for complex operations.
     """
     
-    def __init__(self, client: AsyncOpenAI, event_bus=None, config_path: str = "config/models.yaml"):
-        self.client = client
+    def __init__(self, event_bus=None, config_path: str = "config/models.yaml"):
         self.bus = event_bus
         self.logger = logging.getLogger("WarRoom")
         
@@ -39,9 +37,9 @@ class WarRoom:
         # Model assignments from config
         self.models = {
             "architect": self.config.get("brain", {}).get("architect", "moonshotai/kimi-k2-instruct"),
-            "strategist": self.config.get("brain", {}).get("strategist", "deepseek-ai/deepseek-v3.2"),
+            "strategist": self.config.get("brain", {}).get("strategist", "moonshotai/kimi-k2-instruct-0905"),
             "ghost": self.config.get("brain", {}).get("ghost", "minimaxai/minimax-m2"),
-            "engineer": self.config.get("code_generation", {}).get("engineer", "deepseek-ai/deepseek-v3.2"),
+            "engineer": self.config.get("code_generation", {}).get("engineer", "mistralai/devstral-2-123b-instruct-2512"),
         }
         
         # Model parameters from config
@@ -153,14 +151,17 @@ Based on the findings so far, recommend:
 Keep response focused on THIS phase only. Do not plan future phases.
 """
         params = self.params.get("architect", {"temperature": 0.7, "max_tokens": 1500})
-        
-        response = await self.client.chat.completions.create(
+
+        from cyberred.llm import get_gateway, LLMRequest
+        gateway = get_gateway()
+        request = LLMRequest(
+            prompt=prompt,
             model=self.models["architect"],
-            messages=[{"role": "user", "content": prompt}],
             temperature=params.get("temperature", 0.7),
-            max_tokens=params.get("max_tokens", 1500)
+            max_tokens=params.get("max_tokens", 1500),
         )
-        return response.choices[0].message.content
+        response = await gateway.director_complete(request)
+        return response.content
 
     async def _call_engineer_phase(self, strategy: str, context: dict) -> str:
         """Engineer selects tools for the CURRENT phase."""
@@ -195,14 +196,17 @@ Example:
 {{"tools": ["nmap", "whatweb", "subfinder", "nuclei"], "reasoning": "Parallel recon with 4 tools for speed"}}
 """
         params = self.params.get("engineer", {"temperature": 0.2, "max_tokens": 300})
-        
-        response = await self.client.chat.completions.create(
+
+        from cyberred.llm import get_gateway, LLMRequest
+        gateway = get_gateway()
+        request = LLMRequest(
+            prompt=prompt,
             model=self.models["engineer"],
-            messages=[{"role": "user", "content": prompt}],
             temperature=params.get("temperature", 0.2),
-            max_tokens=params.get("max_tokens", 300)
+            max_tokens=params.get("max_tokens", 300),
         )
-        return response.choices[0].message.content.strip()
+        response = await gateway.director_complete(request)
+        return response.content.strip()
 
     async def _log(self, text: str, category: str):
         """Log to both logger and event bus for TUI display."""
