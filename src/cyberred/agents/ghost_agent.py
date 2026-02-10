@@ -1,5 +1,10 @@
 """
-Ghost Agent - AI-Directed Attack Agent.
+Ghost Agent - AI-Directed Attack Agent (DEPRECATED for full engagements).
+
+.. deprecated:: Story 7.26
+    GhostAgent is deprecated for full engagement attacks. Use the stigmergic
+    agent swarm (StigmergicAgent subclasses via SwarmRouterWrapper/DynamicSpawner)
+    instead. GhostAgent is retained only for ``cmd:quick`` / ``quick_attack`` mode.
 
 The Ghost Agent executes attacks driven by the War Room AI ensemble.
 The War Room develops strategy FIRST, then the agent executes.
@@ -15,8 +20,13 @@ from cyberred.core.event_bus import EventBus
 
 class GhostAgent:
     """
-    AI-Directed Attack Agent.
-    
+    AI-Directed Attack Agent (deprecated for full engagements).
+
+    .. deprecated:: Story 7.26
+        Deprecated for full engagement attacks. Use stigmergic agent swarm
+        (ReconAgent, ExploitAgent, etc.) via Orchestrator._deploy_stigmergic_swarm().
+        Retained for quick_attack mode only.
+
     Flow:
     1. War Room develops initial strategy
     2. Agent executes recommended tools

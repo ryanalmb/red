@@ -286,10 +286,10 @@ class DropBoxDeploymentInterpreter:
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
-            # Try to extract JSON from response
-            json_match = re.search(r'\{[^{}]*\}', content)
-            if json_match:
-                data = json.loads(json_match.group())
+            # Try to extract JSON from response using balanced-brace matching
+            extracted = self._extract_json_object(content)
+            if extracted:
+                data = json.loads(extracted)
             else:
                 raise InterpretationError(
                     "Could not parse response format",
@@ -325,6 +325,53 @@ class DropBoxDeploymentInterpreter:
             plan.confidence = min(plan.confidence, 0.3)
         
         return plan
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str | None:
+        """Extract the first JSON object from text using balanced-brace matching.
+        
+        Handles nested objects like {"platform": "linux", "options": {"port": 8080}}.
+        
+        Args:
+            text: Text that may contain a JSON object.
+            
+        Returns:
+            Extracted JSON string or None if not found.
+        """
+        start = text.find('{')
+        if start == -1:
+            return None
+        
+        depth = 0
+        in_string = False
+        escape_next = False
+        
+        for i in range(start, len(text)):
+            char = text[i]
+            
+            if escape_next:
+                escape_next = False
+                continue
+            
+            if char == '\\' and in_string:
+                escape_next = True
+                continue
+            
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            
+            if in_string:
+                continue
+            
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        
+        return None
 
 
 # Example NL inputs for testing

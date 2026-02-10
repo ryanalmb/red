@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import shlex
 import time
 from pathlib import Path
 from typing import Optional, Literal
@@ -242,8 +243,11 @@ class RealContainer(ContainerProtocol):
         if not self._container:
             raise RuntimeError("Container not started")
         
-        # Split command correctly
-        cmd = code.split()
+        # Split command respecting quotes (shlex handles "arg with spaces")
+        try:
+            cmd = shlex.split(code)
+        except ValueError:
+            cmd = code.split()  # Fallback for malformed quotes
         
         def _exec():
             # Use low-level api to get demuxed output (stdout, stderr)
@@ -316,9 +320,78 @@ class RealContainer(ContainerProtocol):
             error_type=error_type
         )
 
+    async def execute_pipeline(self, segments: list[str], timeout: int = 30) -> ToolResult:
+        """Execute a pipeline of commands, reconstructed safely via shlex.
+
+        Each segment has already been validated by the scope validator.
+        Segments are re-quoted via shlex.join() and joined with | for
+        shell execution, preventing injection in the reconstructed command.
+
+        Args:
+            segments: List of command strings (pre-validated by scope).
+            timeout: Execution timeout in seconds.
+
+        Returns:
+            ToolResult from the pipeline execution.
+        """
+        if not self._container:
+            raise RuntimeError("Container not started")
+
+        # Reconstruct pipeline: re-quote each segment to prevent injection
+        safe_parts = []
+        for seg in segments:
+            try:
+                tokens = shlex.split(seg)
+                safe_parts.append(shlex.join(tokens))
+            except ValueError:
+                safe_parts.append(seg)
+
+        shell_cmd = " | ".join(safe_parts)
+        cmd = ["sh", "-c", shell_cmd]
+
+        def _exec():
+            wrapped = self._container.get_wrapped_container()
+            return wrapped.exec_run(cmd, demux=True)
+
+        start_time = time.perf_counter()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_exec),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            logger.warning("pipeline_execute_timeout: cmd=%s timeout=%s", shell_cmd[:80], timeout)
+            return ToolResult(
+                success=False, stdout="", stderr=f"Pipeline timed out after {timeout}s",
+                exit_code=-1, duration_ms=duration_ms, error_type="TIMEOUT",
+            )
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            logger.warning("pipeline_exec_exception: cmd=%s error=%s", shell_cmd[:80], str(e))
+            return ToolResult(
+                success=False, stdout="", stderr=str(e),
+                exit_code=-1, duration_ms=duration_ms, error_type="EXECUTION_EXCEPTION",
+            )
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        exit_code = result[0]
+        output = result[1]
+        stdout_bytes = output[0] if output else b""
+        stderr_bytes = output[1] if output else b""
+        stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+        stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+
+        return ToolResult(
+            success=exit_code == 0,
+            stdout=stdout_str, stderr=stderr_str,
+            exit_code=exit_code, duration_ms=duration_ms,
+            error_type="NON_ZERO_EXIT" if exit_code != 0 else None,
+        )
+
     def is_healthy(self) -> bool:
         """Check if container is healthy (running).
-        
+
         Note: Uses sync Docker API call. For async context, consider
         wrapping in asyncio.to_thread() when calling.
         """
@@ -330,6 +403,140 @@ class RealContainer(ContainerProtocol):
             return wrapped.status == "running"
         except Exception:
             return False
+
+
+class WorkerPoolBridge:
+    """Adapts WorkerPool to ContainerPool interface for KaliExecutor.
+
+    Instead of managing its own Docker containers, this bridge delegates
+    execution to the shared WorkerPool that already manages pre-existing
+    Kali worker containers (red-kali-worker-{1..N}).
+
+    The bridge does direct ``docker exec`` calls (bypassing WorkerPool.execute_task)
+    to get proper stdout/stderr/exit_code separation — execute_task() discards
+    stdout on non-zero exit codes which loses valid tool output.
+    """
+
+    def __init__(self, worker_pool):
+        self.worker_pool = worker_pool  # Mutable — updated by session_manager
+
+    def acquire(self, timeout: Optional[float] = None) -> '_WorkerBridgeContext':
+        return _WorkerBridgeContext(self, timeout)
+
+    @property
+    def pressure(self) -> float:
+        status = self.worker_pool.get_pool_status()
+        total = status.get('pool_size', 1) or 1
+        busy = status.get('busy', 0)
+        return busy / total
+
+    @property
+    def available_count(self) -> int:
+        return self.worker_pool.available_workers.qsize()
+
+    @property
+    def in_use_count(self) -> int:
+        status = self.worker_pool.get_pool_status()
+        return status.get('busy', 0)
+
+
+class _WorkerBridgeContext:
+    """Async context manager for worker acquisition/release."""
+
+    def __init__(self, bridge: WorkerPoolBridge, timeout: Optional[float] = None):
+        self._bridge = bridge
+        self._timeout = timeout or 60.0
+        self._container_id: Optional[str] = None
+
+    async def __aenter__(self) -> '_WorkerBridgeContainer':
+        self._container_id = await self._bridge.worker_pool.acquire_worker(
+            timeout=self._timeout
+        )
+        if not self._container_id:
+            raise ContainerPoolExhausted("No workers available (timeout)")
+        return _WorkerBridgeContainer(self._bridge, self._container_id)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._container_id:
+            self._bridge.worker_pool.release_worker(self._container_id)
+
+
+class _WorkerBridgeContainer:
+    """Wraps docker exec calls against a real worker container, returning ToolResult.
+
+    Bypasses WorkerPool.execute_task() to preserve separate stdout/stderr and
+    actual exit codes (execute_task merges them into a lossy string format).
+    """
+
+    def __init__(self, bridge: WorkerPoolBridge, container_id: str):
+        self._bridge = bridge
+        self._container_id = container_id
+
+    async def execute(self, code: str, timeout: int = 30) -> ToolResult:
+        try:
+            cmd = shlex.split(code)
+        except ValueError:
+            cmd = code.split()
+
+        args = ["/usr/bin/docker", "exec", self._container_id] + cmd
+
+        start_time = time.perf_counter()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            logger.warning("bridge_execute_timeout: cmd=%s timeout=%s", code[:50], timeout)
+            return ToolResult(
+                success=False, stdout="", stderr=f"Execution timed out after {timeout}s",
+                exit_code=-1, duration_ms=duration_ms, error_type="TIMEOUT",
+            )
+        except Exception as e:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            error_type = "EXECUTION_EXCEPTION"
+            if "NotFound" in type(e).__name__ or "not found" in str(e).lower():
+                error_type = "CONTAINER_CRASHED"
+            logger.warning("bridge_exec_exception: cmd=%s error=%s", code[:50], str(e))
+            return ToolResult(
+                success=False, stdout="", stderr=str(e),
+                exit_code=-1, duration_ms=duration_ms, error_type=error_type,
+            )
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+        stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+        stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+
+        return ToolResult(
+            success=proc.returncode == 0,
+            stdout=stdout_str,
+            stderr=stderr_str,
+            exit_code=proc.returncode,
+            duration_ms=duration_ms,
+            error_type="NON_ZERO_EXIT" if proc.returncode != 0 else None,
+        )
+
+    async def execute_pipeline(self, segments: list[str], timeout: int = 30) -> ToolResult:
+        """Execute a validated pipeline in the worker container via sh -c."""
+        safe_parts = []
+        for seg in segments:
+            try:
+                tokens = shlex.split(seg)
+                safe_parts.append(shlex.join(tokens))
+            except ValueError:
+                safe_parts.append(seg)
+
+        shell_cmd = " | ".join(safe_parts)
+        full_cmd = f"sh -c {shlex.quote(shell_cmd)}"
+        return await self.execute(full_cmd, timeout=timeout)
+
+    def is_healthy(self) -> bool:
+        return self._container_id is not None
 
 
 class MockContainer(ContainerProtocol):

@@ -11,7 +11,9 @@ Story 7.3-v2 Refactor:
 """
 
 import asyncio
+import hashlib
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +30,7 @@ from cyberred.tools.parsers.nmap import nmap_parser
 from cyberred.tools.scope import ScopeConfig, ScopeValidator
 
 if TYPE_CHECKING:
+    from cyberred.agents.rag_escalator import AgentRAGEscalator
     from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
     from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
@@ -45,7 +48,7 @@ class ReconAgent(StigmergicAgent):
     """
 
     #: Default max iterations for recon loop
-    DEFAULT_MAX_ITERATIONS: int = 20
+    DEFAULT_MAX_ITERATIONS: int = 8
     #: Default findings threshold to consider phase complete
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50
     #: Intelligence query timeout
@@ -60,6 +63,7 @@ class ReconAgent(StigmergicAgent):
         llm_gateway: "LLMGateway | None" = None,
         manifest_loader: "ManifestLoader | None" = None,
         intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+        rag_escalator: "AgentRAGEscalator | None" = None,
         max_iterations: int | None = None,
         phase_complete_threshold: int | None = None,
         **kwargs: Any,
@@ -75,6 +79,7 @@ class ReconAgent(StigmergicAgent):
             llm_gateway: Optional LLMGateway for tool selection.
             manifest_loader: Optional ManifestLoader for tool lookup.
             intel_aggregator: Optional intelligence aggregator for service intel.
+            rag_escalator: Optional RAG escalator for methodology retrieval on failure.
             max_iterations: Max LLM selection iterations (default: 20).
             phase_complete_threshold: Findings count to end phase (default: 50).
             **kwargs: Additional kwargs for StigmergicAgent.
@@ -92,6 +97,10 @@ class ReconAgent(StigmergicAgent):
         )
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
         self._intel_aggregator = intel_aggregator
+        self._rag_escalator = rag_escalator
+        self._failure_counts: dict[str, int] = {}
+        self._current_target: str = ""
+        self._current_service: str = ""
         self.output_processor = OutputProcessor()
         self.output_processor.register_parser("nmap", nmap_parser)
 
@@ -116,6 +125,8 @@ class ReconAgent(StigmergicAgent):
         """
         self._validate_target_scope(target)
         target_info = target_info or {}
+        self._current_target = target
+        self._current_service = target_info.get("service", "")
 
         all_findings: list[Finding] = []
         all_actions: list[AgentAction] = []
@@ -158,8 +169,11 @@ class ReconAgent(StigmergicAgent):
 
                 if not result.success:
                     self._log.warning("tool_execution_failed", tool=tool_name, error=result.stderr[:200] if result.stderr else "")
+                    alt = await self._handle_recon_failure(tool_name)
+                    if alt:
+                        decision_context.append(f"rag_escalation:{tool_name}:{alt}")
 
-                processed = self.output_processor.process(
+                processed = await self.output_processor.async_process(
                     stdout=result.stdout,
                     stderr=result.stderr,
                     tool=tool_name,
@@ -170,7 +184,7 @@ class ReconAgent(StigmergicAgent):
                 )
 
                 for finding in processed.findings:
-                    await self.on_finding(target, finding.type, finding.model_dump())
+                    await self.on_finding(target, finding.type, asdict(finding))
                     all_findings.append(finding)
                     if result_finding_id is None:
                         result_finding_id = finding.id
@@ -181,7 +195,7 @@ class ReconAgent(StigmergicAgent):
                     available_tools=[],
                     phase=context.phase,
                     constraints=context.constraints,
-                    previous_results=[f.model_dump() for f in all_findings],
+                    previous_results=[asdict(f) for f in all_findings],
                 )
 
             except Exception as e:
@@ -218,8 +232,6 @@ class ReconAgent(StigmergicAgent):
             return None
         return sorted(results, key=lambda r: r.priority)[0]
 
-        return all_findings, all_actions
-
     async def _phase_complete(self, context: ToolSelectionContext) -> bool:
         """Check if reconnaissance phase is complete."""
         return len(context.previous_results) >= self.phase_complete_threshold
@@ -248,24 +260,52 @@ class ReconAgent(StigmergicAgent):
                 self._log.warning("failed_to_load_scope_file", path=path, error=str(e))
         return ScopeValidator(ScopeConfig())
 
+    async def _handle_recon_failure(self, technique_id: str) -> str | None:
+        """Handle tool failure via RAG escalation."""
+        if not self._rag_escalator:
+            return None
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
+        self._failure_counts[technique_id] = failure_count
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
+            from cyberred.agents.rag_escalator import AgentRAGContext
+            context = AgentRAGContext(
+                agent_id=str(self.agent_id),
+                target_service=self._current_service or "network reconnaissance",
+                target_hash=target_hash,
+                failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
+                failure_count=failure_count,
+                environment={"target": self._current_target},
+                engagement_id=self.engagement_id,
+            )
+            try:
+                rag_result = await self._rag_escalator.escalate(context)
+                if rag_result.was_successful:
+                    return rag_result.selected_technique
+            except Exception:
+                pass
+        return None
+
+    def _hash_target(self, target: str) -> str:
+        """Hash target string for channel naming."""
+        return hashlib.md5(target.encode()).hexdigest()[:8]
+
     async def stop(self) -> None:
         """Gracefully stop the agent."""
         self._stop_event.set()
         self._log.info("agent_stopping")
 
     async def on_finding(self, target_hash: str, finding_type: str, content: dict[str, Any]) -> None:
-        """Publish finding to event bus with degraded mode buffering."""
-        channel = f"findings:{target_hash}:{finding_type}"
-        message = {"agent_id": str(self.agent_id), "engagement_id": self.engagement_id, "data": content}
-
+        """Publish finding to swarm with degraded mode buffering."""
         if self._finding_buffer:
             await self._flush_buffer()
 
         try:
-            await self.event_bus.publish(channel, message)
+            await self._publish_to_swarm(target_hash, finding_type, content)
         except Exception as e:
+            channel = f"findings:{target_hash}:{finding_type}"
             self._log.warning("publish_failed_buffering", error=str(e), channel=channel)
-            self._finding_buffer.append({"channel": channel, "message": message})
+            self._finding_buffer.append({"channel": channel, "message": content})
 
     async def _flush_buffer(self) -> None:
         """Attempt to flush buffered findings."""

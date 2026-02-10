@@ -28,6 +28,7 @@ def initialize_gateway(
     queue: LLMPriorityQueue,
     retry_policy: Optional[RetryPolicy] = None,
     fallback_models: Optional[Dict[str, str]] = None,
+    num_workers: int = 4,
 ) -> "LLMGateway":
     """Initialize the singleton gateway instance."""
     global _gateway_instance
@@ -35,7 +36,8 @@ def initialize_gateway(
         if _gateway_instance is not None:
             raise RuntimeError("Gateway already initialized")
         _gateway_instance = LLMGateway(
-            rate_limiter, router, queue, retry_policy, fallback_models
+            rate_limiter, router, queue, retry_policy, fallback_models,
+            num_workers=num_workers,
         )
         return _gateway_instance
 
@@ -73,6 +75,7 @@ class LLMGateway:
         queue: LLMPriorityQueue,
         retry_policy: Optional[RetryPolicy] = None,
         fallback_models: Optional[Dict[str, str]] = None,
+        num_workers: int = 4,
     ) -> None:
         self._rate_limiter = rate_limiter
         self._router = router
@@ -104,9 +107,10 @@ class LLMGateway:
         self._cb_lock = threading.Lock()
 
         self._running = False
-        self._worker_task: Optional[asyncio.Task] = None
+        self._num_workers = num_workers
+        self._worker_tasks: list[asyncio.Task] = []
 
-        log.info("gateway_initialized")
+        log.info("gateway_initialized", num_workers=num_workers)
     
     async def director_complete(self, request: LLMRequest) -> LLMResponse:
         """Submit a Director request with highest priority.
@@ -140,27 +144,30 @@ class LLMGateway:
         return await self.agent_complete(request)
     
     async def start(self) -> None:
-        """Start the background request processing worker."""
+        """Start the background request processing workers."""
         if self._running:
             log.warning("gateway_already_running")
             return
-        
+
         self._running = True
-        self._worker_task = asyncio.create_task(self._process_requests())
-        log.info("gateway_started")
-    
+        self._worker_tasks = [
+            asyncio.create_task(self._process_requests())
+            for _ in range(self._num_workers)
+        ]
+        log.info("gateway_started", num_workers=self._num_workers)
+
     async def stop(self) -> None:
         """Stop the gateway and cleanup."""
         self._running = False
-        
-        if self._worker_task is not None:
-            self._worker_task.cancel()
+
+        for task in self._worker_tasks:
+            task.cancel()
             try:
-                await self._worker_task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._worker_task = None
-        
+        self._worker_tasks = []
+
         log.info("gateway_stopped")
     
     async def _process_requests(self) -> None:
@@ -268,7 +275,7 @@ class LLMGateway:
                     raise LLMRateLimitExceeded("gateway", 30)
 
                 # Check if explicit model requested (e.g., Director Ensemble)
-                if request.model and request.model != "auto":
+                if request.model and request.model not in ("auto", "default"):
                     from cyberred.llm.nim import NIMProvider
                     import os
                     api_key = os.environ.get("NVIDIA_API_KEY", "")

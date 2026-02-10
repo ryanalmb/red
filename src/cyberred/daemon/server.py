@@ -49,6 +49,7 @@ from cyberred.core.worker_pool import WorkerPool
 from cyberred.daemon.state_machine import EngagementState
 from cyberred.daemon.streaming import StreamEvent, StreamEventType, encode_stream_event
 from cyberred.rag import RAGScheduler
+from cyberred.rag.director_client import DirectorRAGClient
 
 
 READ_TIMEOUT = 30.0  # seconds - prevents hung clients
@@ -352,6 +353,7 @@ class DaemonServer:
                 IPCCommand.DAEMON_STOP: self._handle_daemon_stop,
                 IPCCommand.DAEMON_CONFIG_RELOAD: self._handle_config_reload,
                 IPCCommand.RAG_REFRESH: self._handle_rag_refresh,
+                IPCCommand.ENGAGEMENT_PIVOT: self._handle_engagement_pivot,
             }
 
             handler = handler_map.get(command)
@@ -501,6 +503,19 @@ class DaemonServer:
             task = await self._event_bus.subscribe(channel, lambda d, c=channel: queue_event(c, d))
             subscription_tasks.append(task)
 
+        # Story 7.26: Subscribe to stigmergic agent channels via pattern matching
+        stigmergic_patterns = [
+            "findings:*",
+            "agents:*",
+            "strategies:*",
+        ]
+        for pattern in stigmergic_patterns:
+            task = await self._event_bus.psubscribe(
+                pattern,
+                lambda ch, d, p=pattern: queue_event(ch, d),
+            )
+            subscription_tasks.append(task)
+
         log.info("event_subscriptions_started", engagement_id=engagement_id, channels=channels)
 
         try:
@@ -523,7 +538,17 @@ class DaemonServer:
                         "c2:heartbeat:lost": StreamEventType.C2_HEARTBEAT,
                         "c2:reconnecting": StreamEventType.C2_HEARTBEAT,
                     }
-                    event_type = event_type_map.get(channel, StreamEventType.AGENT_STATUS)
+                    # Check static map first, then match stigmergic patterns
+                    event_type = event_type_map.get(channel)
+                    if event_type is None:
+                        if channel.startswith("findings:"):
+                            event_type = StreamEventType.FINDING
+                        elif channel.startswith("strategies:"):
+                            event_type = StreamEventType.STRATEGY_UPDATE
+                        elif channel.startswith("agents:"):
+                            event_type = StreamEventType.AGENT_STATUS
+                        else:
+                            event_type = StreamEventType.AGENT_STATUS
 
                     # Create and send StreamEvent
                     stream_event = StreamEvent(
@@ -650,6 +675,50 @@ class DaemonServer:
             {"triggered": True, "message": "RAG refresh triggered in background"},
             request.request_id
         )
+
+    async def _handle_engagement_pivot(self, request: IPCRequest) -> IPCResponse:
+        """Handle operator-initiated strategy pivot via Director RAG."""
+        engagement_id = request.params.get("engagement_id")
+        if not engagement_id:
+            return IPCResponse.create_error(
+                "Missing required parameter: engagement_id",
+                request.request_id,
+            )
+
+        request_text = request.params.get("request_text", "Operator requests strategy pivot")
+        operator_hint = request.params.get("hint")
+
+        context = self._session_manager.get_engagement_or_raise(engagement_id)
+        orchestrator = context.orchestrator
+        if not orchestrator or not getattr(orchestrator, '_director_rag_client', None):
+            return IPCResponse.create_error(
+                "Director RAG client not available for this engagement",
+                request.request_id,
+            )
+
+        rag_context = DirectorRAGClient.build_operator_request_context(
+            request_text=request_text,
+            target_service=request.params.get("target_service"),
+            operator_hint=operator_hint,
+            current_phase=orchestrator._get_current_phase(),
+            environment=orchestrator._get_engagement_environment(),
+        )
+
+        try:
+            pivot_result = await orchestrator._director_rag_client.query_strategy_pivot(rag_context)
+            await orchestrator._publish_rag_pivot(pivot_result)
+
+            return IPCResponse.create_ok({
+                "methodologies": len(pivot_result.methodologies),
+                "techniques": pivot_result.technique_ids[:20],
+                "guidance": pivot_result.actionable_guidance[:2000],
+                "query_time_ms": pivot_result.query_time_ms,
+            }, request.request_id)
+        except Exception as e:
+            return IPCResponse.create_error(
+                f"RAG pivot query failed: {e}",
+                request.request_id,
+            )
 
     async def _handle_daemon_stop(self, request: IPCRequest) -> IPCResponse:
         log.info("daemon_stop_requested", request_id=request.request_id)

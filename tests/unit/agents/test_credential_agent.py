@@ -126,7 +126,7 @@ class TestCredentialAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._cracked_credentials == []
+        assert len(agent._cracked_credentials) == 0
 
     def test_initializes_harvested_credentials(self, mock_event_bus):
         """CredentialAgent initializes empty harvested credentials list."""
@@ -137,7 +137,7 @@ class TestCredentialAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._harvested_credentials == []
+        assert len(agent._harvested_credentials) == 0
 
     def test_initializes_pending_hashes(self, mock_event_bus):
         """CredentialAgent initializes empty pending hashes list."""
@@ -148,7 +148,7 @@ class TestCredentialAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._pending_hashes == []
+        assert len(agent._pending_hashes) == 0
 
 
 # --- Task 1.2: Hardcoded Removal Tests (AC: #2) ---
@@ -1307,7 +1307,7 @@ class TestCredentialAgentEdgeCases:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent.max_iterations == 25
+        assert agent.max_iterations == CredentialAgent.DEFAULT_MAX_ITERATIONS
 
     def test_default_lockout_threshold(self, mock_event_bus):
         """CredentialAgent has default lockout_threshold of 3."""

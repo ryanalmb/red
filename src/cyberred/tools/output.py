@@ -198,24 +198,125 @@ class OutputProcessor:
             tier=3
         )
 
+    async def async_process(self, stdout: str, stderr: str, tool: str, exit_code: int, agent_id: str, target: str, error_type: Optional[str] = None) -> ProcessedOutput:
+        """Async version of process() that supports tier2 LLM summarization.
+
+        Use this from async agent code instead of process().
+        """
+        tool_lower = tool.lower()
+
+        # Tier 1: structured parser
+        parser = None
+        with self._lock:
+            parser = self._parsers.get(tool_lower)
+
+        if parser:
+            log.info("using_tier1_parser", tool=tool_lower)
+            try:
+                import inspect
+                sig = inspect.signature(parser)
+                if 'error_type' in sig.parameters:
+                    findings = parser(stdout, stderr, exit_code, agent_id, target, error_type=error_type)
+                else:
+                    findings = parser(stdout, stderr, exit_code, agent_id, target)
+                return ProcessedOutput(
+                    findings=findings,
+                    summary=f"Parsed {len(findings)} findings from {tool}",
+                    raw_truncated=stdout[:self._max_raw_length],
+                    tier=1
+                )
+            except Exception:
+                log.exception("parser_failed", tool=tool_lower)
+
+        # Tier 2: async LLM summarization
+        try:
+            return await self._async_tier2_llm_summarize(
+                stdout, stderr, tool, stdout[:self._max_raw_length],
+                exit_code, agent_id, target, error_type
+            )
+        except asyncio.TimeoutError:
+            log.warning("tier2_timeout", tool=tool_lower, limit=self._llm_timeout)
+        except json.JSONDecodeError as e:
+            log.exception("tier2_json_error", tool=tool_lower, message=str(e))
+        except Exception as e:
+            try:
+                log.warning("async_llm_summarization_failed", tool=tool_lower, reason=str(e))
+            except Exception:
+                pass
+
+        # Tier 3 (Raw Truncated)
+        log.info("using_tier3_raw", tool=tool_lower)
+        return ProcessedOutput(
+            summary=f"Raw tool output (truncated to {self._max_raw_length} chars)",
+            raw_truncated=stdout[:self._max_raw_length],
+            tier=3
+        )
+
+    async def _async_tier2_llm_summarize(self, stdout, stderr, tool, raw_truncated, exit_code, agent_id, target, error_type: Optional[str] = None) -> ProcessedOutput:
+        """Async tier2 LLM summarization."""
+        cache_key = self._generate_cache_key(tool, stdout, stderr)
+        if self._cache_enabled and cache_key in self._llm_cache:
+            return self._llm_cache[cache_key]
+
+        gateway = get_gateway()
+
+        error_context = ""
+        if error_type:
+            error_context = f"Error Type: {error_type}\nNote: Output may be partial due to {error_type.replace('_', ' ').lower()}.\n"
+
+        prompt = TIER2_SUMMARIZATION_PROMPT.format(
+            tool=tool, exit_code=exit_code, error_context=error_context,
+            stdout=stdout[:4000], stderr=stderr[:1000]
+        )
+        request = LLMRequest(prompt=prompt, model="auto", max_tokens=2048, temperature=0.0)
+
+        response = await asyncio.wait_for(gateway.complete(request), timeout=self._llm_timeout)
+        response_json = _strip_markdown_json(response.content)
+
+        data = json.loads(response_json)
+        findings = []
+        for f in data.get("findings", []):
+            findings.append(Finding(
+                id=str(uuid.uuid4()), type=f.get("type", "unknown"),
+                severity=f.get("severity", "info"), target=target,
+                evidence=f.get("evidence", "") + "\n---\n" + f.get("description", ""),
+                agent_id=agent_id, timestamp=datetime.now(timezone.utc).isoformat(),
+                tool=tool.lower(), topic=f"findings:{agent_id}:{tool.lower()}", signature=""
+            ))
+
+        result = ProcessedOutput(findings=findings, summary=data.get("summary", ""), raw_truncated=raw_truncated, tier=2)
+        if self._cache_enabled:
+            self._llm_cache[cache_key] = result
+        return result
+
     def _tier2_llm_summarize(self, stdout, stderr, tool, raw_truncated, exit_code, agent_id, target, error_type: Optional[str] = None) -> ProcessedOutput:
+        # asyncio.run() cannot be called from within a running event loop.
+        # Agents always call process() from async context, so detect and raise
+        # to fall through to tier3 (raw output). Use async_process() for tier2.
+        try:
+            asyncio.get_running_loop()
+            raise RuntimeError("Tier2 LLM unavailable in async context — use async_process()")
+        except RuntimeError as loop_err:
+            if "no running event loop" not in str(loop_err):
+                raise
+
         # Check cache if enabled
         cache_key = self._generate_cache_key(tool, stdout, stderr)
         if self._cache_enabled:
             if cache_key in self._llm_cache:
                 log.info("llm_cache_hit", tool=tool.lower(), key=cache_key)
                 return self._llm_cache[cache_key]
-        
+
         if self._cache_enabled:
             log.info("llm_cache_miss", tool=tool.lower(), key=cache_key)
 
         gateway = get_gateway()
-        
+
         # Build error context section for prompt
         error_context = ""
         if error_type:
             error_context = f"Error Type: {error_type}\nNote: Output may be partial due to {error_type.replace('_', ' ').lower()}.\n"
-        
+
         prompt = TIER2_SUMMARIZATION_PROMPT.format(
             tool=tool,
             exit_code=exit_code,
@@ -230,7 +331,7 @@ class OutputProcessor:
             max_tokens=2048,
             temperature=0.0
         )
-        
+
         async def call_gateway():
              return await gateway.complete(request)
 

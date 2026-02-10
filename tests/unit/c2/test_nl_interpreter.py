@@ -450,3 +450,44 @@ class TestDeploymentPlanEdgeCases:
         )
         errors = plan.validate()
         assert len(errors) == 2  # Both platform and IP invalid
+
+
+class TestExtractJsonObject:
+    """Tests for _extract_json_object static method."""
+
+    def test_extract_flat_json(self):
+        """Test extraction of simple flat JSON."""
+        text = 'Some text {"platform": "linux", "ip_address": "10.0.0.1"} more text'
+        result = DropBoxDeploymentInterpreter._extract_json_object(text)
+        assert result is not None
+        data = json.loads(result)
+        assert data["platform"] == "linux"
+
+    def test_extract_nested_json(self):
+        """Test extraction of nested JSON objects."""
+        text = 'Result: {"platform": "linux", "options": {"port": 8080}} done'
+        result = DropBoxDeploymentInterpreter._extract_json_object(text)
+        assert result is not None
+        data = json.loads(result)
+        assert data["options"]["port"] == 8080
+
+    def test_extract_no_json(self):
+        """Test returns None when no JSON present."""
+        text = "No JSON here at all"
+        result = DropBoxDeploymentInterpreter._extract_json_object(text)
+        assert result is None
+
+    def test_extract_json_with_strings_containing_braces(self):
+        """Test handles strings containing brace characters."""
+        text = r'{"msg": "value with {braces} inside"}'
+        result = DropBoxDeploymentInterpreter._extract_json_object(text)
+        assert result is not None
+        data = json.loads(result)
+        assert "braces" in data["msg"]
+
+    def test_extract_unclosed_json(self):
+        """Test returns None for unclosed braces."""
+        text = '{"platform": "linux"'
+        result = DropBoxDeploymentInterpreter._extract_json_object(text)
+        assert result is None
+

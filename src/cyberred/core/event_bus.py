@@ -35,6 +35,27 @@ class EventBus:
 
         return asyncio.create_task(reader())
 
+    async def psubscribe(self, pattern: str, callback):
+        """
+        Subscribe to channels matching a glob pattern (Redis PSUBSCRIBE).
+        Callback receives (channel, data) where channel is the actual channel name.
+        Returns a task that should be added to the main loop.
+        """
+        async def reader():
+            ps = self.redis.pubsub()
+            await ps.psubscribe(pattern)
+            async for message in ps.listen():
+                if message["type"] == "pmessage":
+                    try:
+                        data = json.loads(message["data"])
+                        await callback(message["channel"], data)
+                    except json.JSONDecodeError:
+                        self.logger.error(f"Invalid JSON in {message['channel']}")
+                    except Exception as e:
+                        self.logger.error(f"Error in psubscriber {pattern}: {e}")
+
+        return asyncio.create_task(reader())
+
     async def audit(self, event: dict):
         """Log an audit event to the audit channel.
         

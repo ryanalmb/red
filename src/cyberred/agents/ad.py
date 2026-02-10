@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import re
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,7 @@ from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
+    from cyberred.agents.rag_escalator import AgentRAGEscalator
     from cyberred.core.event_bus import EventBus
     from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
     from cyberred.intelligence.base import IntelResult
@@ -31,9 +33,10 @@ class ADAgent(StigmergicAgent):
 
     def __init__(
         self, agent_id: str, engagement_id: str, event_bus: EventBus,
-        specialty: str = "general", max_iterations: int = 30,
+        specialty: str = "general", max_iterations: int = 10,
         phase_complete_threshold: int = 75,
         intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+        rag_escalator: "AgentRAGEscalator | None" = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -46,11 +49,15 @@ class ADAgent(StigmergicAgent):
         self.phase_complete_threshold = phase_complete_threshold
         self.current_strategy = "standard"
         self._intel_aggregator = intel_aggregator
+        self._rag_escalator = rag_escalator
+        self._failure_counts: dict[str, int] = {}
+        self._current_target: str = ""
+        self._current_service: str = ""
         self._domain_info: dict[str, Any] = {}
-        self._discovered_users: list[str] = []
-        self._discovered_spns: list[dict[str, str]] = []
+        self._discovered_users: deque[str] = deque(maxlen=500)
+        self._discovered_spns: deque[dict[str, str]] = deque(maxlen=500)
         self._obtained_tickets: dict[str, str] = {}
-        self._obtained_credentials: list[dict[str, Any]] = []
+        self._obtained_credentials: deque[dict[str, Any]] = deque(maxlen=500)
         self._finding_buffer: list[dict[str, Any]] = []
         self._stop_event = asyncio.Event()
 
@@ -59,6 +66,8 @@ class ADAgent(StigmergicAgent):
     ) -> tuple[list[Finding], list[AgentAction]]:
         """Execute AD attack campaign using LLM-driven tool selection."""
         findings, actions, iteration = [], [], 0
+        self._current_target = domain_controller
+        self._current_service = context.get("service", "ldap")
         await self._enumerate_domain(domain_controller, context.get("credentials"))
 
         # Query intelligence for AD/Kerberos attack techniques
@@ -90,6 +99,10 @@ class ADAgent(StigmergicAgent):
                         topic=f"findings:{self._hash_target(domain_controller)}:ad",
                         signature=f"ad-{tool_selection.tool_name}-{iteration}",
                     ))
+                elif not result.success:
+                    alt = await self._handle_ad_failure(tool_selection.tool_name)
+                    if alt:
+                        decision_context.append(f"rag_escalation:{tool_selection.tool_name}:{alt}")
                 await self._check_kerberos_results(result, tool_selection)
                 await self._check_credential_results(result, tool_selection)
             except Exception as e:
@@ -209,6 +222,32 @@ class ADAgent(StigmergicAgent):
             previous_results=[{"action": a.action_type, "id": a.id} for a in actions],
         )
 
+    async def _handle_ad_failure(self, technique_id: str) -> str | None:
+        """Handle tool failure via RAG escalation."""
+        if not self._rag_escalator:
+            return None
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
+        self._failure_counts[technique_id] = failure_count
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
+            from cyberred.agents.rag_escalator import AgentRAGContext
+            context = AgentRAGContext(
+                agent_id=str(self.agent_id),
+                target_service=self._current_service or "active directory",
+                target_hash=target_hash,
+                failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
+                failure_count=failure_count,
+                environment={"target": self._current_target, "domain": self._domain_info.get("domain_name", "")},
+                engagement_id=self.engagement_id,
+            )
+            try:
+                rag_result = await self._rag_escalator.escalate(context)
+                if rag_result.was_successful:
+                    return rag_result.selected_technique
+            except Exception:
+                pass
+        return None
+
     def _get_constraints(self) -> list[str]:
         if self.current_strategy == "stealth":
             return ["Avoid password spraying", "Prefer passive enumeration", "Use stealth techniques"]
@@ -217,16 +256,19 @@ class ADAgent(StigmergicAgent):
         return []
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
+        await super().on_signal(channel, data)
         if "strategies" in channel and data.get("strategy") in ("stealth", "standard", "aggressive"):
             self.current_strategy = data["strategy"]
 
     async def on_finding(self, finding: Finding) -> None:
         if self._finding_buffer:
             await self._flush_buffer()
-        channel = f"findings:{self._hash_target(finding.target)}:ad"
+        target_hash = self._hash_target(finding.target)
+        message = {"id": finding.id, "type": finding.type, "severity": finding.severity, "evidence": finding.evidence}
         try:
-            await self.event_bus.publish(channel, {"id": finding.id, "type": finding.type, "severity": finding.severity, "evidence": finding.evidence})
+            await self._publish_to_swarm(target_hash, "ad", message)
         except Exception:
+            channel = f"findings:{target_hash}:ad"
             self._finding_buffer.append({"channel": channel, "message": {"id": finding.id}})
 
     async def _flush_buffer(self) -> None:

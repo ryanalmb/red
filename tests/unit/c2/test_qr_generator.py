@@ -125,26 +125,23 @@ class TestGenerateDeploymentQR:
     
     def test_generate_qr_fallback(self):
         """Test fallback when qrcode library not available."""
+        from cyberred.c2.qr_generator import _generate_fallback_qr
+
         payload = QRPayload(
             c2_url="wss://c2.example.com:8444",
             cert_fingerprint="sha256:abc123",
             drop_box_id="test-dropbox",
         )
-        
-        # Mock import error
-        with patch.dict('sys.modules', {'qrcode': None}):
-            with patch('cyberred.c2.qr_generator.generate_deployment_qr') as mock_gen:
-                # Simulate fallback behavior
-                mock_gen.return_value = f"""
-┌─────────────────────────────────────────┐
-│  QR Code Library Not Installed          │
-│  C2 URL: {payload.c2_url}               │
-│  Drop Box ID: {payload.drop_box_id}     │
-└─────────────────────────────────────────┘
-"""
-                result = mock_gen(payload)
-                assert "C2 URL" in result
-                assert payload.c2_url in result
+
+        result = _generate_fallback_qr(payload)
+
+        # Verify fallback contains manual configuration info
+        assert "QR Code Library Not Installed" in result
+        assert "Manual Configuration" in result
+        assert payload.c2_url in result
+        assert payload.drop_box_id in result
+        assert payload.cert_fingerprint in result
+        assert "pip install qrcode" in result
     
     def test_qr_contains_payload_data(self):
         """Test QR code encodes the payload data."""

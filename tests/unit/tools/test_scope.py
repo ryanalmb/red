@@ -783,7 +783,7 @@ class TestCoverageEdgeCases:
         })
         # example.com without port - takes the else branch at line 571-572
         target, port, protocol = validator._parse_target_from_command("curl example.com/path")
-        assert target == "example.com/path"  # Full arg is taken as hostname-like
+        assert target == "example.com"  # Hostname extracted from hostname/path pattern
 
     def test_validate_host_port_invalid_port_parse(self):
         """validate should ignore non-numeric port in host:port (lines 657-658)."""

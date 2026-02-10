@@ -52,6 +52,7 @@ class IPCCommand(StrEnum):
     DAEMON_STOP = "daemon.stop"
     DAEMON_CONFIG_RELOAD = "daemon.config.reload"  # Story 2.13: Trigger manual config reload
     RAG_REFRESH = "rag.refresh"  # Story 6.12: Manual RAG refresh trigger
+    ENGAGEMENT_PIVOT = "engagement.pivot"  # Operator-initiated strategy pivot via Director RAG
     KILL = "kill"  # Story 10.4: Kill switch command
     AUTH_RESPONSE = "auth.response"  # Story 10.2: Authorization response
 

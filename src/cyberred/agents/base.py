@@ -10,6 +10,7 @@ import contextlib
 import json
 import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -192,6 +193,7 @@ class StigmergicAgent(Agent):
         # Sharded event bus for findings (Story 7.13)
         self._sharded_bus = sharded_event_bus
         self._finding_cache: set[str] = set()  # Local dedupe cache
+        self._swarm_findings: deque = deque(maxlen=50)  # Bounded buffer of findings from other agents
         
         # Director-Agent Feedback Loop (Story 7.17)
         self.__active_strategy: Optional["EmergentStrategy"] = None
@@ -206,7 +208,7 @@ class StigmergicAgent(Agent):
 
     async def _setup_subscriptions(self):
         """Subscribe to relevant stigmergic channels.
-        
+
         Story 7.13: Uses ShardedEventBus for findings if available,
         falling back to non-sharded wildcard subscription.
         """
@@ -217,22 +219,31 @@ class StigmergicAgent(Agent):
                 finding_type="*",
             )
         else:
-            # Fallback to non-sharded (backward compatibility)
-            await self.event_bus.subscribe("findings:*", self._handle_message)
-        
-        # Subscribe to strategy updates for this engagement
-        await self.event_bus.subscribe(f"strategies:{self.engagement_id}", self._handle_message)
-        # Subscribe to kill switch
-        await self.event_bus.subscribe("control:kill", self._handle_message)
+            # psubscribe for glob pattern — callback receives (channel, data)
+            await self.event_bus.psubscribe("findings:*", self._handle_message)
 
-    async def _handle_message(self, channel: str, message: str):
+        # Exact channels — wrap callback to match (channel, data) signature
+        # subscribe() passes callback(data), _handle_message expects (channel, data)
+        strategy_ch = f"strategies:{self.engagement_id}"
+        await self.event_bus.subscribe(
+            strategy_ch,
+            lambda data, _ch=strategy_ch: self._handle_message(_ch, data),
+        )
+        kill_ch = "control:kill"
+        await self.event_bus.subscribe(
+            kill_ch,
+            lambda data, _ch=kill_ch: self._handle_message(_ch, data),
+        )
+
+    async def _handle_message(self, channel: str, message):
         """Internal callback for EventBus subscriptions.
 
         Deserializes message and dispatches to on_signal.
+        Handles both pre-parsed dicts (from psubscribe) and raw strings (from subscribe).
 
         Args:
             channel: The channel the message was received on.
-            message: The raw message string (may be JSON or plain text).
+            message: Parsed dict (psubscribe) or raw JSON string (subscribe wrapper).
         """
         # Guard against None/empty messages
         if message is None:
@@ -240,11 +251,13 @@ class StigmergicAgent(Agent):
             return
 
         try:
-            try:
-                data = json.loads(message)
-            except json.JSONDecodeError:
-                # If not JSON, wrap in dict for consistency with on_signal(channel, data: Dict)
-                data = {"raw_content": message}
+            if isinstance(message, dict):
+                data = message
+            else:
+                try:
+                    data = json.loads(message)
+                except (json.JSONDecodeError, TypeError):
+                    data = {"raw_content": str(message)}
 
             await self.on_signal(channel, data)
         except Exception as e:
@@ -308,6 +321,26 @@ class StigmergicAgent(Agent):
             await self.event_bus.publish(channel, message)
             self._log.info("finding_published", channel=channel, finding_type=finding_type)
 
+    async def _publish_to_swarm(self, target_hash: str, finding_type: str, message: dict[str, Any]) -> None:
+        """Publish finding through sharded bus or fallback to direct publish.
+
+        Subclasses should call this instead of event_bus.publish() for findings
+        so that ShardedEventBus routing is used when available.
+
+        Args:
+            target_hash: Hash of the target.
+            finding_type: Type of finding (e.g., 'exploit', 'open_port').
+            message: The finding message payload.
+        """
+        if self._sharded_bus:
+            wrapped = {"agent_id": self.agent_id, "engagement_id": self.engagement_id, "data": message}
+            await self._sharded_bus.publish_finding(target_hash, finding_type, wrapped)
+            self._log.info("finding_published_sharded", finding_type=finding_type)
+        else:
+            channel = f"findings:{target_hash}:{finding_type}"
+            await self.event_bus.publish(channel, message)
+            self._log.info("finding_published", channel=channel, finding_type=finding_type)
+
     async def on_signal(self, channel: str, data: dict[str, Any]):
         """Handle incoming stigmergic signal.
 
@@ -318,21 +351,41 @@ class StigmergicAgent(Agent):
             data: The signal payload.
         """
         self._log.debug("signal_received", channel=channel)
-        
+
         # Story 7.17: Handle strategy channel updates
         if channel.startswith("strategies:"):
             await self._handle_strategy_update(data)
             return
-        
+
+        # Stigmergic finding consumption — store findings from other agents
+        # so the LLM can adapt tool selection based on swarm awareness
+        if channel.startswith("findings:"):
+            source_agent = data.get("agent_id", "")
+            if source_agent and source_agent != self.agent_id:
+                finding_data = data.get("data", {})
+                self._swarm_findings.append({
+                    "type": finding_data.get("type", "unknown"),
+                    "target": finding_data.get("target", ""),
+                    "tool": finding_data.get("tool", ""),
+                    "severity": finding_data.get("severity", ""),
+                    "evidence": str(finding_data.get("evidence", ""))[:200],
+                })
+                self._log.debug(
+                    "swarm_finding_received",
+                    source=source_agent,
+                    finding_type=finding_data.get("type"),
+                )
+            # Still track signal_id for NFR37 decision context below
+
         # Base implementation tracking decision context if present in data
         # Handles NFR37 emergence validation
         signal_id = data.get("signal_id") or data.get("id")
-        
+
         if signal_id:
             if self._context_tracker:
                 source = data.get("agent_id", "unknown")
                 signal_type = self._infer_signal_type(channel)
-                
+
                 self._context_tracker.record_signal(
                     agent_id=self.agent_id,
                     signal_id=signal_id,
@@ -971,7 +1024,9 @@ class StigmergicAgent(Agent):
             Formatted prompt string for LLM.
         """
         tools_list = ", ".join(context.available_tools[:50])  # Limit for token budget
-        previous_results_str = json.dumps(context.previous_results) if context.previous_results else "None"
+        # Cap previous results to prevent prompt bloat over long engagements
+        capped_results = context.previous_results[-15:] if context.previous_results else []
+        previous_results_str = json.dumps(capped_results) if capped_results else "None"
 
         base_prompt = f"""Select the best tool for this objective and generate a complete command.
 
@@ -979,9 +1034,23 @@ class StigmergicAgent(Agent):
 **Target Info:** {json.dumps(context.target_info)}
 **Objective:** {context.objective}
 **Constraints:** {", ".join(context.constraints) or "None"}
-**Previous Results:** {previous_results_str}
+**Previous Results (own, last 15):** {previous_results_str}
 
 **Available Tools:** {tools_list}"""
+
+        # Stigmergic swarm awareness — inject findings from other agents
+        if self._swarm_findings:
+            swarm_items = list(self._swarm_findings)[-20:]  # Last 20 only
+            swarm_summary = "\n".join(
+                f"- [{f['severity']}] {f['type']} on {f['target']} via {f['tool']}: {f['evidence']}"
+                for f in swarm_items
+            )
+            base_prompt += f"\n\n**Swarm Findings (from other agents):**\n{swarm_summary}"
+            base_prompt += "\nAvoid duplicating work already done. Target services/vulnerabilities not yet covered."
+            self._log.info(
+                "swarm_context_injected",
+                swarm_finding_count=len(swarm_items),
+            )
 
         # Story 7.17: Include strategy context if active
         strategy_context = self._get_strategy_context()
@@ -989,6 +1058,12 @@ class StigmergicAgent(Agent):
             base_prompt += f"\n\n**Director Strategy:**\n{strategy_context}"
 
         base_prompt += """
+
+COMMAND RULES:
+- Generate a single tool command. You may pipe output through filters (e.g. | grep, | sort, | head).
+- Do NOT use semicolons (;) to chain unrelated commands.
+- Do NOT use $(), backticks, or variable substitution.
+- Quote arguments containing special characters with single quotes.
 
 Respond with JSON only:
 {"tool_name": "...", "command": "...", "rationale": "...", "expected_output_type": "json|xml|text", "confidence": 0.0-1.0, "priority": 1-10, "alternatives": []}"""
@@ -1010,11 +1085,22 @@ Respond with JSON only:
         try:
             # Try to extract JSON from response
             response = response.strip()
+
+            # Strip <think>...</think> tags (MiniMax M2 reasoning model)
+            import re
+            response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+
             if response.startswith("```"):
                 # Handle markdown code blocks
                 lines = response.split("\n")
                 json_lines = [line for line in lines if not line.startswith("```")]
                 response = "\n".join(json_lines)
+
+            # Extract JSON object if surrounded by other text
+            if not response.startswith("{"):
+                match = re.search(r"\{.*\}", response, flags=re.DOTALL)
+                if match:
+                    response = match.group(0)
 
             data = json.loads(response)
             return ToolSelection(
@@ -1071,9 +1157,15 @@ Respond with JSON only:
                 prompt=prompt,
                 model="default",  # Router will select appropriate model
                 system_prompt=self.system_prompt,
-                max_tokens=500,
+                max_tokens=5000,  # Thinking models (MiniMax) need room for <think> + JSON
             )
             response = await self._llm_gateway.agent_complete(request)
+            # Detect gateway error responses (content="" with error finish_reason)
+            if response.finish_reason and response.finish_reason.startswith("error:"):
+                raise ToolSelectionError(
+                    agent_id=self.agent_id,
+                    reason=f"LLM call failed: {response.finish_reason}",
+                )
             response_text = response.content
         else:
             raise ToolSelectionError(agent_id=self.agent_id, reason="No LLM gateway configured")

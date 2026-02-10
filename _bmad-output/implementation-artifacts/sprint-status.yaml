@@ -241,12 +241,12 @@ development_status:
 
   # Epic 12: Drop Box & C2
   epic-12: in-progress
-  12-1-mtls-c2-server: review
+  12-1-mtls-c2-server: done
   12-2-c2-message-protocol: done
-  12-3-certificate-manager: review
+  12-3-certificate-manager: done
   12-4-heartbeat-monitoring: done
   12-5-drop-box-go-module-structure: done
-  12-6-drop-box-mtls-client: review
+  12-6-drop-box-mtls-client: done
   12-7-wifi-toolkit-wrapper: done
   12-8-natural-language-drop-box-setup: review
   12-9-pre-flight-protocol: backlog

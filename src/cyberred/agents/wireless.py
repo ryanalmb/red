@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import uuid
+from collections import deque
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,7 @@ from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
+    from cyberred.agents.rag_escalator import AgentRAGEscalator
     from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
     from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
@@ -29,13 +31,14 @@ INTELLIGENCE_TIMEOUT = 5.0
 class WirelessAgent(StigmergicAgent):
     """LLM-driven wireless network testing agent - thin subclass setting role=WIRELESS."""
 
-    DEFAULT_MAX_ITERATIONS: int = 20
+    DEFAULT_MAX_ITERATIONS: int = 5
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 15
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
                  specialty: str = "general", llm_gateway: "LLMGateway | None" = None,
                  manifest_loader: "ManifestLoader | None" = None,
                  intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+                 rag_escalator: "AgentRAGEscalator | None" = None,
                  max_iterations: int | None = None,
                  phase_complete_threshold: int | None = None,
                  hmac_key: bytes = DEFAULT_HMAC_KEY, **kwargs: Any) -> None:
@@ -45,13 +48,17 @@ class WirelessAgent(StigmergicAgent):
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
         self._hmac_key = hmac_key
         self._intel_aggregator = intel_aggregator
+        self._rag_escalator = rag_escalator
+        self._failure_counts: dict[str, int] = {}
+        self._current_target: str = ""
+        self._current_protocol: str = ""
         self.max_iterations = max_iterations or self.DEFAULT_MAX_ITERATIONS
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy, self._finding_buffer = "standard", []
         self._stop_event = asyncio.Event()
         self._monitor_enabled: bool = False
         self._original_interface: str | None = None
-        self._discovered_networks: list[dict[str, Any]] = []
+        self._discovered_networks: deque[dict[str, Any]] = deque(maxlen=200)
         self._captured_handshakes: dict[str, str] = {}  # bssid -> path
 
     async def execute_wireless_scan(
@@ -61,6 +68,8 @@ class WirelessAgent(StigmergicAgent):
         if self._stop_event.is_set():
             return [], []
 
+        self._current_target = interface
+        self._current_protocol = target_info.get("protocol", "802.11")
         await self._enable_monitor_mode(interface)
 
         all_findings: list[Finding] = []
@@ -109,6 +118,10 @@ class WirelessAgent(StigmergicAgent):
                     await self.on_finding(finding)
                     result_finding_id = finding.id
                     await self._check_handshake_capture(result, selection)
+                elif not result.success:
+                    alt = await self._handle_wireless_failure(selection.tool_name)
+                    if alt:
+                        decision_context.append(f"rag_escalation:{selection.tool_name}:{alt}")
 
                 context = ToolSelectionContext(
                     objective=context.objective,
@@ -221,6 +234,32 @@ class WirelessAgent(StigmergicAgent):
         except Exception as e:
             self._log.warning("handshake_publish_failed", error=str(e))
 
+    async def _handle_wireless_failure(self, technique_id: str) -> str | None:
+        """Handle tool failure via RAG escalation."""
+        if not self._rag_escalator:
+            return None
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
+        self._failure_counts[technique_id] = failure_count
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
+            from cyberred.agents.rag_escalator import AgentRAGContext
+            context = AgentRAGContext(
+                agent_id=str(self.agent_id),
+                target_service=f"{self._current_protocol} wireless" if self._current_protocol else "wireless network",
+                target_hash=target_hash,
+                failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
+                failure_count=failure_count,
+                environment={"protocol": self._current_protocol, "target": self._current_target},
+                engagement_id=self.engagement_id,
+            )
+            try:
+                rag_result = await self._rag_escalator.escalate(context)
+                if rag_result.was_successful:
+                    return rag_result.selected_technique
+            except Exception:
+                pass
+        return None
+
     async def _phase_complete(self, context: ToolSelectionContext) -> bool:
         return len(context.previous_results) >= self.phase_complete_threshold
 
@@ -237,13 +276,14 @@ class WirelessAgent(StigmergicAgent):
         return hashlib.md5(target.encode()).hexdigest()[:8]
 
     async def on_finding(self, finding: Finding) -> None:
-        channel = f"findings:{self._hash_target(finding.target)}:wireless"
-        message = asdict(finding) if hasattr(finding, "__dataclass_fields__") else finding.model_dump()
+        target_hash = self._hash_target(finding.target)
+        message = asdict(finding)
         if self._finding_buffer:
             await self._flush_buffer()
         try:
-            await self.event_bus.publish(channel, message)
+            await self._publish_to_swarm(target_hash, "wireless", message)
         except Exception:
+            channel = f"findings:{target_hash}:wireless"
             self._finding_buffer.append({"channel": channel, "message": message})
 
     async def _flush_buffer(self) -> None:

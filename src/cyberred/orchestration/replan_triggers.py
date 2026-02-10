@@ -315,10 +315,14 @@ class ReplanTriggerManager:
         """
         if not self._running or self._paused:
             return
-        
+
         if not self._config.critical_finding_enabled:
             return
-        
+
+        # Skip batch aggregation messages (no individual target/type fields)
+        if ":aggregated:" in channel:
+            return
+
         # Parse finding if it's a string (JSON)
         if isinstance(finding, str):
             try:
@@ -598,16 +602,42 @@ class ReplanTriggerManager:
             )
 
     async def _setup_subscriptions(self) -> None:
-        """Set up EventBus subscriptions for findings, phases, and objectives.
-        
-        Note: In production, these would connect to actual Redis channels.
-        For unit tests, the handlers are called directly.
-        """
-        # The actual subscription patterns would be:
-        # - findings:{engagement_id}:* for critical findings
-        # - phases:{engagement_id} for phase transitions
-        # - objectives:{engagement_id} for objective completions
-        #
-        # For now, we set up the subscription patterns but the handlers
-        # are also exposed for direct testing.
-        pass
+        """Set up EventBus subscriptions for findings, phases, and objectives."""
+        eid = self._engagement_id
+
+        # Critical finding detection — psubscribe for wildcard pattern
+        try:
+            await self._event_bus.psubscribe(
+                "findings:*",
+                lambda channel, data: asyncio.ensure_future(
+                    self._handle_finding(channel, data)
+                ),
+            )
+        except Exception as e:
+            self._log.warning("replan_findings_subscribe_failed", error=str(e))
+
+        # Phase transitions — exact channel
+        try:
+            phase_ch = f"engagement:{eid}:phase"
+            await self._event_bus.subscribe(
+                phase_ch,
+                lambda data, _ch=phase_ch: asyncio.ensure_future(
+                    self._handle_phase_change(_ch, data)
+                ),
+            )
+        except Exception as e:
+            self._log.warning("replan_phase_subscribe_failed", error=str(e))
+
+        # Objective completions — exact channel
+        try:
+            obj_ch = f"objectives:{eid}"
+            await self._event_bus.subscribe(
+                obj_ch,
+                lambda data, _ch=obj_ch: asyncio.ensure_future(
+                    self._handle_objective(_ch, data)
+                ),
+            )
+        except Exception as e:
+            self._log.warning("replan_objective_subscribe_failed", error=str(e))
+
+        self._log.info("replan_subscriptions_setup", engagement_id=eid)

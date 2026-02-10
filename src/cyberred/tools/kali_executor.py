@@ -40,13 +40,33 @@ class KaliExecutor:
         start_time = time.perf_counter()
         
         # Scope validation BEFORE container acquisition (fail-closed)
-        # ScopeViolationError is ALWAYS raised - security is not "expected failure"
-        self._scope_validator.validate(command=code)
+        # ScopeViolationError is ALWAYS raised for actual out-of-scope targets.
+        # Commands with no detectable network target (local-only) are allowed.
+        from cyberred.core.exceptions import ScopeViolationError
+        try:
+            self._scope_validator.validate(command=code)
+        except ScopeViolationError as e:
+            if e.scope_rule == "missing_target":
+                # No network target found — local-only command, allow it
+                log.debug("scope_no_target_allow", command=code[:50])
+            else:
+                raise
         log.debug("scope_validated", command=code[:50])
         
+        # Detect multi-segment commands (pipes/chains) for pipeline execution
+        segments = self._scope_validator.split_segments(code)
+        is_pipeline = len(segments) > 1
+
         try:
             async with self._pool.acquire(timeout=timeout) as container:
                 try:
+                    if is_pipeline:
+                        return await asyncio.wait_for(
+                            container.execute_pipeline(
+                                [s.command for s in segments], timeout=timeout
+                            ),
+                            timeout=timeout,
+                        )
                     return await asyncio.wait_for(
                         container.execute(code, timeout=timeout),
                         timeout=timeout

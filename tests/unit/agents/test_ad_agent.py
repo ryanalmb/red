@@ -123,7 +123,7 @@ class TestADAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._discovered_users == []
+        assert len(agent._discovered_users) == 0
 
     def test_initializes_discovered_spns(self, mock_event_bus):
         """ADAgent initializes empty discovered SPNs list."""
@@ -134,7 +134,7 @@ class TestADAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._discovered_spns == []
+        assert len(agent._discovered_spns) == 0
 
     def test_initializes_obtained_tickets(self, mock_event_bus):
         """ADAgent initializes empty obtained tickets dict."""
@@ -156,7 +156,7 @@ class TestADAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._obtained_credentials == []
+        assert len(agent._obtained_credentials) == 0
 
 
 # --- Task 1.2: Hardcoded Removal Tests (AC: #2) ---
@@ -1248,7 +1248,7 @@ class TestADAgentCoverageGaps:
 
             # Should not crash, domain_info should remain empty (no parsing done)
             assert ad_agent._domain_info == {}
-            assert ad_agent._discovered_users == []
+            assert len(ad_agent._discovered_users) == 0
 
     @pytest.mark.asyncio
     async def test_execute_ad_attack_full_iteration_with_finding(self, ad_agent, mock_event_bus):

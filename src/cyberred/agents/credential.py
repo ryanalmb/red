@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import re
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,7 @@ from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
 if TYPE_CHECKING:
+    from cyberred.agents.rag_escalator import AgentRAGEscalator
     from cyberred.core.events import EventBus
     from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
     from cyberred.intelligence.base import IntelResult
@@ -41,7 +43,7 @@ HASH_PATTERNS: dict[str, tuple[str, int, str]] = {
 class CredentialAgent(StigmergicAgent):
     """Credential harvesting and cracking agent - thin subclass with LLM-driven tool selection."""
 
-    DEFAULT_MAX_ITERATIONS: int = 25
+    DEFAULT_MAX_ITERATIONS: int = 8
     DEFAULT_LOCKOUT_THRESHOLD: int = 3  # Max attempts before lockout risk
     DEFAULT_LOCKOUT_WINDOW: int = 30    # Minutes to wait between spray rounds
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 75
@@ -58,6 +60,7 @@ class CredentialAgent(StigmergicAgent):
         lockout_window: int | None = None,
         phase_complete_threshold: int | None = None,
         intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+        rag_escalator: "AgentRAGEscalator | None" = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the CredentialAgent.
@@ -72,6 +75,7 @@ class CredentialAgent(StigmergicAgent):
             lockout_window: Minutes to wait between spray rounds.
             phase_complete_threshold: Number of results before phase considered complete.
             intel_aggregator: Intelligence aggregator for vulnerability data.
+            rag_escalator: RAG escalator for methodology retrieval on failure.
             **kwargs: Additional arguments passed to StigmergicAgent.
         """
         super().__init__(
@@ -90,9 +94,13 @@ class CredentialAgent(StigmergicAgent):
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy = "standard"
         self._intel_aggregator = intel_aggregator
-        self._cracked_credentials: list[dict[str, Any]] = []
-        self._harvested_credentials: list[dict[str, Any]] = []
-        self._pending_hashes: list[dict[str, Any]] = []
+        self._rag_escalator = rag_escalator
+        self._failure_counts: dict[str, int] = {}
+        self._current_target: str = ""
+        self._current_service: str = ""
+        self._cracked_credentials: deque[dict[str, Any]] = deque(maxlen=500)
+        self._harvested_credentials: deque[dict[str, Any]] = deque(maxlen=500)
+        self._pending_hashes: deque[dict[str, Any]] = deque(maxlen=500)
         self._finding_buffer: list[dict[str, Any]] = []
         self._stop_event = asyncio.Event()
 
@@ -113,6 +121,9 @@ class CredentialAgent(StigmergicAgent):
 
         if self._stop_event.is_set():
             return findings, actions
+
+        self._current_target = target
+        self._current_service = context.get("service", "") or context.get("hash_type", "credential")
 
         # Query intelligence for credential attack techniques
         service = context.get("service", "")
@@ -146,6 +157,10 @@ class CredentialAgent(StigmergicAgent):
 
                     # Check for cracked credentials in output
                     await self._check_cracked_results(result, selection)
+                elif not result.success:
+                    alt = await self._handle_credential_failure(tool_name)
+                    if alt:
+                        decision_context.append(f"rag_escalation:{tool_name}:{alt}")
 
                 # Update context with results
                 tool_context = self._build_tool_context(target, context, actions)
@@ -514,6 +529,7 @@ class CredentialAgent(StigmergicAgent):
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
         """Handle incoming stigmergic signal."""
+        await super().on_signal(channel, data)
         # Handle strategy updates
         if "strategies" in channel and data.get("strategy") in ("stealth", "standard", "aggressive"):
             self.current_strategy = data["strategy"]
@@ -537,15 +553,17 @@ class CredentialAgent(StigmergicAgent):
         if self._finding_buffer:
             await self._flush_buffer()
 
-        channel = f"findings:{self._hash_target(finding.target)}:credential"
+        target_hash = self._hash_target(finding.target)
+        message = {
+            "id": finding.id,
+            "type": finding.type,
+            "severity": finding.severity,
+            "evidence": finding.evidence,
+        }
         try:
-            await self.event_bus.publish(channel, {
-                "id": finding.id,
-                "type": finding.type,
-                "severity": finding.severity,
-                "evidence": finding.evidence,
-            })
+            await self._publish_to_swarm(target_hash, "credential", message)
         except Exception:
+            channel = f"findings:{target_hash}:credential"
             self._finding_buffer.append({"channel": channel, "message": {"id": finding.id}})
 
     async def _flush_buffer(self) -> None:
@@ -563,6 +581,32 @@ class CredentialAgent(StigmergicAgent):
         if self._finding_buffer:
             await self._flush_buffer()
         self._stop_event.set()
+
+    async def _handle_credential_failure(self, technique_id: str) -> str | None:
+        """Handle tool failure via RAG escalation."""
+        if not self._rag_escalator:
+            return None
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
+        self._failure_counts[technique_id] = failure_count
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
+            from cyberred.agents.rag_escalator import AgentRAGContext
+            context = AgentRAGContext(
+                agent_id=str(self.agent_id),
+                target_service=self._current_service or "credential attack",
+                target_hash=target_hash,
+                failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
+                failure_count=failure_count,
+                environment={"target": self._current_target},
+                engagement_id=self.engagement_id,
+            )
+            try:
+                rag_result = await self._rag_escalator.escalate(context)
+                if rag_result.was_successful:
+                    return rag_result.selected_technique
+            except Exception:
+                pass
+        return None
 
     async def _phase_complete(self, context: ToolSelectionContext) -> bool:
         """Check if credential attack phase is complete."""

@@ -18,6 +18,7 @@ from cyberred.tools.kali_executor import kali_execute
 from cyberred.tools.scope import ScopeConfig, ScopeValidator
 
 if TYPE_CHECKING:
+    from cyberred.agents.rag_escalator import AgentRAGEscalator
     from cyberred.intelligence.aggregator import CachedIntelligenceAggregator
     from cyberred.intelligence.base import IntelResult
     from cyberred.llm.gateway import LLMGateway
@@ -31,13 +32,14 @@ INTELLIGENCE_TIMEOUT = 5.0
 class WebAppAgent(StigmergicAgent):
     """LLM-driven web application testing agent - thin subclass setting role=WEBAPP."""
 
-    DEFAULT_MAX_ITERATIONS: int = 25
+    DEFAULT_MAX_ITERATIONS: int = 8
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 30
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
                  specialty: str = "general", llm_gateway: "LLMGateway | None" = None,
                  manifest_loader: "ManifestLoader | None" = None,
                  intel_aggregator: "CachedIntelligenceAggregator | None" = None,
+                 rag_escalator: "AgentRAGEscalator | None" = None,
                  max_iterations: int | None = None,
                  phase_complete_threshold: int | None = None,
                  hmac_key: bytes = DEFAULT_HMAC_KEY, **kwargs: Any) -> None:
@@ -47,6 +49,10 @@ class WebAppAgent(StigmergicAgent):
         self._log = log.bind(agent_id=agent_id, engagement_id=engagement_id)
         self._hmac_key = hmac_key
         self._intel_aggregator = intel_aggregator
+        self._rag_escalator = rag_escalator
+        self._failure_counts: dict[str, int] = {}
+        self._current_target: str = ""
+        self._current_service: str = ""
         self.max_iterations = max_iterations or self.DEFAULT_MAX_ITERATIONS
         self.phase_complete_threshold = phase_complete_threshold or self.DEFAULT_PHASE_COMPLETE_THRESHOLD
         self.current_strategy, self._finding_buffer = "standard", []
@@ -60,6 +66,8 @@ class WebAppAgent(StigmergicAgent):
         if self._stop_event.is_set():
             return [], []
 
+        self._current_target = target
+        self._current_service = target_info.get("service", "http")
         await self._detect_waf(target)
 
         all_findings: list[Finding] = []
@@ -108,6 +116,10 @@ class WebAppAgent(StigmergicAgent):
                     all_findings.append(finding)
                     await self.on_finding(finding)
                     result_finding_id = finding.id
+                elif not result.success:
+                    alt = await self._handle_webapp_failure(selection.tool_name)
+                    if alt:
+                        decision_context.append(f"rag_escalation:{selection.tool_name}:{alt}")
 
                 context = ToolSelectionContext(
                     objective=context.objective,
@@ -186,6 +198,32 @@ class WebAppAgent(StigmergicAgent):
             self._log.warning("waf_detection_failed", error=str(e))
             self._waf_detected = False
 
+    async def _handle_webapp_failure(self, technique_id: str) -> str | None:
+        """Handle tool failure via RAG escalation."""
+        if not self._rag_escalator:
+            return None
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
+        self._failure_counts[technique_id] = failure_count
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
+            from cyberred.agents.rag_escalator import AgentRAGContext
+            context = AgentRAGContext(
+                agent_id=str(self.agent_id),
+                target_service=self._current_service or "web application",
+                target_hash=target_hash,
+                failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
+                failure_count=failure_count,
+                environment={"target": self._current_target, "waf": self._waf_type or "none"},
+                engagement_id=self.engagement_id,
+            )
+            try:
+                rag_result = await self._rag_escalator.escalate(context)
+                if rag_result.was_successful:
+                    return rag_result.selected_technique
+            except Exception:
+                pass
+        return None
+
     async def _phase_complete(self, context: ToolSelectionContext) -> bool:
         return len(context.previous_results) >= self.phase_complete_threshold
 
@@ -216,13 +254,14 @@ class WebAppAgent(StigmergicAgent):
         return hashlib.md5(target.encode()).hexdigest()[:8]
 
     async def on_finding(self, finding: Finding) -> None:
-        channel = f"findings:{self._hash_target(finding.target)}:webapp"
-        message = asdict(finding) if hasattr(finding, "__dataclass_fields__") else finding.model_dump()
+        target_hash = self._hash_target(finding.target)
+        message = asdict(finding)
         if self._finding_buffer:
             await self._flush_buffer()
         try:
-            await self.event_bus.publish(channel, message)
+            await self._publish_to_swarm(target_hash, "webapp", message)
         except Exception:
+            channel = f"findings:{target_hash}:webapp"
             self._finding_buffer.append({"channel": channel, "message": message})
 
     async def _flush_buffer(self) -> None:

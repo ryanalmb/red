@@ -639,18 +639,16 @@ class FindingAggregator:
         """Set up EventBus subscriptions for finding collection."""
         if not self._event_bus or not self._engagement_id:
             return
-        
-        # Subscribe to findings pattern
-        # Pattern: findings:{engagement_id}:*
-        pattern = f"findings:{self._engagement_id}:*"
-        
+
+        # psubscribe for wildcard — agents publish to findings:{target_hash}:{type}
+        pattern = "findings:*"
+
         try:
-            subscription = await self._event_bus.subscribe(
+            await self._event_bus.psubscribe(
                 pattern,
                 self._handle_finding_event,
             )
-            self._subscriptions.append(subscription)
-            
+
             self._log.info(
                 "subscribed_to_findings",
                 pattern=pattern,
@@ -665,33 +663,49 @@ class FindingAggregator:
     async def _handle_finding_event(
         self,
         channel: str,
-        message: str,
+        message: Any,
     ) -> None:
         """Handle finding event from EventBus.
-        
+
         Args:
             channel: The channel the finding was received on.
-            message: JSON-encoded finding data.
+            message: Finding data (JSON string or dict from psubscribe).
         """
         if not self._running:
             return
-        
-        try:
-            data = json.loads(message)
-        except json.JSONDecodeError as e:
-            self._log.warning(
-                "finding_parse_error",
-                channel=channel,
-                error=str(e),
-            )
+
+        # Skip batch aggregation messages (no individual target/type fields)
+        if ":aggregated:" in channel:
             return
-        
+
+        # Handle both string (JSON) and dict (pre-deserialized by EventBus)
+        if isinstance(message, str):
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError as e:
+                self._log.warning(
+                    "finding_parse_error",
+                    channel=channel,
+                    error=str(e),
+                )
+                return
+        elif isinstance(message, dict):
+            data = message
+        else:
+            return
+
+        # Handle sharded bus wrapper format: {"agent_id":..., "data":{...}}
+        if "data" in data and isinstance(data["data"], dict):
+            inner = data["data"]
+        else:
+            inner = data
+
         # Extract finding data
-        target = data.get("target", "")
-        finding_type = data.get("type", data.get("finding_type", ""))
-        severity_str = data.get("severity", "info").upper()
-        agent_id = data.get("agent_id", "unknown")
-        timestamp = data.get("timestamp", time.time())
+        target = inner.get("target", "")
+        finding_type = inner.get("type", inner.get("finding_type", ""))
+        severity_str = inner.get("severity", "info").upper()
+        agent_id = inner.get("agent_id", data.get("agent_id", "unknown"))
+        timestamp = inner.get("timestamp", time.time())
         
         if not target or not finding_type:
             self._log.warning(
@@ -720,7 +734,7 @@ class FindingAggregator:
             timestamp=timestamp,
             agent_id=agent_id,
             metadata={
-                k: v for k, v in data.items()
+                k: v for k, v in inner.items()
                 if k not in {"target", "type", "finding_type", "severity", "agent_id", "timestamp"}
             },
         )

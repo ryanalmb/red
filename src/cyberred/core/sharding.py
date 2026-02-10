@@ -206,7 +206,7 @@ class ShardedEventBus:
 
         tasks = []
         for pattern in patterns:
-            task = await self._bus.subscribe(pattern, callback)
+            task = await self._bus.psubscribe(pattern, callback)
             tasks.append(task)
 
         self._log.info(

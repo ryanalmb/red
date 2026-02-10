@@ -91,6 +91,11 @@ class DynamicSpawner:
         router: SwarmRouterWrapper,
         event_bus: EventBus,
         engagement_id: str,
+        llm_gateway: Optional[Any] = None,
+        manifest_loader: Optional[Any] = None,
+        intel_aggregator: Optional[Any] = None,
+        rag_escalator: Optional[Any] = None,
+        sharded_event_bus: Optional[Any] = None,
     ) -> None:
         """Initialize the dynamic spawner.
 
@@ -98,10 +103,20 @@ class DynamicSpawner:
             router: SwarmRouterWrapper for agent creation.
             event_bus: EventBus for events and audit logging.
             engagement_id: ID of the current engagement.
+            llm_gateway: Optional LLMGateway for LLM-driven tool selection.
+            manifest_loader: Optional ManifestLoader for tool catalog lookup.
+            intel_aggregator: Optional CachedIntelligenceAggregator for CVE/threat intel.
+            rag_escalator: Optional AgentRAGEscalator for methodology retrieval on failure.
+            sharded_event_bus: Optional ShardedEventBus for sharded findings (Story 7.13).
         """
         self.router = router
         self.event_bus = event_bus
         self.engagement_id = engagement_id
+        self._llm_gateway = llm_gateway
+        self._manifest_loader = manifest_loader
+        self._intel_aggregator = intel_aggregator
+        self._rag_escalator = rag_escalator
+        self._sharded_event_bus = sharded_event_bus
         self._active_agents: list[StigmergicAgent] = []
         self._scaling_log: list[dict[str, Any]] = []
         self._current_phase = "recon"
@@ -188,11 +203,16 @@ class DynamicSpawner:
         count = self.calculate_initial_count(scope)
         distribution = self.adjust_distribution_for_phase(self._current_phase)
 
-        agents = await self.router.spawn_swarm(
+        agents = self.router.spawn_swarm(
             count=count,
             distribution=distribution,
             engagement_id=self.engagement_id,
-            event_bus=self.event_bus
+            event_bus=self.event_bus,
+            llm_gateway=self._llm_gateway,
+            manifest_loader=self._manifest_loader,
+            intel_aggregator=self._intel_aggregator,
+            rag_escalator=self._rag_escalator,
+            sharded_event_bus=self._sharded_event_bus,
         )
 
         self._active_agents.extend(agents)
@@ -244,11 +264,14 @@ class DynamicSpawner:
 
         distribution = self.adjust_distribution_for_phase(self._current_phase)
 
-        agents = await self.router.spawn_swarm(
+        agents = self.router.spawn_swarm(
             count=spawn_count,
             distribution=distribution,
             engagement_id=self.engagement_id,
-            event_bus=self.event_bus
+            event_bus=self.event_bus,
+            llm_gateway=self._llm_gateway,
+            manifest_loader=self._manifest_loader,
+            sharded_event_bus=self._sharded_event_bus,
         )
 
         self._active_agents.extend(agents)
@@ -349,6 +372,7 @@ class DynamicSpawner:
             agent_id=crashed_agent_id,  # Inherit ID
             engagement_id=engagement_id,
             event_bus=self.event_bus,
+            sharded_event_bus=self._sharded_event_bus,
         )
         
         # Restore state from checkpoint

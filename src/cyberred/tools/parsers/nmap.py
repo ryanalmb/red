@@ -32,14 +32,17 @@ def nmap_parser(
     # Auto-detect format and parse
     if _is_grepable_format(stdout):
         return _parse_grepable(stdout, agent_id, target)
-    
+
+    if _is_text_format(stdout):
+        return _parse_text(stdout, agent_id, target)
+
     # Try XML parsing
     try:
         import xml.etree.ElementTree as ET
         root = ET.fromstring(stdout)
     except ET.ParseError:
         log.warning("nmap_xml_parse_failed", target=target)
-        return []
+        raise  # Let OutputProcessor fall through to tier2 for unknown formats
     
     # Parse each host
     for host in root.findall('host'):
@@ -151,6 +154,109 @@ def _create_script_finding(
         agent_id=agent_id,
         tool="nmap"
     ))
+
+
+def _is_text_format(stdout: str) -> bool:
+    """Check if output is standard nmap text format (default output).
+
+    Text format contains 'Nmap scan report for' and a PORT/STATE/SERVICE table.
+    """
+    if not stdout:
+        return False
+    return ('Nmap scan report for' in stdout or 'nmap scan report for' in stdout.lower()) and \
+           re.search(r'PORT\s+STATE\s+SERVICE', stdout) is not None
+
+
+def _parse_text(stdout: str, agent_id: str, target: str) -> List[Finding]:
+    """Parse standard nmap text output (default format without -oX/-oG).
+
+    Handles output like::
+
+        Nmap scan report for 172.28.0.7
+        Host is up (0.0012s latency).
+        PORT     STATE SERVICE     VERSION
+        21/tcp   open  ftp         vsftpd 3.0.3
+        22/tcp   open  ssh         OpenSSH 7.9p1
+        80/tcp   open  http        Apache httpd 2.4.38
+    """
+    findings: List[Finding] = []
+
+    # Extract host address from "Nmap scan report for <addr>"
+    host_match = re.search(r'Nmap scan report for\s+(\S+)', stdout, re.IGNORECASE)
+    host_addr = host_match.group(1) if host_match else target
+
+    # Host status
+    if re.search(r'Host is up', stdout, re.IGNORECASE):
+        findings.append(create_finding(
+            type_val="host_status",
+            severity="info",
+            target=host_addr,
+            evidence="Host is up",
+            agent_id=agent_id,
+            tool="nmap"
+        ))
+
+    # OS detection from "OS details:" or "Running:" lines
+    os_match = re.search(r'OS details:\s*(.+)', stdout)
+    if os_match:
+        findings.append(create_finding(
+            type_val="os_detection",
+            severity="info",
+            target=host_addr,
+            evidence=f"OS Match: {os_match.group(1).strip()}",
+            agent_id=agent_id,
+            tool="nmap"
+        ))
+
+    # Parse port table lines: "PORT/PROTO STATE SERVICE VERSION..."
+    # Match lines like: "21/tcp   open  ftp         vsftpd 3.0.3"
+    port_pattern = re.compile(
+        r'^(\d+)/(tcp|udp)\s+'      # port/protocol
+        r'(open|open\|filtered)\s+'  # state
+        r'(\S+)'                     # service name
+        r'(?:\s+(.*))?$',            # optional version info
+        re.MULTILINE
+    )
+
+    for m in port_pattern.finditer(stdout):
+        portid = m.group(1)
+        protocol = m.group(2)
+        service = m.group(4)
+        version_info = (m.group(5) or '').strip()
+
+        evidence = f"{portid}/{protocol} open {service}"
+        if version_info:
+            evidence += f" {version_info}"
+
+        findings.append(create_finding(
+            type_val="open_port",
+            severity="info",
+            target=host_addr,
+            evidence=evidence,
+            agent_id=agent_id,
+            tool="nmap"
+        ))
+
+    # Parse NSE script output blocks: "|_script-name: output" or "| script-name:"
+    script_pattern = re.compile(
+        r'^\|\s*(\S+?):\s*(.+?)$',
+        re.MULTILINE
+    )
+    for m in script_pattern.finditer(stdout):
+        script_name = m.group(1).lstrip('_')
+        script_output = m.group(2).strip()
+        if script_name and script_output:
+            findings.append(create_finding(
+                type_val="nse_script",
+                severity="info",
+                target=host_addr,
+                evidence=f"Script: {script_name}\nOutput: {script_output}",
+                agent_id=agent_id,
+                tool="nmap"
+            ))
+
+    log.info("nmap_text_parsed", target=host_addr, findings_count=len(findings))
+    return findings
 
 
 def _is_grepable_format(stdout: str) -> bool:

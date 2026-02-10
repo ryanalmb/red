@@ -471,6 +471,11 @@ class SessionManager:
             for adapter in orchestrator.tool_orchestrator.adapters.values():
                 adapter.worker_pool = self._worker_pool
 
+            # Also update KaliExecutor's bridge if already initialized
+            from cyberred.tools.kali_executor import _executor
+            if _executor and hasattr(_executor._pool, 'worker_pool'):
+                _executor._pool.worker_pool = self._worker_pool
+
         # Store engagement context in orchestrator
         orchestrator._engagement_id = engagement_id
         orchestrator._engagement_config = config
@@ -505,6 +510,10 @@ class SessionManager:
     ) -> None:
         """Trigger initial scan jobs from engagement config targets.
 
+        Story 7.26: Builds a Scope from config and calls orchestrator.start_swarm()
+        directly to spawn stigmergic agents. Falls back to per-target job:new events
+        if swarm spawning fails.
+
         Args:
             context: The engagement context.
             orchestrator: The active orchestrator.
@@ -514,24 +523,107 @@ class SessionManager:
         directive = config.get("directive", "")
 
         if targets:
-            # Queue job for each target
-            for target_name, target_info in targets.items():
-                target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
-                if target_ip:
-                    await orchestrator.bus.publish("job:new", {
-                        "target": target_ip,
-                        "action": "scan",
-                        "full_attack": True,
-                        "target_name": target_name,
-                        "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
-                    })
-                    log.info("initial_job_queued",
-                        engagement_id=context.id,
-                        target=target_ip)
+            # Build Scope from config targets for stigmergic swarm
+            scope = self._build_scope_from_config(config)
+
+            try:
+                # Spawn stigmergic swarm directly via orchestrator
+                agents = await orchestrator.start_swarm(
+                    scope=scope,
+                    engagement_id=context.id,
+                )
+                log.info(
+                    "stigmergic_swarm_started",
+                    engagement_id=context.id,
+                    agent_count=len(agents),
+                )
+
+                # Launch agents against their targets
+                for target_name, target_info in targets.items():
+                    target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
+                    if target_ip:
+                        await orchestrator.bus.publish("job:new", {
+                            "target": target_ip,
+                            "action": "scan",
+                            "full_attack": True,
+                            "target_name": target_name,
+                            "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
+                        })
+                        log.info("initial_job_queued",
+                            engagement_id=context.id,
+                            target=target_ip)
+            except Exception as e:
+                log.warning(
+                    "stigmergic_swarm_failed_falling_back",
+                    engagement_id=context.id,
+                    error=str(e),
+                )
+                # Fallback: queue individual jobs (will use GhostAgent via handle_new_job)
+                for target_name, target_info in targets.items():
+                    target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
+                    if target_ip:
+                        await orchestrator.bus.publish("job:new", {
+                            "target": target_ip,
+                            "action": "scan",
+                            "full_attack": True,
+                            "target_name": target_name,
+                            "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
+                        })
+                        log.info("initial_job_queued",
+                            engagement_id=context.id,
+                            target=target_ip)
         elif directive:
             # No targets - parse directive via NLP
             await orchestrator.bus.publish("cmd:nlp", {"text": directive})
             log.info("directive_submitted", engagement_id=context.id)
+
+    @staticmethod
+    def _build_scope_from_config(config: dict) -> "Scope":
+        """Build a Scope object from engagement configuration.
+
+        Extracts networks, webapps, and other target types from the
+        engagement config targets section.
+
+        Args:
+            config: Loaded engagement configuration dict.
+
+        Returns:
+            Scope object for DynamicSpawner.
+        """
+        from cyberred.core.models import Scope
+
+        networks: list[str] = []
+        webapps: list[str] = []
+        wireless: list[str] = []
+        domains: list[str] = []
+
+        # Extract from scope section
+        scope_section = config.get("scope", {})
+        allowed_ips = scope_section.get("allowed_ips", [])
+        for ip in allowed_ips:
+            if ip and ip != "0.0.0.0/0":
+                networks.append(ip)
+
+        # Extract from targets section
+        targets = config.get("targets", {})
+        for target_name, target_info in targets.items():
+            if not isinstance(target_info, dict):
+                continue
+            ip = target_info.get("ip")
+            services = target_info.get("services", [])
+
+            if ip and ip not in networks:
+                networks.append(ip)
+
+            if any(s in services for s in ("http", "https")):
+                webapps.append(ip or target_name)
+
+        return Scope(
+            networks=networks,
+            webapps=webapps,
+            wireless=wireless,
+            domains=domains,
+        )
 
     def pause_engagement(self, engagement_id: str) -> EngagementState:
         """Pause an engagement (RUNNING → PAUSED).

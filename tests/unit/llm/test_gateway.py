@@ -34,7 +34,7 @@ class TestGatewayCreation:
         assert gateway._queue == mock_queue
         assert gateway._running is False
         assert gateway._running is False
-        assert gateway._worker_task is None
+        assert gateway._worker_tasks == []
 
     def test_gateway_router_exclusion_integration(self, mock_rate_limiter, mock_router, mock_queue):
         """Test gateway configures router with exclusion checker."""
@@ -220,20 +220,20 @@ class TestGatewayLifecycle:
         # Test explicit start/stop
         await gateway.start()
         assert gateway._running is True
-        assert gateway._worker_task is not None
+        assert len(gateway._worker_tasks) > 0
         
         await gateway.stop()
         assert gateway._running is False
-        assert gateway._worker_task is None
+        assert gateway._worker_tasks == []
         
         # Test context manager
         async with gateway as g:
             assert g is gateway
             assert gateway._running is True
-            assert gateway._worker_task is not None
+            assert len(gateway._worker_tasks) > 0
         
         assert gateway._running is False
-        assert gateway._worker_task is None
+        assert gateway._worker_tasks == []
 
 from cyberred.core.exceptions import LLMTimeoutError, LLMProviderUnavailable, LLMRateLimitExceeded
 
@@ -521,21 +521,21 @@ class TestCircuitBreaker:
         """Test start when already running."""
         gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
         await gateway.start()
-        original_task = gateway._worker_task
-        
+        original_tasks = list(gateway._worker_tasks)
+
         # Call start again
         await gateway.start()
-        
-        # Should be same task (no new task created)
-        assert gateway._worker_task is original_task
-        
+
+        # Should be same tasks (no new tasks created)
+        assert gateway._worker_tasks == original_tasks
+
         await gateway.stop()
 
     @pytest.mark.asyncio
     async def test_stop_not_running(self, mock_rate_limiter, mock_router, mock_queue):
         """Test stop when not running."""
         gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
-        assert gateway._worker_task is None
+        assert gateway._worker_tasks == []
         
         # Should not raise error
         await gateway.stop()

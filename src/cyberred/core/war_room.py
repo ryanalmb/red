@@ -30,10 +30,11 @@ class WarRoom:
     def __init__(self, event_bus=None, config_path: str = "config/models.yaml"):
         self.bus = event_bus
         self.logger = logging.getLogger("WarRoom")
-        
+        self._director_rag_client = None  # Set later via set_rag_client()
+
         # Load model configuration
         self.config = self._load_config(config_path)
-        
+
         # Model assignments from config
         self.models = {
             "architect": self.config.get("brain", {}).get("architect", "moonshotai/kimi-k2-instruct"),
@@ -41,19 +42,24 @@ class WarRoom:
             "ghost": self.config.get("brain", {}).get("ghost", "minimaxai/minimax-m2"),
             "engineer": self.config.get("code_generation", {}).get("engineer", "mistralai/devstral-2-123b-instruct-2512"),
         }
-        
+
         # Model parameters from config
         self.params = self.config.get("parameters", {})
-        
+
         # Available tools and workers info
         self.available_tools = [
-            "nmap", "nuclei", "ffuf", "nikto", "sqlmap", 
+            "nmap", "nuclei", "ffuf", "nikto", "sqlmap",
             "hydra", "subfinder", "wpscan", "whatweb"
         ]
         self.worker_count = 10  # 10 parallel containers available
-        
+
         self.logger.info(f"WarRoom initialized with models: {self.models}")
-        self.logger.info(f"🐉 Dragon War Room ONLINE - {self.worker_count} parallel workers available")
+        self.logger.info(f"Dragon War Room ONLINE - {self.worker_count} parallel workers available")
+
+    def set_rag_client(self, rag_client) -> None:
+        """Set the DirectorRAGClient for strategy enrichment (late binding)."""
+        self._director_rag_client = rag_client
+        self.logger.info("WarRoom: DirectorRAGClient attached")
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load model configuration from YAML file."""
@@ -71,18 +77,41 @@ class WarRoom:
     async def develop_strategy(self, context: dict) -> str:
         """
         Develop attack strategy for the CURRENT PHASE only.
-        
+
         This is called once per phase, not for the entire attack.
         """
         phase = context.get("phase", "RECON")
         findings_count = context.get("total_findings", 0)
-        
-        await self._log(f"🐉 Planning {phase} phase (findings: {findings_count})...", "INFO")
-        
+
+        await self._log(f"Planning {phase} phase (findings: {findings_count})...", "INFO")
+
+        # Phase 0: RAG methodology lookup (if available)
+        rag_guidance = ""
+        if self._director_rag_client:
+            try:
+                from cyberred.rag.director_client import RAGQueryContext
+                rag_ctx = RAGQueryContext(
+                    trigger="phase_transition",
+                    summary=f"Strategy planning for {phase} phase with {findings_count} findings",
+                    current_phase=phase,
+                    failure_signals=tuple(
+                        str(f.get("description", ""))[:100]
+                        for f in context.get("findings", [])[:5]
+                    ),
+                )
+                pivot = await self._director_rag_client.query_strategy_pivot(rag_ctx)
+                if pivot.methodologies:
+                    rag_guidance = pivot.actionable_guidance or ""
+                    await self._log(
+                        f"RAG: {len(pivot.methodologies)} methodologies retrieved", "INFO"
+                    )
+            except Exception as e:
+                self.logger.warning(f"RAG query failed (non-fatal): {e}")
+
         # Phase 1: Architect analyzes current situation
         await self._log("Architect analyzing current phase...", "INFO")
         architect_response = await self._call_with_timeout(
-            self._call_architect_phase, context
+            self._call_architect_phase, context, rag_guidance
         )
         
         strategy, thoughts = self._parse_thinking(architect_response)
@@ -123,13 +152,21 @@ class WarRoom:
         
         return '{"tools": ["nmap"], "reasoning": "Fallback"}'
 
-    async def _call_architect_phase(self, context: dict) -> str:
+    async def _call_architect_phase(self, context: dict, rag_guidance: str = "") -> str:
         """Architect analyzes the CURRENT phase only."""
         phase = context.get("phase", "RECON")
         target = context.get("target", "unknown")
         findings = context.get("findings", [])
         iteration = context.get("iteration", 1)
-        
+
+        rag_section = ""
+        if rag_guidance:
+            rag_section = f"""
+RAG METHODOLOGY SUGGESTIONS:
+{rag_guidance[:2000]}
+
+"""
+
         prompt = f"""CONTEXT: Authorized Red Team Exercise - {phase} Phase
 
 TARGET: {target}
@@ -139,7 +176,7 @@ PREVIOUS FINDINGS: {len(findings)} items
 
 AVAILABLE TOOLS: {', '.join(self.available_tools)}
 PARALLEL WORKERS: {self.worker_count} containers available for parallel execution
-
+{rag_section}
 YOUR TASK:
 You are the Architect. Analyze the current {phase} phase ONLY.
 

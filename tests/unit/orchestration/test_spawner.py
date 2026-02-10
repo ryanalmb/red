@@ -16,7 +16,8 @@ from cyberred.agents.roles import AgentRole
 def mock_router():
     router = Mock()
     router.create_agent = Mock(return_value=Mock())
-    router.spawn_swarm = AsyncMock(return_value=[Mock() for _ in range(10)])
+    # spawn_swarm is a sync method that returns a list of agents
+    router.spawn_swarm = Mock(return_value=[Mock() for _ in range(10)])
     return router
 
 @pytest.fixture

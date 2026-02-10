@@ -117,8 +117,8 @@ class TestStigmergicAgentBase:
         await agent.spawn()
         
         # Verify subscriptions
-        # Expected: findings:*, strategies:{engagement_id}, control:kill, control:pause
-        event_bus.subscribe.assert_any_call("findings:*", ANY)
+        # findings:* uses psubscribe (glob pattern), others use subscribe (exact)
+        event_bus.psubscribe.assert_any_call("findings:*", ANY)
         event_bus.subscribe.assert_any_call(f"strategies:{agent.engagement_id}", ANY)
         event_bus.subscribe.assert_any_call("control:kill", ANY)
 
@@ -1191,8 +1191,9 @@ class TestStigmergicAgentSharding:
         """Test _setup_subscriptions falls back to non-sharded."""
         await agent_without_sharding._setup_subscriptions()
 
-        # Should subscribe to findings:* on regular bus
-        assert event_bus.subscribe.call_count == 3  # findings:* + strategies + control:kill
+        # findings:* uses psubscribe, strategies + control:kill use subscribe
+        assert event_bus.psubscribe.call_count == 1  # findings:*
+        assert event_bus.subscribe.call_count == 2  # strategies + control:kill
 
     @pytest.mark.asyncio
     async def test_handle_sharded_finding_deduplicates(self, agent_with_sharding):

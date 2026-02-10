@@ -416,12 +416,13 @@ N/A - Clean implementation with all tests passing.
 - Added QR code generation for mobile deployments using qrcode library
 - Created TUI components: DropBoxWizardScreen, DeploymentConfirmModal, DeploymentResultScreen, QRDisplayWidget
 - Wired wizard to DropBoxScreen with "Deploy New Drop Box" button and 'n' keybinding
-- All 62 unit tests passing covering NL interpreter, deployment instructions, QR generation, and TUI components
+- All 128 unit + integration tests passing covering NL interpreter, deployment instructions, QR generation, and TUI components
 - Added qrcode>=7.4.0 dependency to pyproject.toml
 
 ### Change Log
 
 - 2026-02-05: Story 12.8 implementation complete - all ACs satisfied
+- 2026-02-10: Code review fixes applied — added qrcode dep to pyproject.toml, fixed temp cert leak, removed hardcoded demo key, fixed _processing flag reset, improved JSON parser, enhanced test coverage (128 tests), added integration tests
 
 ### File List
 

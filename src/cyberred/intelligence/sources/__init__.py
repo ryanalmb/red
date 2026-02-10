@@ -12,11 +12,18 @@ Sources:
 """
 
 from cyberred.intelligence.sources.cisa_kev import CisaKevSource, KevCatalog, KevEntry
-from cyberred.intelligence.sources.nvd import NvdCveEntry, NvdSource, get_nvd_priority
 from cyberred.intelligence.sources.exploitdb import ExploitDbSource, ExploitEntry
 from cyberred.intelligence.sources.nuclei import NucleiSource, NucleiTemplate
 from cyberred.intelligence.sources.metasploit import MetasploitSource, MsfModuleEntry
 from cyberred.intelligence.aggregator import IntelligenceAggregator
+
+# NVD source requires optional nvdlib dependency
+try:
+    from cyberred.intelligence.sources.nvd import NvdCveEntry, NvdSource, get_nvd_priority
+except ImportError:
+    NvdCveEntry = None  # type: ignore[assignment,misc]
+    NvdSource = None  # type: ignore[assignment,misc]
+    get_nvd_priority = None  # type: ignore[assignment]
 
 __all__ = [
     "CisaKevSource",

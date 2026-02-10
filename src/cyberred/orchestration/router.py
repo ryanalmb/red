@@ -11,7 +11,7 @@ SwarmRouter to provide:
 
 import threading
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import structlog
 from swarms import SwarmRouter
@@ -29,6 +29,8 @@ from cyberred.agents.wireless import WirelessAgent
 if TYPE_CHECKING:
     from cyberred.agents.base import StigmergicAgent
     from cyberred.core.events import EventBus
+    from cyberred.llm.gateway import LLMGateway
+    from cyberred.tools.manifest import ManifestLoader
 
 # Valid swarm types from swarms library
 SwarmType = Literal[
@@ -377,6 +379,12 @@ class SwarmRouterWrapper:
         role: AgentRole,
         engagement_id: str,
         event_bus: "EventBus",
+        llm_gateway: Optional["LLMGateway"] = None,
+        manifest_loader: Optional["ManifestLoader"] = None,
+        intel_aggregator: Optional[Any] = None,
+        rag_escalator: Optional[Any] = None,
+        sharded_event_bus: Optional[Any] = None,
+        **kwargs: Any,
     ) -> "StigmergicAgent":
         """Create an agent instance for the specified role.
 
@@ -384,6 +392,12 @@ class SwarmRouterWrapper:
             role: The AgentRole to instantiate.
             engagement_id: The engagement ID for the agent.
             event_bus: EventBus for agent communication.
+            llm_gateway: Optional LLMGateway for LLM-driven tool selection.
+            manifest_loader: Optional ManifestLoader for tool catalog lookup.
+            intel_aggregator: Optional intelligence aggregator for CVE/threat intel.
+            rag_escalator: Optional RAG escalator for methodology retrieval on failure.
+            sharded_event_bus: Optional ShardedEventBus for sharded findings (Story 7.13).
+            **kwargs: Additional kwargs passed to agent constructor.
 
         Returns:
             Agent instance of the appropriate subclass.
@@ -399,13 +413,19 @@ class SwarmRouterWrapper:
 
         agent_class = AGENT_CLASSES[role]
         # Use full UUID format to satisfy model validation
-        agent_id = str(uuid.uuid4())
+        agent_id = kwargs.pop("agent_id", None) or str(uuid.uuid4())
 
         # Agent subclasses use (agent_id, engagement_id, event_bus) as positional args
         agent = agent_class(
             agent_id=agent_id,
             engagement_id=engagement_id,
             event_bus=event_bus,
+            llm_gateway=llm_gateway,
+            manifest_loader=manifest_loader,
+            intel_aggregator=intel_aggregator,
+            rag_escalator=rag_escalator,
+            sharded_event_bus=sharded_event_bus,
+            **kwargs,
         )
 
         self._log.info(
@@ -423,6 +443,11 @@ class SwarmRouterWrapper:
         engagement_id: str,
         event_bus: "EventBus",
         distribution: dict[AgentRole, float] | None = None,
+        llm_gateway: Optional["LLMGateway"] = None,
+        manifest_loader: Optional["ManifestLoader"] = None,
+        intel_aggregator: Optional[Any] = None,
+        rag_escalator: Optional[Any] = None,
+        sharded_event_bus: Optional[Any] = None,
     ) -> list["StigmergicAgent"]:
         """Spawn a swarm of agents with configurable role distribution.
 
@@ -431,6 +456,8 @@ class SwarmRouterWrapper:
             engagement_id: The engagement ID for all agents.
             event_bus: EventBus for agent communication.
             distribution: Optional role distribution weights. Defaults to ROLE_DISTRIBUTION_DEFAULTS.
+            llm_gateway: Optional LLMGateway for LLM-driven tool selection.
+            manifest_loader: Optional ManifestLoader for tool catalog lookup.
 
         Returns:
             List of spawned agent instances.
@@ -476,7 +503,14 @@ class SwarmRouterWrapper:
         agents: list[StigmergicAgent] = []
         for role, role_count in role_counts.items():
             for _ in range(role_count):
-                agent = self.create_agent(role, engagement_id, event_bus)
+                agent = self.create_agent(
+                    role, engagement_id, event_bus,
+                    llm_gateway=llm_gateway,
+                    manifest_loader=manifest_loader,
+                    intel_aggregator=intel_aggregator,
+                    rag_escalator=rag_escalator,
+                    sharded_event_bus=sharded_event_bus,
+                )
                 agents.append(agent)
 
         self._log.info(
@@ -494,6 +528,8 @@ class SwarmRouterWrapper:
         engagement_id: str,
         event_bus: "EventBus",
         distribution: dict[AgentRole, float] | None = None,
+        llm_gateway: Optional["LLMGateway"] = None,
+        manifest_loader: Optional["ManifestLoader"] = None,
     ) -> list["StigmergicAgent"]:
         """Async version of spawn_swarm that publishes to audit bus.
 
@@ -502,11 +538,17 @@ class SwarmRouterWrapper:
             engagement_id: The engagement ID for all agents.
             event_bus: EventBus for agent communication.
             distribution: Optional role distribution weights.
+            llm_gateway: Optional LLMGateway for LLM-driven tool selection.
+            manifest_loader: Optional ManifestLoader for tool catalog lookup.
 
         Returns:
             List of spawned agent instances.
         """
-        agents = self.spawn_swarm(count, engagement_id, event_bus, distribution)
+        agents = self.spawn_swarm(
+            count, engagement_id, event_bus, distribution,
+            llm_gateway=llm_gateway,
+            manifest_loader=manifest_loader,
+        )
 
         # Publish to audit bus if configured
         if self._audit_bus:

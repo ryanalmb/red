@@ -42,6 +42,8 @@ dependencies = [
     "stix2>=3.0.0",
     # Story 7.10/7.11: Prometheus metrics (OBS11/OBS12)
     "prometheus_client>=0.20.0",
+    # Story 12.8: QR code generation for mobile drop box deployment
+    "qrcode>=7.4.0",
 ]
 
 [project.scripts]

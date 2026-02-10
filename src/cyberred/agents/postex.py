@@ -40,7 +40,7 @@ INTELLIGENCE_TIMEOUT = 5.0
 class PostExAgent(StigmergicAgent):
     """LLM-driven post-exploitation agent - thin subclass setting role=POSTEX."""
 
-    DEFAULT_MAX_ITERATIONS: int = 15
+    DEFAULT_MAX_ITERATIONS: int = 8
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50
 
     def __init__(
@@ -68,6 +68,8 @@ class PostExAgent(StigmergicAgent):
         self.current_strategy = "standard"
         self._finding_buffer: list[dict[str, Any]] = []
         self._stop_event = asyncio.Event()
+        self._current_target: str = ""
+        self._current_os_type: str = ""
 
     async def execute_postex(
         self, target: str, access_data: dict[str, Any]
@@ -82,6 +84,8 @@ class PostExAgent(StigmergicAgent):
         os_type = access_data.get("os_type", "linux")
         privilege_level = access_data.get("privilege_level", "user")
         access_type = access_data.get("access_type", "shell")
+        self._current_target = target
+        self._current_os_type = os_type
         intel = await self._select_technique(await self._query_intelligence(os_type, access_type))
 
         context = ToolSelectionContext(
@@ -117,7 +121,7 @@ class PostExAgent(StigmergicAgent):
                 context = ToolSelectionContext(
                     objective=context.objective, target_info=context.target_info, available_tools=[],
                     phase=context.phase, constraints=context.constraints,
-                    previous_results=[f.model_dump() for f in all_findings],
+                    previous_results=[asdict(f) for f in all_findings],
                 )
             except Exception as e:
                 self._log.error("postex_iteration_error", error=str(e))
@@ -180,14 +184,19 @@ class PostExAgent(StigmergicAgent):
     async def _handle_postex_failure(self, technique_id: str) -> str | None:
         if not self._rag_escalator:
             return None
-        failure_count = await self._rag_escalator.record_failure("target", technique_id)
+        target_hash = self._hash_target(self._current_target) if self._current_target else "target"
+        failure_count = await self._rag_escalator.record_failure(target_hash, technique_id)
         self._failure_counts[technique_id] = failure_count
-        if await self._rag_escalator.should_escalate("target", technique_id):
+        if await self._rag_escalator.should_escalate(target_hash, technique_id):
             from cyberred.agents.rag_escalator import AgentRAGContext
             context = AgentRAGContext(
-                agent_id=str(self.agent_id), target_service="unknown", target_hash="target",
+                agent_id=str(self.agent_id),
+                target_service=f"{self._current_os_type} privilege escalation" if self._current_os_type else "linux post-exploitation",
+                target_hash=target_hash,
                 failed_techniques=tuple(t for t, c in self._failure_counts.items() if c >= 3),
-                failure_count=failure_count, environment={}, engagement_id=self.engagement_id,
+                failure_count=failure_count,
+                environment={"os": self._current_os_type, "target": self._current_target},
+                engagement_id=self.engagement_id,
             )
             try:
                 rag_result = await self._rag_escalator.escalate(context)
@@ -208,13 +217,14 @@ class PostExAgent(StigmergicAgent):
         return hashlib.md5(target.encode()).hexdigest()[:8]
 
     async def on_finding(self, finding: Finding) -> None:
-        channel = f"findings:{self._hash_target(finding.target)}:postex"
+        target_hash = self._hash_target(finding.target)
         message = asdict(finding)
         if self._finding_buffer:
             await self._flush_buffer()
         try:
-            await self.event_bus.publish(channel, message)
+            await self._publish_to_swarm(target_hash, "postex", message)
         except Exception:
+            channel = f"findings:{target_hash}:postex"
             self._finding_buffer.append({"channel": channel, "message": message})
 
     async def _flush_buffer(self) -> None:

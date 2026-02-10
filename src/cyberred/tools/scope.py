@@ -47,35 +47,35 @@ import yaml
 
 from cyberred.core.exceptions import ScopeViolationError
 
-# Configure structlog to use stdlib logging for caplog compatibility
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
+
+# Note: structlog configuration is handled by the application entry point
+# (cli.py for daemon, conftest.py for tests). Do NOT configure globally here.
 
 # Structured logger for audit trail
 log = structlog.get_logger(__name__)
 
-# Command injection patterns to detect
-INJECTION_PATTERNS = [
-    (r"(?<!['\"])[;](?!['\"])", "semicolon"),  # Unquoted semicolon
-    (r"(?<!['\"])[|](?!['\"])", "pipe"),  # Unquoted pipe
-    (r"&&", "and_chain"),  # AND chain
-    (r"\|\|", "or_chain"),  # OR chain
-    (r"\$\(", "command_substitution"),  # Command substitution
-    (r"`", "backtick"),  # Backtick execution
-    (r"\n", "newline"),  # Newline injection
-]
+# Safe filter tools allowed as pipe targets (no network access)
+_SAFE_FILTERS = frozenset({
+    "grep", "egrep", "fgrep", "sort", "uniq", "head", "tail", "tee",
+    "wc", "cut", "awk", "sed", "tr", "base64", "xxd", "strings",
+    "column", "jq", "xmllint", "cat", "less", "more", "rev",
+    "paste", "comm", "diff", "fold", "fmt", "nl", "od", "hexdump",
+})
+
+# Output redirection pattern (stripped before scope validation)
+_REDIR_PATTERN = re.compile(r"\s*(2>&1|2>>|2>|>>|>)\s*(\S+)\s*$")
+
+
+@dataclass
+class CommandSegment:
+    """A single segment of a potentially piped/chained command.
+
+    Attributes:
+        command: The segment text (stripped of whitespace).
+        operator: The operator following this segment ('|', '&&', or None for last).
+    """
+    command: str
+    operator: str | None = None
 
 
 @dataclass
@@ -421,11 +421,97 @@ class ScopeValidator:
 
         return protocol.lower() in self.config.allowed_protocols
 
-    def _check_injection(self, command: str) -> None:
-        """Check for command injection patterns.
+    def split_segments(self, command: str) -> list[CommandSegment]:
+        """Split command into segments on unquoted pipe and chain operators.
 
-        Uses a robust state machine to parse quotes and detect dangerous
-        shell metacharacters outside of safe contexts.
+        Respects single/double quote boundaries. Strips trailing background
+        operator (&). Returns list of CommandSegment with operator info.
+
+        Args:
+            command: Full command string.
+
+        Returns:
+            List of CommandSegment instances.
+        """
+        segments: list[CommandSegment] = []
+        current: list[str] = []
+        in_single = False
+        in_double = False
+        escaped = False
+        i = 0
+
+        while i < len(command):
+            ch = command[i]
+
+            if escaped:
+                current.append(ch)
+                escaped = False
+                i += 1
+                continue
+
+            if ch == "\\" and not in_single:
+                current.append(ch)
+                escaped = True
+                i += 1
+                continue
+
+            if ch == "'" and not in_double:
+                in_single = not in_single
+                current.append(ch)
+                i += 1
+                continue
+
+            if ch == '"' and not in_single:
+                in_double = not in_double
+                current.append(ch)
+                i += 1
+                continue
+
+            # Inside quotes — everything is literal
+            if in_single or in_double:
+                current.append(ch)
+                i += 1
+                continue
+
+            # Unquoted context: detect operators
+            # Pipe: | (but not ||)
+            if ch == "|" and (i + 1 >= len(command) or command[i + 1] != "|"):
+                seg_text = "".join(current).strip()
+                if seg_text:
+                    segments.append(CommandSegment(seg_text, "|"))
+                current = []
+                i += 1
+                continue
+
+            # AND chain: &&
+            if ch == "&" and i + 1 < len(command) and command[i + 1] == "&":
+                seg_text = "".join(current).strip()
+                if seg_text:
+                    segments.append(CommandSegment(seg_text, "&&"))
+                current = []
+                i += 2
+                continue
+
+            # Single & — keep in current segment (stripped later if trailing)
+            current.append(ch)
+            i += 1
+
+        # Final segment
+        if current:
+            seg_text = "".join(current).strip().rstrip("&").strip()
+            if seg_text:
+                segments.append(CommandSegment(seg_text, None))
+
+        return segments if segments else [CommandSegment(command.strip(), None)]
+
+    def _check_injection(self, command: str) -> None:
+        """Check for command injection patterns using segmented validation.
+
+        Phase 1: Block always-dangerous constructs (backticks, $(), ;, newlines)
+                 in any unquoted context using a state-machine scan.
+        Phase 2: Split command into segments on | and &&, validate each:
+                 - Pipe targets must be safe filter tools or known Kali tools
+                 - Each segment's target is scope-checked independently
 
         Args:
             command: Command string to check.
@@ -444,28 +530,21 @@ class ScopeValidator:
                 message=f"Command parsing failed (unbalanced quotes?): {e}",
             )
 
-        # 2. State machine to check characters in context
+        # 2. State-machine scan for always-blocked characters
         in_single_quote = False
         in_double_quote = False
         escaped = False
 
         for i, char in enumerate(command):
-            # Handle escapes
             if escaped:
                 escaped = False
                 continue
 
-            # Backslash handling
             if char == "\\":
-                # Inside single quotes, backslash is literal (mostly), so it doesn't escape the next char
-                # effectively. However, in this simple parser, if we are in single quotes,
-                # we ignore everything anyway until the closing quote.
-                # If NOT in single quotes, backslash escapes the next char.
                 if not in_single_quote:
                     escaped = True
                 continue
 
-            # Handle quote toggling
             if char == "'" and not in_double_quote:
                 in_single_quote = not in_single_quote
                 continue
@@ -473,16 +552,11 @@ class ScopeValidator:
                 in_double_quote = not in_double_quote
                 continue
 
-            # --- Safety Checks ---
-
-            # Context 1: Single Quotes '...'
-            # Everything is literal. Safe.
+            # Single quotes: everything literal, safe
             if in_single_quote:
                 continue
 
-            # Context 2: Double Quotes "..."
-            # Dangerous: ` (backtick), $ (substitution/variable)
-            # Safe: ; | & (literal in double quotes)
+            # Double quotes: block backtick and $ (command substitution)
             if in_double_quote:
                 if char == "`":
                     raise ScopeViolationError(
@@ -492,23 +566,84 @@ class ScopeValidator:
                         message="Backtick execution detected in double quotes",
                     )
                 if char == "$":
-                    # We block all $ in double quotes to be safe against $(...) and $VAR
                     raise ScopeViolationError(
                         target="",
                         command=command,
                         scope_rule="injection_dollar_double_quote",
                         message="Variable/Command substitution ($) detected in double quotes",
                     )
+                continue
 
-            # Context 3: Unquoted
-            # Dangerous: ; | & ` $ ( ) \n
-            else:
-                if char in ";|&`$()\n":
+            # Unquoted context: block true injection vectors
+            # Always blocked: ` $ ; ( ) \n
+            # Allowed with segment validation: | && &
+            if char == "`":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_unquoted_backtick",
+                    message="Backtick execution detected",
+                )
+            if char == "$":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_unquoted_dollar",
+                    message="Command/variable substitution ($) detected",
+                )
+            if char == ";":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_unquoted_semicolon",
+                    message="Semicolon command chaining detected",
+                )
+            if char == "(":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_unquoted_paren",
+                    message="Subshell execution detected",
+                )
+            if char == ")":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_unquoted_paren",
+                    message="Subshell execution detected",
+                )
+            if char == "\n":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_newline",
+                    message="Newline injection detected",
+                )
+            # || (OR chain) — block
+            if char == "|" and i + 1 < len(command) and command[i + 1] == "|":
+                raise ScopeViolationError(
+                    target="", command=command,
+                    scope_rule="injection_or_chain",
+                    message="OR chain (||) detected",
+                )
+
+        # 3. Segment-aware validation for pipes and chains
+        segments = self.split_segments(command)
+
+        for idx, seg in enumerate(segments):
+            if not seg.command:
+                continue
+
+            # For pipe targets (segments after |), validate the tool is safe
+            if idx > 0 and segments[idx - 1].operator == "|":
+                try:
+                    first_token = shlex.split(seg.command)[0]
+                except (ValueError, IndexError):
+                    first_token = seg.command.split()[0] if seg.command.split() else ""
+
+                # Strip path prefix (e.g., /usr/bin/grep -> grep)
+                tool_name = first_token.rsplit("/", 1)[-1].lower()
+
+                if tool_name not in _SAFE_FILTERS:
                     raise ScopeViolationError(
                         target="",
                         command=command,
-                        scope_rule=f"injection_unquoted_{char}",
-                        message=f"Command injection detected: unquoted '{char}'",
+                        scope_rule="pipe_unsafe_target",
+                        message=f"Pipe target '{tool_name}' is not in safe filter list",
                     )
 
     def _parse_target_from_command(
@@ -535,13 +670,24 @@ class ScopeValidator:
         # Look for IP addresses, hostnames, URLs in arguments
         ip_pattern = re.compile(
             r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?|"
-            r"[0-9a-fA-F:]+(?:/\d{1,3})?)$"
+            r"[0-9a-fA-F]*:[0-9a-fA-F:]+(?:/\d{1,3})?)$"
         )
         url_pattern = re.compile(r"^(https?|ftp|tcp|udp)://")
+        # Bare protocol/service names that are NOT hostnames
+        _known_services = frozenset({
+            "ssh", "ftp", "telnet", "smtp", "http", "https", "rdp", "vnc",
+            "smb", "snmp", "pop3", "imap", "ldap", "mssql", "mysql",
+            "postgres", "oracle", "redis", "mongodb", "dns", "ntp", "tftp",
+        })
 
         i = 0
         while i < len(args):
             arg = args[i]
+
+            # Skip bare protocol/service names (e.g. "ssh" in "hydra ... ssh")
+            if arg.lower() in _known_services:
+                i += 1
+                continue
 
             # Skip flags that take no argument
             if arg.startswith("-") and len(arg) == 2 and arg not in ("-p", "-u"):
@@ -599,7 +745,38 @@ class ScopeValidator:
                 continue
 
             # Check for hostname-like patterns (contains dot, no special chars)
-            if "." in arg and not arg.startswith("-"):
+            if "." in arg and not arg.startswith("-") and "=" not in arg:
+                # Skip file paths (absolute or relative with directory separators)
+                if arg.startswith(("/", "~", "./", "../")):
+                    i += 1
+                    continue
+                # Skip obvious filenames (common output/config extensions)
+                _file_exts = (
+                    ".json", ".txt", ".log", ".xml", ".csv", ".html",
+                    ".htm", ".conf", ".cfg", ".yaml", ".yml", ".ini",
+                    ".out", ".nmap", ".gnmap", ".cap", ".pcap", ".db",
+                    ".sqlite", ".pdf", ".png", ".jpg", ".svg", ".md",
+                    ".py", ".sh", ".rb", ".pl",
+                )
+                lower_arg = arg.lower()
+                if any(lower_arg.endswith(ext) for ext in _file_exts):
+                    i += 1
+                    continue
+                # Handle args with / (could be hostname/path or version string)
+                if "/" in arg and not url_pattern.match(arg):
+                    prefix = arg.split("/", 1)[0]
+                    if "." in prefix and not prefix[0].isdigit():
+                        # Looks like hostname/path (e.g. evil.com/malware)
+                        target = prefix
+                        i += 1
+                        continue
+                    # Version string or user-agent (e.g. Mozilla/5.0)
+                    i += 1
+                    continue
+                # Skip tokens with parentheses or semicolons (UA fragments)
+                if "(" in arg or ")" in arg or ";" in arg:
+                    i += 1
+                    continue
                 # Could be hostname or IP:port
                 if ":" in arg and not arg.count(":") > 1:  # Not IPv6
                     host_part, port_part = arg.rsplit(":", 1)
@@ -636,6 +813,78 @@ class ScopeValidator:
             **extra,
         )
 
+    def _validate_single_target(
+        self,
+        target: str,
+        port: Optional[int],
+        protocol: Optional[str],
+        command: str,
+    ) -> None:
+        """Validate a single target against scope (IP/hostname + port).
+
+        Used by validate() for per-segment scope checking.
+        Protocol validation is left to the main validate() method to respect
+        caller-provided protocol overrides.
+
+        Raises ScopeViolationError if out of scope.
+        """
+        # Normalize
+        target = self._normalize_input(target)
+
+        # Handle URL targets
+        if target.startswith("http://") or target.startswith("https://"):
+            parsed = urlparse(target)
+            target = parsed.hostname or target
+            if parsed.port and port is None:
+                port = parsed.port
+
+        # Handle host:port
+        if ":" in target and target.count(":") == 1:
+            host_part, port_part = target.rsplit(":", 1)
+            try:
+                port = int(port_part)
+                target = host_part
+            except ValueError:
+                pass
+
+        # Try to parse as IP
+        ip_obj: Optional[Union[IPv4Address, IPv6Address]] = None
+        try:
+            if "/" in target:
+                ip_obj = ip_address(target.split("/")[0])
+            else:
+                ip_obj = ip_address(target)
+        except ValueError:
+            pass
+
+        if ip_obj:
+            if self._is_reserved(ip_obj):
+                raise ScopeViolationError(
+                    target=target, command=command,
+                    scope_rule="reserved_ip",
+                    message=f"Reserved IP address: {target}",
+                )
+            if not self._is_ip_in_scope(ip_obj):
+                raise ScopeViolationError(
+                    target=target, command=command,
+                    scope_rule="ip_out_of_scope",
+                    message=f"IP {target} not in allowed networks",
+                )
+        else:
+            if not self._is_hostname_in_scope(target):
+                raise ScopeViolationError(
+                    target=target, command=command,
+                    scope_rule="hostname_out_of_scope",
+                    message=f"Hostname {target} not in allowed list",
+                )
+
+        if port is not None and not self._is_port_allowed(port):
+            raise ScopeViolationError(
+                target=target, command=command,
+                scope_rule="port_blocked",
+                message=f"Port {port} not in allowed list",
+            )
+
     def validate(
         self,
         target: Optional[str] = None,
@@ -665,15 +914,35 @@ class ScopeValidator:
             if command is not None:
                 command = self._normalize_input(command)
                 self._check_injection(command)
-                cmd_target, cmd_port, cmd_protocol = self._parse_target_from_command(
-                    command
-                )
-                if cmd_target:
-                    target = cmd_target
-                if cmd_port and port is None:
-                    port = cmd_port
-                if cmd_protocol and protocol is None:
-                    protocol = cmd_protocol
+
+                # Per-segment scope validation: validate each segment independently
+                segments = self.split_segments(command)
+                for idx, seg in enumerate(segments):
+                    # Skip safe filter pipe targets (already validated in _check_injection)
+                    if idx > 0 and segments[idx - 1].operator == "|":
+                        try:
+                            first_token = shlex.split(seg.command)[0].rsplit("/", 1)[-1].lower()
+                        except (ValueError, IndexError):
+                            first_token = ""
+                        if first_token in _SAFE_FILTERS:
+                            continue
+
+                    seg_target, seg_port, seg_protocol = self._parse_target_from_command(
+                        seg.command
+                    )
+                    if seg_target and target is None:
+                        target = seg_target
+                    if seg_target:
+                        # Validate this segment's target in scope
+                        # Caller-provided port/protocol override command-parsed values
+                        effective_port = port if port is not None else seg_port
+                        self._validate_single_target(
+                            seg_target, effective_port, seg_protocol, command
+                        )
+                    if seg_port and port is None:
+                        port = seg_port
+                    if seg_protocol and protocol is None:
+                        protocol = seg_protocol
 
             # Normalize target
             if target is not None:

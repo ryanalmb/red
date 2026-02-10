@@ -124,7 +124,7 @@ class TestWirelessAgentConstructor:
             engagement_id="eng-1",
             event_bus=mock_event_bus,
         )
-        assert agent._discovered_networks == []
+        assert len(agent._discovered_networks) == 0
 
     def test_initializes_captured_handshakes(self, mock_event_bus):
         """WirelessAgent initializes empty captured handshakes dict."""
@@ -544,7 +544,7 @@ AA:BB:CC:DD:EE:FF  -40       50       25   6   WPA2         TestNetwork
             await wireless_agent._discover_networks("wlan0mon")
 
             # Should not crash, list remains empty
-            assert wireless_agent._discovered_networks == []
+            assert len(wireless_agent._discovered_networks) == 0
 
     @pytest.mark.asyncio
     async def test_discover_networks_handles_failure(self, wireless_agent):
@@ -555,7 +555,7 @@ AA:BB:CC:DD:EE:FF  -40       50       25   6   WPA2         TestNetwork
             await wireless_agent._discover_networks("wlan0mon")
 
             # Should not crash
-            assert wireless_agent._discovered_networks == []
+            assert len(wireless_agent._discovered_networks) == 0
 
 
 # --- Task 1.7: Handshake Coordination Tests (AC: #7) ---

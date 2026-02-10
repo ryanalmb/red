@@ -39,13 +39,13 @@ class TestIPCCommand:
         assert IPCCommand.DAEMON_STOP == "daemon.stop"
 
     def test_enum_count(self) -> None:
-        """Test that exactly 8 commands are defined."""
-        assert len(IPCCommand) == 8
+        """Test that all expected commands are defined."""
+        assert len(IPCCommand) == 13
 
     def test_enum_iteration(self) -> None:
         """Test that enum can be iterated."""
         commands = list(IPCCommand)
-        assert len(commands) == 8
+        assert len(commands) == 13
         assert IPCCommand.SESSIONS_LIST in commands
         assert IPCCommand.DAEMON_STOP in commands
 

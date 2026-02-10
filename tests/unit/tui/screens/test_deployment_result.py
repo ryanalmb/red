@@ -235,3 +235,108 @@ class TestDeploymentResultScreenIntegration:
             
             # QR tab should exist
             assert screen._qr_code == qr_code
+
+    @pytest.mark.asyncio
+    async def test_action_close_dismisses(self, valid_plan, temp_paths):
+        """Test action_close dismisses the screen."""
+        cert_path, key_path, ca_path = temp_paths
+
+        class TestApp(App):
+            def compose(self):
+                yield Static("Test")
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = DeploymentResultScreen(
+                plan=valid_plan,
+                drop_box_id="test-dropbox",
+                cert_path=cert_path,
+                key_path=key_path,
+                ca_path=ca_path,
+                instructions="Test",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.action_close()
+            await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_action_copy_cert_no_pyperclip(self, valid_plan, temp_paths):
+        """Test copy cert when pyperclip not available."""
+        cert_path, key_path, ca_path = temp_paths
+
+        class TestApp(App):
+            def compose(self):
+                yield Static("Test")
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = DeploymentResultScreen(
+                plan=valid_plan,
+                drop_box_id="test-dropbox",
+                cert_path=cert_path,
+                key_path=key_path,
+                ca_path=ca_path,
+                instructions="Test",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with patch.dict("sys.modules", {"pyperclip": None}):
+                screen.action_copy_cert()
+                await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_action_copy_cert_exception(self, valid_plan, temp_paths):
+        """Test copy cert handles generic exception."""
+        cert_path, key_path, ca_path = temp_paths
+
+        class TestApp(App):
+            def compose(self):
+                yield Static("Test")
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = DeploymentResultScreen(
+                plan=valid_plan,
+                drop_box_id="test-dropbox",
+                cert_path=cert_path,
+                key_path=key_path,
+                ca_path=ca_path,
+                instructions="Test",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            mock_pyperclip = MagicMock()
+            mock_pyperclip.copy.side_effect = Exception("Clipboard error")
+            with patch.dict("sys.modules", {"pyperclip": mock_pyperclip}):
+                screen.action_copy_cert()
+                await pilot.pause()
+
+    @pytest.mark.asyncio
+    async def test_screen_without_ca_path(self, valid_plan, temp_paths):
+        """Test screen renders when ca_path is None."""
+        cert_path, key_path, _ = temp_paths
+
+        class TestApp(App):
+            def compose(self):
+                yield Static("Test")
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            screen = DeploymentResultScreen(
+                plan=valid_plan,
+                drop_box_id="test-dropbox",
+                cert_path=cert_path,
+                key_path=key_path,
+                ca_path=None,
+                instructions="Test",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            cert_info = app.screen.query_one("#cert-info")
+            assert cert_info is not None
+

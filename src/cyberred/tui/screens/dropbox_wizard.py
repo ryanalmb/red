@@ -254,29 +254,29 @@ class DropBoxWizardScreen(Screen):
             from cyberred.c2.cert_manager import CertificateManager, CertManagerConfig
             from cyberred.core.keystore import Keystore
             from pathlib import Path
-            import tempfile
+            import os
             
             # Generate drop box ID
             drop_box_id = plan.generate_drop_box_id()
             
-            # For now, we'll use a temporary directory for certs
-            # In production, this would use the engagement's cert directory
-            cert_dir = Path(tempfile.mkdtemp(prefix="cyber-red-certs-"))
-            
-            # Try to get existing cert manager from app state or create new one
+            # Try to get existing cert manager from app state
             cert_manager = getattr(self.app, '_cert_manager', None)
             
             if cert_manager is None:
-                # Create a new cert manager for demo purposes
-                # In production, this would be injected from the engagement state
-                keystore = Keystore()
-                keystore.derive_key("demo-engagement-key")
-                config = CertManagerConfig(cert_dir=cert_dir)
-                cert_manager = CertificateManager(config, keystore)
-                cert_manager.generate_engagement_ca("demo-engagement")
+                raise RuntimeError(
+                    "No certificate manager available. "
+                    "Start an engagement first to initialize certificate infrastructure."
+                )
             
             # Issue client certificate
             cert_path, key_path = cert_manager.issue_client_cert(drop_box_id)
+            
+            # Ensure private key has restricted permissions (0600) per security requirements
+            try:
+                os.chmod(key_path, 0o600)
+            except OSError:
+                log.warning("could_not_set_key_permissions", key_path=str(key_path))
+            
             ca_path = cert_manager.get_ca_cert_path()
             
             self._update_status("📋 Generating deployment instructions...")
@@ -317,7 +317,8 @@ class DropBoxWizardScreen(Screen):
                 )
             )
             
-            # Return to drop box screen
+            # Return to drop box screen and reset processing flag
+            self._processing = False
             self.app.pop_screen()
             
         except Exception as e:
