@@ -1,6 +1,7 @@
 """DropBoxStatusPanel Widget for drop box status display.
 
 Story 9.10: Drop Box Status Panel - Task 2, 5
+Story 12.9: Pre-Flight Protocol - Task 5 (pre-flight status display)
 
 Displays drop box status including:
 - Connection status (Connected/Disconnected/Reconnecting)
@@ -8,6 +9,7 @@ Displays drop box status including:
 - Uptime duration
 - Network info (IP, port, protocol)
 - HeartbeatIndicator widget for visual status
+- Pre-flight status (Not Started/In Progress/Ready/Not Ready)
 
 Per FR12 and UX spec line 360.
 """
@@ -16,7 +18,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from cyberred.c2.preflight import PreFlightResult, PreFlightStatus
 
 from textual.app import ComposeResult
 from textual.containers import Container
@@ -160,6 +165,7 @@ class DropBoxStatusPanel(Container):
     uptime_display: reactive[str] = reactive("---")
     network_info_display: reactive[str] = reactive("---")
     latency_ms: reactive[Optional[int]] = reactive(None)
+    preflight_status_display: reactive[str] = reactive("Not Started")
     
     def __init__(
         self,
@@ -186,6 +192,7 @@ class DropBoxStatusPanel(Container):
         yield Static("", id="last-heartbeat", classes="status-row")
         yield Static("", id="uptime", classes="status-row")
         yield Static("", id="network-info", classes="status-row")
+        yield Static("", id="preflight-status", classes="status-row")
     
     def on_mount(self) -> None:
         """Handle mount event - update initial display."""
@@ -252,9 +259,50 @@ class DropBoxStatusPanel(Container):
             self.query_one("#network-info", Static).update(
                 f"Network: {self.network_info_display}"
             )
+            self.query_one("#preflight-status", Static).update(
+                f"Pre-Flight: {self.preflight_status_display}"
+            )
         except NoMatches:
             # Widgets not mounted yet
             pass
+
+    def update_preflight_status(self, result: "PreFlightResult") -> None:
+        """Update panel with pre-flight validation result.
+
+        Story 12.9: Pre-Flight Protocol - Task 5.
+
+        Args:
+            result: PreFlightResult from pre-flight validation.
+        """
+        self.preflight_status_display = self._format_preflight_status(result)
+        self._update_display()
+
+    def _format_preflight_status(self, result: "PreFlightResult") -> str:
+        """Format pre-flight result for display.
+
+        Args:
+            result: PreFlightResult to format.
+
+        Returns:
+            Formatted string like "✓ Ready (645ms)" or "✗ Not Ready (PING failed)".
+        """
+        from cyberred.c2.preflight import PreFlightStatus, StepStatus
+
+        if result.overall_status == PreFlightStatus.READY:
+            return f"✓ Ready ({result.total_duration_ms}ms)"
+        elif result.overall_status == PreFlightStatus.IN_PROGRESS:
+            return "⟳ In Progress..."
+        elif result.overall_status == PreFlightStatus.NOT_READY:
+            # Find the first failed step for context
+            failed_step = next(
+                (r for r in result.step_results if r.status in (StepStatus.FAIL, StepStatus.TIMEOUT)),
+                None,
+            )
+            if failed_step:
+                return f"✗ Not Ready ({failed_step.step.value} {failed_step.status.value})"
+            return "✗ Not Ready"
+        else:
+            return "Not Started"
     
     def _format_connection_state(self, state: ConnectionState) -> str:
         """Format connection state for display.

@@ -16,6 +16,32 @@ Protocol Usage:
     json_str = msg.to_json()
 """
 
+from cyberred.c2.cert_manager import CertificateManager, CertManagerConfig, IssuedCert
+from cyberred.c2.deployment_instructions import (
+    get_instructions,
+    is_mobile_platform,
+)
+from cyberred.c2.heartbeat_monitor import (
+    ConnectionStatus,
+    DropBoxConnection,
+    HeartbeatMonitor,
+    HeartbeatMonitorConfig,
+)
+from cyberred.c2.nl_interpreter import (
+    SUPPORTED_PLATFORMS,
+    DeploymentPlan,
+    DropBoxDeploymentInterpreter,
+    InterpretationError,
+)
+from cyberred.c2.preflight import (
+    PreFlightConfig,
+    PreFlightProtocol,
+    PreFlightResult,
+    PreFlightStatus,
+    PreFlightStep,
+    PreFlightStepResult,
+    StepStatus,
+)
 from cyberred.c2.protocol import (
     C2Message,
     C2MessageType,
@@ -26,30 +52,13 @@ from cyberred.c2.protocol import (
     validate_and_parse_message,
     verify_signature,
 )
-from cyberred.c2.cert_manager import CertificateManager, CertManagerConfig, IssuedCert
-from cyberred.c2.heartbeat_monitor import (
-    ConnectionStatus,
-    DropBoxConnection,
-    HeartbeatMonitor,
-    HeartbeatMonitorConfig,
-)
-from cyberred.c2.server import C2Server, C2ServerConfig
-from cyberred.c2.nl_interpreter import (
-    DeploymentPlan,
-    DropBoxDeploymentInterpreter,
-    InterpretationError,
-    SUPPORTED_PLATFORMS,
-)
-from cyberred.c2.deployment_instructions import (
-    get_instructions,
-    is_mobile_platform,
-)
 from cyberred.c2.qr_generator import (
     QRPayload,
     generate_deployment_qr,
     generate_qr_for_cert,
     get_cert_fingerprint,
 )
+from cyberred.c2.server import C2Server, C2ServerConfig
 
 __all__ = [
     "CertificateManager",
@@ -80,4 +89,12 @@ __all__ = [
     "generate_deployment_qr",
     "generate_qr_for_cert",
     "get_cert_fingerprint",
+    # Story 12.9: Pre-Flight Protocol
+    "PreFlightConfig",
+    "PreFlightProtocol",
+    "PreFlightResult",
+    "PreFlightStatus",
+    "PreFlightStep",
+    "PreFlightStepResult",
+    "StepStatus",
 ]
