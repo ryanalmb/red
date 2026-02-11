@@ -248,8 +248,8 @@ development_status:
   12-5-drop-box-go-module-structure: done
   12-6-drop-box-mtls-client: done
   12-7-wifi-toolkit-wrapper: done
-  12-8-natural-language-drop-box-setup: review
-  12-9-pre-flight-protocol: backlog
+  12-8-natural-language-drop-box-setup: done
+  12-9-pre-flight-protocol: review
   12-10-drop-box-abort-and-wipe: backlog
   12-11-drop-box-reconnection-handling: backlog
   epic-12-retrospective: optional
