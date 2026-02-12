@@ -859,6 +859,112 @@ class RedisClient:
 
 
     # ====================
+    # Task 7c: Redis Streams xrange (Story 13.11: for custody chain retrieval)
+    # ====================
+    
+    async def xrange(
+        self,
+        stream: str,
+        start: str = "-",
+        end: str = "+",
+        count: int | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Read a range of entries from a Redis Stream with HMAC verification.
+        
+        Args:
+            stream: Stream name (e.g., "custody:engagement-123").
+            start: Start ID ("-" for first entry).
+            end: End ID ("+" for last entry).
+            count: Optional maximum number of entries to return.
+            
+        Returns:
+            List of (entry_id, data_dict) tuples with verified data.
+            Tampered messages are skipped and logged.
+            
+        Raises:
+            ConnectionError: If not connected to Redis.
+        """
+        import json
+        
+        if not self._is_connected or not self._master:
+            raise ConnectionError("Not connected to Redis")
+        
+        try:
+            result = await self._master.xrange(
+                stream,
+                min=start,
+                max=end,
+                count=count,
+            )
+            
+            if not result:
+                return []
+            
+            verified_messages: list[tuple[str, dict]] = []
+            tampered_count = 0
+            
+            # Process each message
+            for entry_id, fields in result:
+                # Decode bytes if needed
+                if isinstance(entry_id, bytes):
+                    entry_id = entry_id.decode("utf-8")
+                
+                # Get payload field
+                payload = fields.get(b"payload") or fields.get("payload")
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8")
+                
+                if not payload:
+                    log.warning(
+                        "security_audit_tampered_message",
+                        message_id=entry_id,
+                        reason="missing_payload",
+                    )
+                    tampered_count += 1
+                    continue
+                
+                # Verify HMAC signature
+                verified_content = self._verify_message(payload)
+                if verified_content is None:
+                    log.warning(
+                        "security_audit_tampered_message",
+                        message_id=entry_id,
+                        reason="invalid_signature",
+                    )
+                    tampered_count += 1
+                    continue
+                
+                # Parse JSON data
+                try:
+                    data = json.loads(verified_content)
+                except json.JSONDecodeError:
+                    log.warning(
+                        "security_audit_tampered_message",
+                        message_id=entry_id,
+                        reason="invalid_json",
+                    )
+                    tampered_count += 1
+                    continue
+                
+                verified_messages.append((entry_id, data))
+            
+            if tampered_count > 0:
+                log.warning(
+                    "stream_range_read_with_tampering",
+                    stream=stream,
+                    verified_count=len(verified_messages),
+                    tampered_count=tampered_count,
+                )
+            
+            return verified_messages
+        except Exception as e:
+            if "ConnectionError" in str(type(e).__name__):
+                log.warning("redis_xrange_failed_connection", error=str(e))
+                self._is_connected = False
+                raise ConnectionError(f"Connection lost during xrange: {e}") from e
+            raise
+
+    # ====================
     # Task 8: Key-Value Operations (Story 5.8)
     # ====================
 

@@ -330,6 +330,11 @@ class EngagementConfig(BaseModel):
     objectives: List[str] = Field(default_factory=list)
     max_agents: PositiveInt = 1000
     auto_pause_hours: PositiveInt = 24
+    
+    # Waiver fields (Story 13.9)
+    waiver_hash: Optional[str] = None
+    waiver_signature: Optional[str] = None
+    waiver_timestamp: Optional[str] = None
 
 
 class ThrottleConfig(BaseModel):

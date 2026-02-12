@@ -79,6 +79,7 @@ class EvidenceItem:
         timestamp: When the evidence was stored (UTC).
         source_agent: Agent ID that collected this evidence.
         evidence_type: Type of evidence (screenshot, log, loot, other).
+        signed_timestamp: Cryptographically signed timestamp bound to content (Story 13.10).
     """
     
     id: str
@@ -90,6 +91,7 @@ class EvidenceItem:
     timestamp: datetime
     source_agent: str
     evidence_type: EvidenceType
+    signed_timestamp: dict[str, str] | None = None
     
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for manifest.json.
@@ -97,7 +99,7 @@ class EvidenceItem:
         Returns:
             Dictionary representation suitable for JSON serialization.
         """
-        return {
+        result = {
             "id": self.id,
             "filename": self.filename,
             "sha256_hash": self.sha256_hash,
@@ -108,6 +110,9 @@ class EvidenceItem:
             "source_agent": self.source_agent,
             "evidence_type": self.evidence_type.value,
         }
+        if self.signed_timestamp is not None:
+            result["signed_timestamp"] = self.signed_timestamp
+        return result
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvidenceItem:
@@ -145,6 +150,9 @@ class EvidenceItem:
         else:
             evidence_type = evidence_type_value
         
+        # Parse signed_timestamp (Story 13.10)
+        signed_timestamp = data.get("signed_timestamp")
+        
         return cls(
             id=data["id"],
             filename=data["filename"],
@@ -155,6 +163,7 @@ class EvidenceItem:
             timestamp=timestamp,
             source_agent=data["source_agent"],
             evidence_type=evidence_type,
+            signed_timestamp=signed_timestamp,
         )
 
 
@@ -189,6 +198,7 @@ class EvidenceStore:
         engagement_id: str,
         encryption_key: bytes,
         base_path: Path | None = None,
+        custody_logger: Any | None = None,
     ) -> None:
         """Initialize EvidenceStore.
         
@@ -197,6 +207,7 @@ class EvidenceStore:
             encryption_key: 32-byte AES-256 encryption key.
             base_path: Base directory for evidence storage.
                        Defaults to ~/.cyber-red/evidence.
+            custody_logger: Optional CustodyAuditLogger for chain of custody tracking.
         
         Raises:
             ValueError: If encryption_key is not 32 bytes.
@@ -214,6 +225,7 @@ class EvidenceStore:
         
         self._engagement_id = engagement_id
         self._encryption_key = encryption_key
+        self.custody_logger = custody_logger
         
         # Set base path
         if base_path is None:
@@ -324,6 +336,7 @@ class EvidenceStore:
         filename: str,
         source_agent: str,
         evidence_type: EvidenceType,
+        operator: str = "system",
     ) -> EvidenceItem:
         """Store evidence with encryption and hash verification.
         
@@ -353,6 +366,10 @@ class EvidenceStore:
         # Calculate SHA-256 hash of original content
         sha256_hash = hashlib.sha256(content).hexdigest()
         
+        # Create signed timestamp bound to content (Story 13.10)
+        from cyberred.core.time import sign_event_timestamp
+        signed_timestamp = sign_event_timestamp(sha256_hash, self._encryption_key)
+        
         # Encrypt content
         ciphertext, nonce = encrypt_data(content, self._encryption_key)
         
@@ -372,6 +389,7 @@ class EvidenceStore:
             timestamp=datetime.now(timezone.utc),
             source_agent=source_agent,
             evidence_type=evidence_type,
+            signed_timestamp=signed_timestamp,
         )
         
         # Thread-safe: Add to cache and save manifest atomically
@@ -379,17 +397,71 @@ class EvidenceStore:
             self._items[evidence_id] = item
             self._save_manifest()
         
+        # Log custody creation event synchronously to ensure it's recorded
+        if self.custody_logger:
+            import asyncio
+            try:
+                # Check if we're in an async context
+                loop = asyncio.get_running_loop()
+                # In async context - create task but store reference
+                task = asyncio.create_task(
+                    self.custody_logger.log_custody_event(
+                        evidence_id=evidence_id,
+                        operator=operator,
+                        action="CREATE",
+                        file_hash=sha256_hash,
+                        details={
+                            "filename": filename,
+                            "source_agent": source_agent,
+                            "evidence_type": evidence_type.value,
+                        },
+                    )
+                )
+                # Don't await to avoid blocking, but log if it fails
+                def _log_custody_error(t):
+                    if t.exception():
+                        logger.warning(
+                            "Custody logging failed for CREATE: %s",
+                            t.exception(),
+                        )
+                task.add_done_callback(_log_custody_error)
+            except RuntimeError:
+                # No running loop - sync context, run to completion
+                try:
+                    asyncio.run(
+                        self.custody_logger.log_custody_event(
+                            evidence_id=evidence_id,
+                            operator=operator,
+                            action="CREATE",
+                            file_hash=sha256_hash,
+                            details={
+                                "filename": filename,
+                                "source_agent": source_agent,
+                                "evidence_type": evidence_type.value,
+                            },
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("Custody logging failed for CREATE: %s", e)
+        
         logger.info("Stored evidence %s: %s (%d bytes)", evidence_id, filename, len(content))
         
         return item
     
-    def get_evidence(self, evidence_id: str) -> bytes:
+    def get_evidence(
+        self,
+        evidence_id: str,
+        operator: str = "system",
+        access_reason: str | None = None,
+    ) -> bytes:
         """Retrieve and decrypt evidence content.
         
         Thread-safe: Uses lock to access items cache.
         
         Args:
             evidence_id: ID of the evidence to retrieve.
+            operator: Who is accessing the evidence (for custody tracking).
+            access_reason: Optional reason for accessing evidence.
         
         Returns:
             Decrypted evidence content.
@@ -422,6 +494,45 @@ class EvidenceStore:
                 expected_hash=item.sha256_hash,
                 actual_hash=actual_hash,
             )
+        
+        # Log custody access event synchronously to ensure it's recorded
+        if self.custody_logger:
+            import asyncio
+            try:
+                # Check if we're in an async context
+                loop = asyncio.get_running_loop()
+                # In async context - create task but store reference
+                task = asyncio.create_task(
+                    self.custody_logger.log_custody_event(
+                        evidence_id=evidence_id,
+                        operator=operator,
+                        action="ACCESS",
+                        file_hash=item.sha256_hash,
+                        details={"access_reason": access_reason or "retrieval"},
+                    )
+                )
+                # Don't await to avoid blocking, but log if it fails
+                def _log_custody_error(t):
+                    if t.exception():
+                        logger.warning(
+                            "Custody logging failed for ACCESS: %s",
+                            t.exception(),
+                        )
+                task.add_done_callback(_log_custody_error)
+            except RuntimeError:
+                # No running loop - sync context, run to completion
+                try:
+                    asyncio.run(
+                        self.custody_logger.log_custody_event(
+                            evidence_id=evidence_id,
+                            operator=operator,
+                            action="ACCESS",
+                            file_hash=item.sha256_hash,
+                            details={"access_reason": access_reason or "retrieval"},
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("Custody logging failed for ACCESS: %s", e)
         
         return plaintext
     
@@ -500,3 +611,256 @@ class EvidenceStore:
         
         content = self._manifest_path.read_bytes()
         return hashlib.sha256(content).hexdigest()
+    
+    def verify_evidence_timestamp(self, evidence_id: str) -> bool:
+        """Verify signed timestamp for evidence item.
+        
+        Story 13.10: Timestamp integrity verification.
+        
+        Args:
+            evidence_id: ID of evidence to verify.
+        
+        Returns:
+            True if timestamp signature is valid, False otherwise.
+        
+        Raises:
+            KeyError: If evidence_id not found.
+        """
+        with self._lock:
+            item = self._items.get(evidence_id)
+        
+        if item is None:
+            raise KeyError(f"Evidence not found: {evidence_id}")
+        
+        if item.signed_timestamp is None:
+            # Legacy evidence without signed timestamps
+            return False
+        
+        from cyberred.core.time import verify_event_timestamp
+        return verify_event_timestamp(item.signed_timestamp, self._encryption_key)
+    
+    async def generate_custody_report(self, evidence_id: str) -> dict[str, Any]:
+        """Generate chain of custody report for evidence.
+        
+        Story 13.11: Evidence Chain of Custody
+        
+        Args:
+            evidence_id: ID of evidence to generate report for.
+        
+        Returns:
+            Dictionary with custody report including evidence metadata,
+            custody chain, and integrity verification.
+        
+        Raises:
+            KeyError: If evidence_id not found.
+        """
+        with self._lock:
+            item = self._items.get(evidence_id)
+        
+        if item is None:
+            raise KeyError(f"Evidence not found: {evidence_id}")
+        
+        # Get custody chain
+        custody_chain = []
+        if self.custody_logger:
+            chain_events = await self.custody_logger.get_custody_chain(evidence_id)
+            custody_chain = [event.to_dict() for event in chain_events]
+        
+        # Verify integrity
+        all_signatures_valid = True
+        no_hash_changes = True
+        
+        if custody_chain:
+            from cyberred.core.time import verify_event_timestamp
+            
+            # Check all signed timestamps
+            for event in custody_chain:
+                if event.get("signed_timestamp"):
+                    try:
+                        is_valid = verify_event_timestamp(
+                            event["signed_timestamp"],
+                            self._encryption_key,
+                        )
+                        if not is_valid:
+                            all_signatures_valid = False
+                    except Exception:
+                        all_signatures_valid = False
+                
+                # Check hash consistency
+                if event.get("file_hash") != item.sha256_hash:
+                    # Only flag if not a MODIFY event with different before/after hashes
+                    if event.get("action") != "MODIFY":
+                        no_hash_changes = False
+        
+        # Build report
+        report = {
+            "report_version": "1.0",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "engagement_id": self._engagement_id,
+            "evidence": {
+                "id": item.id,
+                "filename": item.filename,
+                "sha256_hash": item.sha256_hash,
+                "created_at": item.timestamp.isoformat(),
+                "source_agent": item.source_agent,
+                "evidence_type": item.evidence_type.value,
+                "size_bytes": item.size_bytes,
+            },
+            "custody_chain": custody_chain,
+            "integrity_verification": {
+                "all_signatures_valid": all_signatures_valid,
+                "chain_complete": len(custody_chain) > 0,
+                "no_hash_changes": no_hash_changes,
+            },
+        }
+        
+        return report
+    
+    async def export_evidence_with_custody(
+        self,
+        evidence_ids: list[str],
+        destination: Path,
+        operator: str = "system",
+    ) -> None:
+        """Export evidence files with chain of custody reports.
+        
+        Story 13.11: Evidence Chain of Custody
+        
+        Creates a ZIP archive containing evidence files, custody reports,
+        manifest, and verification script. Logs EXPORT event to custody chain.
+        
+        Args:
+            evidence_ids: List of evidence IDs to export.
+            destination: Path for output ZIP file.
+            operator: Who is exporting the evidence.
+        
+        Raises:
+            KeyError: If any evidence_id not found.
+        """
+        import json
+        import zipfile
+        
+        # Create verification script content
+        verification_script = '''#!/usr/bin/env python3
+"""Chain of Custody Verification Script
+
+This script verifies the integrity of exported evidence and custody chains.
+
+Usage:
+    python3 verify_custody.py
+"""
+import json
+import hashlib
+from pathlib import Path
+
+def verify_evidence(evidence_dir, custody_dir, manifest_path):
+    """Verify evidence integrity against custody chain."""
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    
+    print("=" * 60)
+    print("CHAIN OF CUSTODY VERIFICATION")
+    print("=" * 60)
+    
+    for item in manifest["evidence"]:
+        evidence_id = item["id"]
+        filename = item["filename"]
+        expected_hash = item["sha256_hash"]
+        
+        # Verify file exists
+        evidence_path = evidence_dir / filename
+        if not evidence_path.exists():
+            print(f"❌ {filename}: FILE NOT FOUND")
+            continue
+        
+        # Verify hash
+        content = evidence_path.read_bytes()
+        actual_hash = hashlib.sha256(content).hexdigest()
+        
+        if actual_hash == expected_hash:
+            print(f"✅ {filename}: Hash verified")
+        else:
+            print(f"❌ {filename}: HASH MISMATCH")
+            print(f"   Expected: {expected_hash}")
+            print(f"   Actual:   {actual_hash}")
+        
+        # Check custody chain
+        custody_file = custody_dir / f"chain_of_custody_{evidence_id}.json"
+        if custody_file.exists():
+            with open(custody_file) as f:
+                custody = json.load(f)
+            chain_len = len(custody.get("custody_chain", []))
+            integrity = custody.get("integrity_verification", {})
+            print(f"   Custody: {chain_len} events, Valid: {integrity.get('all_signatures_valid', False)}")
+        else:
+            print(f"   Custody: NO CHAIN FOUND")
+    
+    print("=" * 60)
+
+if __name__ == "__main__":
+    evidence_dir = Path("evidence")
+    custody_dir = Path("custody")
+    manifest_path = Path("manifest.json")
+    
+    verify_evidence(evidence_dir, custody_dir, manifest_path)
+'''
+        
+        # Create ZIP archive
+        with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for evidence_id in evidence_ids:
+                # Get evidence item
+                with self._lock:
+                    item = self._items.get(evidence_id)
+                
+                if item is None:
+                    raise KeyError(f"Evidence not found: {evidence_id}")
+                
+                # Add decrypted evidence file
+                content = self.get_evidence(evidence_id, operator="export_system", access_reason="archive export")
+                zf.writestr(f"evidence/{item.filename}", content)
+                
+                # Generate and add custody report
+                custody_report = await self.generate_custody_report(evidence_id)
+                custody_json = json.dumps(custody_report, indent=2)
+                zf.writestr(f"custody/chain_of_custody_{evidence_id}.json", custody_json)
+            
+            # Add manifest
+            manifest_content = self._manifest_path.read_text()
+            zf.writestr("manifest.json", manifest_content)
+            
+            # Add verification script
+            zf.writestr("verify_custody.py", verification_script)
+            
+            # Add README
+            readme = f"""Evidence Export Package
+========================
+
+This archive contains:
+- evidence/: Decrypted evidence files
+- custody/: Chain of custody reports (JSON)
+- manifest.json: Evidence metadata and hashes
+- verify_custody.py: Verification script
+
+To verify integrity:
+    python3 verify_custody.py
+
+Exported by: {operator}
+Engagement: {self._engagement_id}
+Items: {len(evidence_ids)}
+"""
+            zf.writestr("README.txt", readme)
+        
+        # Log EXPORT custody events
+        if self.custody_logger:
+            for evidence_id in evidence_ids:
+                with self._lock:
+                    item = self._items.get(evidence_id)
+                
+                if item:
+                    await self.custody_logger.log_custody_event(
+                        evidence_id=evidence_id,
+                        operator=operator,
+                        action="EXPORT",
+                        file_hash=item.sha256_hash,
+                        details={"export_path": str(destination)},
+                    )

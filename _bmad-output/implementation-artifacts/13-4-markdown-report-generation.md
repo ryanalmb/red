@@ -1,6 +1,6 @@
 # Story 13.4: Markdown Report Generation
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -393,6 +393,23 @@ Claude (Anthropic)
   - Implemented save_report/save_signed_report functions
   - Added exports to storage/__init__.py
   - All 67 tests passing with 100% coverage
+
+- 2026-02-12: **Adversarial Code Review (AI)**
+  - **Issues Found:** 5 HIGH, 2 MEDIUM
+  - **Issues Fixed:** 5/5 HIGH, 2/2 MEDIUM
+  - **HIGH Issues Fixed:**
+    1. SignedReport dataclass now frozen (immutable) - security hardening
+    2. TimelineEvent dataclass now frozen (immutable) - data integrity
+    3. ReportData dataclass now frozen (immutable) - data integrity
+    4. `_format_duration` now raises ValueError for negative durations (end < start)
+    5. Zero-duration now displays "< 1 minute" instead of confusing "0 minutes"
+  - **MEDIUM Issues Fixed:**
+    1. Added test for zero-duration edge case
+    2. Added test for negative duration validation
+  - **New Tests Added:** 5 (immutability tests + edge case duration tests)
+  - **Total Tests:** 72 (59 unit + 13 integration)
+  - **Coverage:** 100% on report_generator.py
+  - **Reviewer:** Rovo Dev (AI) on 2026-02-12
 
 ### Debug Log References
 N/A - Implementation completed without issues

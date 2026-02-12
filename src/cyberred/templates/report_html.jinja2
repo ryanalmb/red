@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        /* Dark Theme CSS - Matching TUI Aesthetic */
+        :root {
+            --bg-primary: #1e1e1e;
+            --bg-secondary: #252526;
+            --bg-tertiary: #2d2d2d;
+            --text-primary: #d4d4d4;
+            --text-secondary: #808080;
+            --accent-critical: #f44336;
+            --accent-high: #ff9800;
+            --accent-medium: #ffeb3b;
+            --accent-low: #4caf50;
+            --accent-info: #2196f3;
+            --border-color: #3c3c3c;
+            --link-color: #569cd6;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--text-primary);
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        h1 { font-size: 2rem; border-bottom: 2px solid var(--border-color); padding-bottom: 0.5rem; }
+        h2 { font-size: 1.5rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.25rem; }
+        h3 { font-size: 1.25rem; }
+
+        p {
+            margin-bottom: 1rem;
+        }
+
+        a {
+            color: var(--link-color);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        code, pre {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        code {
+            padding: 0.2rem 0.4rem;
+            font-size: 0.9em;
+        }
+
+        pre {
+            padding: 1rem;
+            overflow-x: auto;
+            margin-bottom: 1rem;
+            border: 1px solid var(--border-color);
+        }
+
+        pre code {
+            padding: 0;
+            background: transparent;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 1.5rem;
+            background: var(--bg-secondary);
+        }
+
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        th {
+            background: var(--bg-tertiary);
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background: var(--bg-tertiary);
+        }
+
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.25rem;
+        }
+
+        /* Report Header */
+        header.report-header {
+            background: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-color);
+        }
+
+        header.report-header h1 {
+            margin-top: 0;
+            border-bottom: none;
+        }
+
+        .metadata {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .metadata p {
+            margin-bottom: 0.25rem;
+        }
+
+        /* Table of Contents */
+        nav.toc {
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            border: 1px solid var(--border-color);
+        }
+
+        nav.toc h2 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            border-bottom: none;
+        }
+
+        nav.toc ul {
+            list-style: none;
+            margin-left: 0;
+        }
+
+        nav.toc li {
+            margin-bottom: 0.5rem;
+        }
+
+        /* Sections */
+        section {
+            margin-bottom: 2.5rem;
+        }
+
+        /* Severity Badges */
+        .severity-badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .severity-critical {
+            background: var(--accent-critical);
+            color: white;
+        }
+
+        .severity-high {
+            background: var(--accent-high);
+            color: black;
+        }
+
+        .severity-medium {
+            background: var(--accent-medium);
+            color: black;
+        }
+
+        .severity-low {
+            background: var(--accent-low);
+            color: white;
+        }
+
+        .severity-info {
+            background: var(--accent-info);
+            color: white;
+        }
+
+        /* Finding Cards */
+        .finding {
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            border-left: 4px solid var(--border-color);
+        }
+
+        .finding-critical { border-left-color: var(--accent-critical); }
+        .finding-high { border-left-color: var(--accent-high); }
+        .finding-medium { border-left-color: var(--accent-medium); }
+        .finding-low { border-left-color: var(--accent-low); }
+        .finding-info { border-left-color: var(--accent-info); }
+
+        .finding h4 {
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .finding-meta {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Footer */
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        footer code {
+            font-size: 0.8rem;
+        }
+
+        /* Print Styles */
+        @media print {
+            body {
+                background: white;
+                color: black;
+                padding: 0;
+            }
+
+            header.report-header,
+            nav.toc,
+            section,
+            .finding {
+                background: white;
+                border-color: #ccc;
+            }
+
+            .severity-badge {
+                border: 1px solid currentColor;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="report-header">
+        <h1>{{ title }}</h1>
+        <div class="metadata">
+            <p><strong>Engagement ID:</strong> {{ engagement_id }}</p>
+            <p><strong>Generated:</strong> {{ generated_at }}</p>
+            <p><strong>Duration:</strong> {{ duration }}</p>
+        </div>
+    </header>
+
+    <nav class="toc">
+        <h2>Table of Contents</h2>
+        <ul>
+            <li><a href="#executive-summary">Executive Summary</a></li>
+            <li><a href="#scope">Scope</a></li>
+            <li><a href="#findings">Findings</a></li>
+            <li><a href="#timeline">Timeline</a></li>
+            <li><a href="#appendix">Appendix</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <section id="executive-summary">
+            <h2>Executive Summary</h2>
+            {{ executive_summary | replace('\n', '<br>') | safe }}
+        </section>
+
+        <section id="scope">
+            <h2>Scope</h2>
+            <h3>Targets</h3>
+            <ul>
+            {% for target in scope.targets %}
+                <li><code>{{ target }}</code></li>
+            {% endfor %}
+            </ul>
+            {% if scope.exclusions %}
+            <h3>Exclusions</h3>
+            <ul>
+            {% for exclusion in scope.exclusions %}
+                <li><code>{{ exclusion }}</code></li>
+            {% endfor %}
+            </ul>
+            {% endif %}
+        </section>
+
+        <section id="findings">
+            <h2>Findings</h2>
+            <p>Total: <strong>{{ total_findings }}</strong> findings discovered.</p>
+
+            {% if findings_critical %}
+            <h3><span class="severity-badge severity-critical">Critical</span> ({{ findings_critical | length }})</h3>
+            {% for finding in findings_critical %}
+            <div class="finding finding-critical">
+                <h4>
+                    <span class="severity-badge severity-critical">Critical</span>
+                    {{ finding.title }}
+                </h4>
+                <div class="finding-meta">
+                    <strong>ID:</strong> {{ finding.id }} |
+                    <strong>Target:</strong> {{ finding.target }} |
+                    <strong>Tool:</strong> {{ finding.tool | default('N/A') }}
+                </div>
+                <p>{{ finding.description }}</p>
+                {% if finding.remediation %}
+                <p><strong>Remediation:</strong> {{ finding.remediation }}</p>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% if findings_high %}
+            <h3><span class="severity-badge severity-high">High</span> ({{ findings_high | length }})</h3>
+            {% for finding in findings_high %}
+            <div class="finding finding-high">
+                <h4>
+                    <span class="severity-badge severity-high">High</span>
+                    {{ finding.title }}
+                </h4>
+                <div class="finding-meta">
+                    <strong>ID:</strong> {{ finding.id }} |
+                    <strong>Target:</strong> {{ finding.target }} |
+                    <strong>Tool:</strong> {{ finding.tool | default('N/A') }}
+                </div>
+                <p>{{ finding.description }}</p>
+                {% if finding.remediation %}
+                <p><strong>Remediation:</strong> {{ finding.remediation }}</p>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% if findings_medium %}
+            <h3><span class="severity-badge severity-medium">Medium</span> ({{ findings_medium | length }})</h3>
+            {% for finding in findings_medium %}
+            <div class="finding finding-medium">
+                <h4>
+                    <span class="severity-badge severity-medium">Medium</span>
+                    {{ finding.title }}
+                </h4>
+                <div class="finding-meta">
+                    <strong>ID:</strong> {{ finding.id }} |
+                    <strong>Target:</strong> {{ finding.target }} |
+                    <strong>Tool:</strong> {{ finding.tool | default('N/A') }}
+                </div>
+                <p>{{ finding.description }}</p>
+                {% if finding.remediation %}
+                <p><strong>Remediation:</strong> {{ finding.remediation }}</p>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% if findings_low %}
+            <h3><span class="severity-badge severity-low">Low</span> ({{ findings_low | length }})</h3>
+            {% for finding in findings_low %}
+            <div class="finding finding-low">
+                <h4>
+                    <span class="severity-badge severity-low">Low</span>
+                    {{ finding.title }}
+                </h4>
+                <div class="finding-meta">
+                    <strong>ID:</strong> {{ finding.id }} |
+                    <strong>Target:</strong> {{ finding.target }} |
+                    <strong>Tool:</strong> {{ finding.tool | default('N/A') }}
+                </div>
+                <p>{{ finding.description }}</p>
+                {% if finding.remediation %}
+                <p><strong>Remediation:</strong> {{ finding.remediation }}</p>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% endif %}
+
+            {% if findings_info %}
+            <h3><span class="severity-badge severity-info">Info</span> ({{ findings_info | length }})</h3>
+            {% for finding in findings_info %}
+            <div class="finding finding-info">
+                <h4>
+                    <span class="severity-badge severity-info">Info</span>
+                    {{ finding.title }}
+                </h4>
+                <div class="finding-meta">
+                    <strong>ID:</strong> {{ finding.id }} |
+                    <strong>Target:</strong> {{ finding.target }} |
+                    <strong>Tool:</strong> {{ finding.tool | default('N/A') }}
+                </div>
+                <p>{{ finding.description }}</p>
+            </div>
+            {% endfor %}
+            {% endif %}
+        </section>
+
+        <section id="timeline">
+            <h2>Timeline</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Event Type</th>
+                        <th>Agent</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for event in timeline %}
+                    <tr>
+                        <td><code>{{ event.timestamp }}</code></td>
+                        <td>{{ event.event_type }}</td>
+                        <td>{{ event.agent_id }}</td>
+                        <td>{{ event.description }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section id="appendix">
+            <h2>Appendix</h2>
+
+            <h3>Tool Summary</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Tool</th>
+                        <th>Findings Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for tool, count in tool_summary.items() %}
+                    <tr>
+                        <td>{{ tool }}</td>
+                        <td>{{ count }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+
+            <h3>Agent Activity Summary</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Agent ID</th>
+                        <th>Actions Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for agent, count in agent_summary.items() %}
+                    <tr>
+                        <td>{{ agent }}</td>
+                        <td>{{ count }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <footer>
+        <p><strong>Report Hash:</strong> <code>{{ report_hash }}</code></p>
+        <p>Generated by Cyber-Red Autonomous Penetration Testing Framework</p>
+    </footer>
+</body>
+</html>

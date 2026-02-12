@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "title": "SARIF 2.1.0 Schema (Minimal)",
+  "description": "Minimal SARIF v2.1.0 schema for validation",
+  "type": "object",
+  "required": ["version", "runs"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The URI of the JSON schema"
+    },
+    "version": {
+      "type": "string",
+      "enum": ["2.1.0"],
+      "description": "The SARIF format version"
+    },
+    "runs": {
+      "type": "array",
+      "description": "The set of runs contained in this log file",
+      "items": {
+        "type": "object",
+        "required": ["tool"],
+        "properties": {
+          "tool": {
+            "type": "object",
+            "description": "Information about the tool that produced this run",
+            "required": ["driver"],
+            "properties": {
+              "driver": {
+                "type": "object",
+                "description": "The tool driver",
+                "required": ["name"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "The name of the tool"
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "The tool version"
+                  },
+                  "informationUri": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "The absolute URI at which information about this tool can be found"
+                  },
+                  "rules": {
+                    "type": "array",
+                    "description": "An array of rule definitions",
+                    "items": {
+                      "type": "object",
+                      "required": ["id"],
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "A stable identifier for this rule"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "A rule name"
+                        },
+                        "shortDescription": {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "defaultConfiguration": {
+                          "type": "object",
+                          "properties": {
+                            "level": {
+                              "type": "string",
+                              "enum": ["none", "note", "warning", "error"]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "results": {
+            "type": "array",
+            "description": "The set of results produced by the tool",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ruleId": {
+                  "type": "string",
+                  "description": "The stable identifier of the rule violated"
+                },
+                "level": {
+                  "type": "string",
+                  "enum": ["none", "note", "warning", "error"],
+                  "description": "The severity of the result"
+                },
+                "message": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "description": "The message text"
+                    }
+                  }
+                },
+                "locations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "physicalLocation": {
+                        "type": "object",
+                        "properties": {
+                          "artifactLocation": {
+                            "type": "object",
+                            "properties": {
+                              "uri": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "partialFingerprints": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "properties": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

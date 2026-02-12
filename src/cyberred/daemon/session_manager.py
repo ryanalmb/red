@@ -282,7 +282,7 @@ class SessionManager:
         # Prune history if needed
         self._prune_history()
 
-        # Check total capacity (if pruning didn't help because all are active)
+        # Validate total capacity (if pruning didn't help because all are active)
         if len(self._engagements) >= self._max_history:
              raise ResourceLimitError(
                 message=(
@@ -320,6 +320,14 @@ class SessionManager:
                 ),
             )
 
+        # Story 13.9: Show waiver and get acceptance
+        waiver_acceptance = self._get_waiver_acceptance(config_path)
+        
+        # Store waiver data in config
+        config["waiver_hash"] = waiver_acceptance.waiver_hash
+        config["waiver_signature"] = waiver_acceptance.signature
+        config["waiver_timestamp"] = waiver_acceptance.timestamp
+
         # Generate ID and create context
         engagement_id = self._generate_id(name)
         state_machine = EngagementStateMachine(engagement_id)
@@ -327,6 +335,7 @@ class SessionManager:
             id=engagement_id,
             state_machine=state_machine,
             config_path=config_path,
+            engagement_config=config,  # Store config with waiver data
         )
 
         # Attach state listener for Redis propagation
@@ -346,9 +355,104 @@ class SessionManager:
             engagement_id=engagement_id,
             config_path=str(config_path),
             state=str(state_machine.current_state),
+            waiver_accepted=waiver_acceptance.accepted,
         )
 
         return engagement_id
+    
+    def _get_waiver_acceptance(self, config_path: Path) -> "WaiverAcceptance":
+        """Get waiver acceptance from operator (TUI or CLI fallback).
+        
+        Story 13.9: Pre-engagement liability waiver workflow.
+        
+        Args:
+            config_path: Path to engagement config (used to find waiver config).
+            
+        Returns:
+            WaiverAcceptance with operator's decision.
+            
+        Raises:
+            ConfigurationError: If waiver is declined.
+        """
+        from cyberred.tui.screens.waiver import (
+            load_waiver_config,
+            compute_waiver_hash,
+            WaiverAcceptance,
+        )
+        from datetime import datetime, timezone
+        
+        # Load waiver configuration
+        waiver_config_path = config_path.parent / "waiver.yaml"
+        waiver_config = load_waiver_config(
+            waiver_config_path if waiver_config_path.exists() else None
+        )
+        
+        # Check if we're in TUI context (has event loop and display)
+        # For now, use CLI fallback (TUI integration is Task 20 - future work)
+        acceptance = self._cli_waiver_prompt(waiver_config)
+        
+        if not acceptance.accepted:
+            raise ConfigurationError(
+                config_path=str(config_path),
+                message="Waiver declined by operator. Engagement creation cancelled.",
+            )
+        
+        return acceptance
+    
+    def _cli_waiver_prompt(self, waiver_config: "WaiverConfig") -> "WaiverAcceptance":
+        """CLI text-based waiver acceptance prompt.
+        
+        Story 13.9: Fallback for non-TUI contexts (headless, CI/CD).
+        
+        Args:
+            waiver_config: Loaded waiver configuration.
+            
+        Returns:
+            WaiverAcceptance with operator's decision.
+        """
+        from cyberred.tui.screens.waiver import WaiverAcceptance, compute_waiver_hash
+        from datetime import datetime, timezone
+        
+        print("\n" + "=" * 80)
+        print("PRE-ENGAGEMENT LIABILITY WAIVER")
+        print("=" * 80)
+        print(f"Organization: {waiver_config.organization_name}\n")
+        print(waiver_config.waiver_text)
+        print("=" * 80 + "\n")
+        
+        # Get acknowledgment
+        while True:
+            ack = input("Do you acknowledge and accept this waiver? (yes/no): ").strip().lower()
+            if ack in ("yes", "y"):
+                break
+            elif ack in ("no", "n"):
+                timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                return WaiverAcceptance(
+                    accepted=False,
+                    signature="",
+                    timestamp=timestamp,
+                    waiver_hash="",
+                )
+            else:
+                print("Please enter 'yes' or 'no'.")
+        
+        # Get signature
+        while True:
+            signature = input("Enter your full name (signature): ").strip()
+            if signature:
+                break
+            print("Signature cannot be empty.")
+        
+        # Create acceptance record
+        timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        waiver_hash = compute_waiver_hash(waiver_config.waiver_text)
+        
+        return WaiverAcceptance(
+            accepted=True,
+            signature=signature,
+            timestamp=timestamp,
+            waiver_hash=waiver_hash,
+        )
 
     def get_engagement(self, engagement_id: str) -> Optional[EngagementContext]:
         """Get engagement context by ID.
@@ -990,6 +1094,42 @@ class SessionManager:
         if engagement_id not in self._subscriptions:
             return 0
         return len(self._subscriptions[engagement_id])
+
+    async def get_engagement_statistics(
+        self,
+        engagement_id: str,
+    ) -> "EngagementStatistics":
+        """Get comprehensive statistics for an engagement.
+        
+        Story 13.12: Engagement Summary Statistics
+        
+        Args:
+            engagement_id: Engagement ID to get statistics for.
+            
+        Returns:
+            Aggregated engagement statistics.
+            
+        Raises:
+            EngagementNotFoundError: If engagement doesn't exist.
+        """
+        from cyberred.storage.statistics import EngagementStatisticsAggregator
+        
+        # Get real LLM gateway from engagement context if available
+        context = self.get_engagement_or_raise(engagement_id)
+        llm_gateway = None
+        
+        # Try to get LLM gateway from orchestrator
+        if context.orchestrator and hasattr(context.orchestrator, '_llm_gateway'):
+            llm_gateway = context.orchestrator._llm_gateway
+        
+        aggregator = EngagementStatisticsAggregator(
+            session_manager=self,
+            checkpoint_manager=self._checkpoint_manager,
+            llm_gateway=llm_gateway,
+            event_bus=self._event_bus,
+        )
+        
+        return await aggregator.get_statistics(engagement_id)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Graceful Shutdown Methods (Story 2.11)

@@ -5,17 +5,28 @@ Runs one or more BMAD stories in sequence (or an entire epic) by spawning a fres
 `acli rovodev run --yolo` process per stage.
 
 Stages per story:
-  1) Create Story (optional)
-  2) Dev Story
-  3) Code Review (retry up to N)
+  1) Create Story (optional - skipped if story file exists)
+  2) ATDD - Generate failing acceptance tests before implementation
+  3) Dev Story (TDD implementation - make tests pass)
+  4) Code Review (adversarial review, retry up to N)
+  5) Automate - Expand test automation coverage
+  6) Test Review - Review test quality and best practices
+  7) Trace - Requirements traceability matrix and quality gate [GATE]
 
 State/resume:
   - Saves progress to `.rovodev/pipeline/state.json`
   - Outputs per stage to `.rovodev/pipeline/runs/<story_key>/<stage>-output.txt`
 
+Site Credit Management:
+  - Monitors credit balance from rovodev logs before/after each stage
+  - Automatically switches to next billing site when credits are low
+  - Handles rate limiting (MINUTE_LIMIT_EXCEEDED) with retry delays
+  - Configure available sites in BILLING_SITES list
+  - Threshold for switching: MIN_CREDITS_THRESHOLD (default 1000)
+
 Global requirements injected into every stage:
   - STRICT TDD
-  - Activate `venv` (not `.venv`)
+  - Use direct python3 commands (no venv)
   - 100% coverage (targeted subset only; never run full suite)
   - Integration tests: real production code, minimal mocking
   - Always load full files and full epic context
@@ -45,11 +56,40 @@ import json
 import re
 import subprocess
 import sys
+import time
+import yaml
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
+
+
+# =============================================================================
+# Site Credit Management Configuration
+# =============================================================================
+
+# List of available Atlassian billing sites (in order of preference)
+# The pipeline will automatically switch to the next site when credits are low
+BILLING_SITES = [
+    "https://dlow1.atlassian.net",
+    "https://dlow2.atlassian.net",
+    "https://dlow3.atlassian.net",
+    "https://dlow4.atlassian.net",
+    "https://dlow5.atlassian.net",
+    "https://dlow6.atlassian.net",
+    "https://dlow7.atlassian.net",
+    "https://dlow8.atlassian.net",
+    "https://dlow9.atlassian.net",
+]
+
+# Credit thresholds
+MIN_CREDITS_THRESHOLD = 300  # Switch site when monthly remaining credits fall below this
+RATE_LIMIT_RETRY_DELAY = 60   # Seconds to wait when rate limited before retrying
+
+# Config file paths
+ROVODEV_CONFIG_PATH = Path.home() / ".rovodev" / "config.yml"
+ROVODEV_LOG_PATH = Path.home() / ".rovodev" / "logs" / "rovodev.log"
 
 
 # =============================================================================
@@ -60,8 +100,24 @@ GLOBAL_RULES = """
 ## MANDATORY RULES FOR THIS TASK
 
 ### Environment
-- ALWAYS activate virtual environment first: `source venv/bin/activate`
-- Run all Python/pytest commands INSIDE the activated venv
+- Use direct `python3` and `pytest` commands (no venv activation needed)
+
+### File Reading
+- When reading workflow files, ALWAYS expand truncated content fully
+- Do NOT work with partial/truncated file content
+
+### Epic Context
+- When creating/working on a story, load the ENTIRE epic context (all stories in that epic)
+
+### Integration Tests (MANDATORY)
+- Write STRICT integration tests that test ACTUAL PRODUCTION CODE
+- NO MOCKS or MINIMAL mocks only - test real behavior
+- Place integration tests in `tests/integration/`
+- Run ONLY the relevant integration tests you add/modify
+"""
+
+DEV_RULES = """
+## MANDATORY DEV RULES
 
 ### Test-Driven Development (TDD)
 - STRICT TDD: Write tests FIRST, then implementation - NO EXCEPTIONS
@@ -85,12 +141,11 @@ GLOBAL_RULES = """
 - Place integration tests in `tests/integration/`
 - Run ONLY the relevant integration tests you add/modify
 
-### File Reading
-- When reading workflow files, ALWAYS expand truncated content fully
-- Do NOT work with partial/truncated file content
-
-### Epic Context
-- When creating/working on a story, load the ENTIRE epic context (all stories in that epic)
+### Existing Test Files
+- Before writing any tests, check if test files already exist for this component
+- If tests exist: READ them first, understand what's covered, then EXTEND/MODIFY as needed
+- Do NOT overwrite existing tests - preserve existing test logic and add to it
+- Only create new test files if none exist for the component
 """
 
 
@@ -205,9 +260,191 @@ class BatchState:
 
 STAGES = [
     {"id": "create-story", "name": "Create Story", "gate": False, "workflow": ".rovodev/workflows/create-story.md", "skip_if_story_file": True},
+    {"id": "atdd", "name": "ATDD (Acceptance Tests)", "gate": False, "workflow": ".rovodev/workflows/testarch-atdd.md"},
     {"id": "dev-story", "name": "Dev Story", "gate": False, "workflow": ".rovodev/workflows/dev-story.md"},
     {"id": "code-review", "name": "Code Review", "gate": False, "workflow": ".rovodev/workflows/code-review.md", "max_retries": 2},
+    # DISABLED: Steps 5 & 6 temporarily disabled
+    # {"id": "automate", "name": "Test Automation", "gate": False, "workflow": ".rovodev/workflows/testarch-automate.md"},
+    # {"id": "test-review", "name": "Test Review", "gate": False, "workflow": ".rovodev/workflows/testarch-test-review.md"},
+    {"id": "trace", "name": "Traceability", "gate": True, "workflow": ".rovodev/workflows/testarch-trace.md"},
 ]
+
+
+# =============================================================================
+# Site Credit Management Functions
+# =============================================================================
+
+@dataclass
+class CreditStatus:
+    """Credit balance status from a site."""
+    site_url: str
+    status: str  # OK, MINUTE_LIMIT_EXCEEDED, etc.
+    monthly_remaining: Optional[int] = None
+    monthly_total: Optional[int] = None
+    retry_after_seconds: Optional[int] = None
+    is_healthy: bool = True
+    error_message: Optional[str] = None
+
+
+def get_current_billing_site() -> str:
+    """Read the current billing site from rovodev config."""
+    if not ROVODEV_CONFIG_PATH.exists():
+        return BILLING_SITES[0]
+    
+    try:
+        config = yaml.safe_load(ROVODEV_CONFIG_PATH.read_text())
+        return config.get("atlassianBillingSite", {}).get("siteUrl", BILLING_SITES[0])
+    except Exception:
+        return BILLING_SITES[0]
+
+
+def set_billing_site(site_url: str) -> bool:
+    """Update the billing site in rovodev config.
+    
+    Returns True if successful, False otherwise.
+    """
+    if not ROVODEV_CONFIG_PATH.exists():
+        print(f"[SITE] Config file not found: {ROVODEV_CONFIG_PATH}")
+        return False
+    
+    try:
+        config = yaml.safe_load(ROVODEV_CONFIG_PATH.read_text())
+        
+        if "atlassianBillingSite" not in config:
+            config["atlassianBillingSite"] = {}
+        
+        old_site = config["atlassianBillingSite"].get("siteUrl", "unknown")
+        config["atlassianBillingSite"]["siteUrl"] = site_url
+        
+        # Write back with preserved formatting
+        with open(ROVODEV_CONFIG_PATH, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        
+        print(f"[SITE] Switched billing site: {old_site} → {site_url}")
+        return True
+    except Exception as e:
+        print(f"[SITE] Failed to update config: {e}")
+        return False
+
+
+def parse_credit_status_from_log() -> Optional[CreditStatus]:
+    """Parse the most recent credit status from rovodev log.
+    
+    Looks for lines like:
+    [get_usage_data] Raw API response: {'status': 'OK', 'balance': {...}, ...}
+    """
+    if not ROVODEV_LOG_PATH.exists():
+        return None
+    
+    try:
+        # Read last 100KB of log to find recent usage data
+        log_content = ROVODEV_LOG_PATH.read_text(errors="replace")[-100000:]
+        
+        # Find the most recent get_usage_data line
+        pattern = r"\[get_usage_data\] Raw API response: (\{.+?\})\s*$"
+        matches = list(re.finditer(pattern, log_content, re.MULTILINE))
+        
+        if not matches:
+            return None
+        
+        last_match = matches[-1]
+        # Parse the dict-like string (it's Python repr, not JSON)
+        response_str = last_match.group(1)
+        # Convert Python repr to valid JSON
+        response_str = response_str.replace("'", '"').replace("None", "null").replace("True", "true").replace("False", "false")
+        
+        # Handle truncated responses
+        if "..." in response_str:
+            return None
+            
+        response = json.loads(response_str)
+        
+        current_site = get_current_billing_site()
+        balance = response.get("balance", {})
+        
+        status = CreditStatus(
+            site_url=current_site,
+            status=response.get("status", "UNKNOWN"),
+            monthly_remaining=balance.get("monthlyRemaining"),
+            monthly_total=balance.get("monthlyTotal"),
+            retry_after_seconds=response.get("retryAfterSeconds"),
+        )
+        
+        # Determine health
+        if status.status == "MINUTE_LIMIT_EXCEEDED":
+            status.is_healthy = False
+            status.error_message = "Per-minute rate limit exceeded"
+        elif status.monthly_remaining is not None and status.monthly_remaining < MIN_CREDITS_THRESHOLD:
+            status.is_healthy = False
+            status.error_message = f"Low credits: {status.monthly_remaining} remaining"
+        elif status.status != "OK":
+            status.is_healthy = False
+            status.error_message = f"Status: {status.status}"
+        
+        return status
+    except Exception as e:
+        print(f"[SITE] Failed to parse credit status from log: {e}")
+        return None
+
+
+def find_next_available_site(current_site: str) -> Optional[str]:
+    """Find the next site in the rotation after the current one.
+    
+    Returns None if no other sites are available.
+    """
+    if current_site not in BILLING_SITES:
+        return BILLING_SITES[0] if BILLING_SITES else None
+    
+    current_idx = BILLING_SITES.index(current_site)
+    
+    # Try sites after current one, then wrap around
+    for i in range(1, len(BILLING_SITES)):
+        next_idx = (current_idx + i) % len(BILLING_SITES)
+        return BILLING_SITES[next_idx]
+    
+    return None
+
+
+def handle_credit_check() -> bool:
+    """Check credit status and switch sites if needed.
+    
+    Returns True if ready to proceed, False if should abort.
+    """
+    status = parse_credit_status_from_log()
+    
+    if status is None:
+        # No status available, proceed anyway
+        print("[SITE] No recent credit status found, proceeding...")
+        return True
+    
+    print(f"[SITE] Credit status: {status.status}, remaining: {status.monthly_remaining}")
+    
+    if status.is_healthy:
+        return True
+    
+    # Handle rate limiting with retry
+    if status.status == "MINUTE_LIMIT_EXCEEDED":
+        retry_delay = status.retry_after_seconds or RATE_LIMIT_RETRY_DELAY
+        print(f"[SITE] Rate limited. Waiting {retry_delay}s before retry...")
+        time.sleep(retry_delay)
+        return True
+    
+    # Need to switch sites
+    print(f"[SITE] Site unhealthy: {status.error_message}")
+    
+    next_site = find_next_available_site(status.site_url)
+    if next_site is None:
+        print("[SITE] ERROR: No alternative sites available!")
+        return False
+    
+    if set_billing_site(next_site):
+        print(f"[SITE] Successfully switched to {next_site}")
+        # Small delay to let config propagate
+        time.sleep(2)
+        return True
+    else:
+        print("[SITE] ERROR: Failed to switch sites!")
+        return False
 
 
 # =============================================================================
@@ -297,6 +534,7 @@ STORY_FILE: _bmad-output/implementation-artifacts/{epic}-{story_num}-<name>.md
     if stage_id == "dev-story":
         return f"""
 {GLOBAL_RULES}
+{DEV_RULES}
 
 ## TASK: Implement Story {story_key}
 
@@ -314,6 +552,30 @@ Required output line:
 DEV_STATUS: DONE or BLOCKED
 """.strip()
 
+    if stage_id == "atdd":
+        return f"""
+{GLOBAL_RULES}
+
+## TASK: ATDD - Generate Acceptance Tests {story_key}
+
+Generate failing acceptance tests BEFORE implementation using TDD red-green-refactor cycle.
+
+Story file: @{story_file}
+
+1. Read and follow workflow: @.rovodev/workflows/testarch-atdd.md
+2. Load full context:
+   - Architecture: @_bmad-output/planning-artifacts/architecture.md
+   - Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
+3. For each acceptance criterion in the story:
+   - Write failing acceptance test (RED)
+   - Tests should be executable and verify the AC
+4. Run autonomously (YOLO)
+5. All tests should FAIL at this stage (no implementation yet)
+
+Required output line:
+ATDD_STATUS: TESTS_READY or BLOCKED
+""".strip()
+
     if stage_id == "code-review":
         return f"""
 {GLOBAL_RULES}
@@ -328,6 +590,84 @@ Story file: @{story_file}
 
 Required output line:
 REVIEW_STATUS: PASS or NEEDS_FIXES
+""".strip()
+
+    if stage_id == "automate":
+        return f"""
+{GLOBAL_RULES}
+
+## TASK: Expand Test Automation {story_key}
+
+Expand test automation coverage after implementation.
+
+Story file: @{story_file}
+
+1. Read and follow workflow: @.rovodev/workflows/testarch-automate.md
+2. Load full context:
+   - Architecture: @_bmad-output/planning-artifacts/architecture.md
+   - Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
+3. Analyze implemented code and generate comprehensive test suite:
+   - Unit tests for all new functions/methods
+   - Integration tests for component interactions
+   - Edge cases and error handling tests
+4. Run autonomously (YOLO)
+5. All tests should PASS
+
+Required output line:
+AUTOMATE_STATUS: COMPLETE or NEEDS_WORK
+""".strip()
+
+    if stage_id == "test-review":
+        return f"""
+{GLOBAL_RULES}
+
+## TASK: Test Quality Review {story_key}
+
+Review test quality using comprehensive knowledge base and best practices validation.
+
+Story file: @{story_file}
+
+1. Read and follow workflow: @.rovodev/workflows/testarch-test-review.md
+2. Load full context:
+   - Architecture: @_bmad-output/planning-artifacts/architecture.md
+   - Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
+3. Review all tests for this story:
+   - Test structure and organization
+   - Assertion quality and coverage
+   - Test isolation and independence
+   - Naming conventions and readability
+   - Edge case coverage
+4. Fix any test quality issues found
+5. Run autonomously (YOLO)
+
+Required output line:
+TEST_REVIEW_STATUS: PASS or NEEDS_FIXES
+""".strip()
+
+    if stage_id == "trace":
+        return f"""
+{GLOBAL_RULES}
+
+## TASK: Requirements Traceability {story_key}
+
+Generate requirements-to-tests traceability matrix and make quality gate decision.
+
+Story file: @{story_file}
+
+1. Read and follow workflow: @.rovodev/workflows/testarch-trace.md
+2. Load full context:
+   - PRD (FRS/NFRs): @_bmad-output/planning-artifacts/prd.md
+   - Architecture: @_bmad-output/planning-artifacts/architecture.md
+   - Full Epic {epic}: @_bmad-output/planning-artifacts/epics-stories.md
+3. Generate traceability matrix:
+   - Map each acceptance criterion to test(s)
+   - Identify any gaps in coverage
+   - Verify NFR compliance
+4. Make quality gate decision
+5. Run autonomously (YOLO)
+
+Required output line:
+TRACE_STATUS: PASS or CONCERNS or FAIL or WAIVED
 """.strip()
 
     raise ValueError(f"Unknown stage: {stage_id}")
@@ -494,6 +834,15 @@ class Pipeline:
         out_dir.mkdir(parents=True, exist_ok=True)
         output_file = out_dir / f"{stage_id}-output.txt"
 
+        # Pre-stage credit check - ensure we have credits before starting
+        if not handle_credit_check():
+            sr["status"] = StageStatus.FAILED.value
+            sr["error_message"] = "No credits available on any site"
+            sr["end_time"] = datetime.now().isoformat()
+            self.state.current_story = story
+            self.state.save()
+            return False
+
         sr["status"] = StageStatus.RUNNING.value
         sr["start_time"] = datetime.now().isoformat()
         sr["output_file"] = str(output_file)
@@ -505,6 +854,7 @@ class Pipeline:
 
         print(f"\n--- Stage: {stage_name} ({story.story_key}) ---")
         print(f"Output: {output_file}")
+        print(f"[SITE] Using billing site: {get_current_billing_site()}")
 
         try:
             res = subprocess.run(cmd, text=True, timeout=3600)
@@ -517,12 +867,23 @@ class Pipeline:
             return False
 
         sr["end_time"] = datetime.now().isoformat()
-        sr["status"] = StageStatus.PASSED.value if res.returncode == 0 else StageStatus.FAILED.value
+        
+        # Post-stage credit check - handle failures that might be credit-related
         if res.returncode != 0:
+            # Check if failure was due to credit issues
+            credit_status = parse_credit_status_from_log()
+            if credit_status and not credit_status.is_healthy:
+                print(f"[SITE] Stage may have failed due to credit issues: {credit_status.error_message}")
+                # Try to switch sites for next attempt
+                handle_credit_check()
+            
+            sr["status"] = StageStatus.FAILED.value
             sr["error_message"] = f"Exit code {res.returncode}"
             self.state.current_story = story
             self.state.save()
             return False
+
+        sr["status"] = StageStatus.PASSED.value
 
         # Post-process stage outputs
         if stage_id == "create-story":

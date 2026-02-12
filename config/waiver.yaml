@@ -1,0 +1,33 @@
+# Pre-Engagement Liability Waiver Configuration
+# Story 13.9: Customizable waiver text for your organization
+
+# Organization name - used in waiver text substitution
+organization_name: "Cyber-Red Organization"
+
+# Whether to require signature (default: true)
+require_signature: true
+
+# Waiver text - supports variable substitution:
+#   {{org_name}} - Replaced with organization_name above
+#   {{date}} - Replaced with current date (YYYY-MM-DD)
+waiver_text: |
+  CYBER SECURITY ENGAGEMENT LIABILITY WAIVER
+  
+  Organization: {{org_name}}
+  Date: {{date}}
+  
+  By accepting this waiver, I acknowledge that:
+  
+  1. I have proper authorization to conduct security testing on the specified targets
+  2. I understand the risks associated with offensive security operations
+  3. I will operate only within the defined scope and will not exceed authorized boundaries
+  4. I accept full responsibility for all actions performed during this engagement
+  5. I will comply with all applicable laws, regulations, and organizational policies
+  6. I will protect the confidentiality of any sensitive information discovered
+  7. I will report all findings through proper channels and will not disclose them publicly
+  
+  This waiver is legally binding and will be included in the tamper-evident audit trail.
+  
+  DISCLAIMER: This is a default template. Organizations should consult qualified legal
+  counsel to ensure compliance with local laws, regulations, and specific organizational
+  requirements. This template does not constitute legal advice.

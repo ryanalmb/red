@@ -66,6 +66,7 @@ class AuthorizationAuditEntry:
         auto_denied: Whether this was an automatic denial due to timeout.
         delivery_latency_ms: Delivery latency in milliseconds (NFR5 tracking).
         swarm_snapshot: Agent distribution at request time.
+        signed_timestamp: Cryptographically signed timestamp (Story 13.10).
     """
     request_id: str
     decision: str
@@ -78,6 +79,7 @@ class AuthorizationAuditEntry:
     auto_denied: bool = False
     delivery_latency_ms: float | None = None
     swarm_snapshot: dict[str, Any] | None = None
+    signed_timestamp: dict[str, Any] | None = None
     
     def to_dict(self) -> dict[str, Any]:
         """Convert audit entry to dictionary for storage.
@@ -85,7 +87,7 @@ class AuthorizationAuditEntry:
         Returns:
             Dictionary representation of the audit entry.
         """
-        return {
+        result = {
             "event_type": self.event_type,
             "timestamp": self.timestamp,
             "request_id": self.request_id,
@@ -97,7 +99,9 @@ class AuthorizationAuditEntry:
             "auto_denied": self.auto_denied,
             "delivery_latency_ms": self.delivery_latency_ms,
             "swarm_snapshot": self.swarm_snapshot,
+            "signed_timestamp": self.signed_timestamp,
         }
+        return result
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuthorizationAuditEntry":
@@ -163,6 +167,21 @@ class AuthorizationAuditLogger:
             Stream entry ID if successful, None on failure.
         """
         try:
+            # Sign timestamp bound to entry content (Story 13.10)
+            if entry.signed_timestamp is None:
+                from cyberred.core.time import sign_event_timestamp
+                import hashlib
+                import json
+                
+                # Create deterministic hash of entry content
+                entry_content = f"{entry.request_id}|{entry.decision}|{entry.operator}"
+                event_hash = hashlib.sha256(entry_content.encode()).hexdigest()
+                
+                # Use a derived key for audit signing (based on Redis client's connection)
+                # In production, this should use engagement-specific key
+                signing_key = b"audit_signing_key_placeholder_32"  # TODO: Use actual engagement key
+                entry.signed_timestamp = sign_event_timestamp(event_hash, signing_key)
+            
             entry_dict = entry.to_dict()
             
             entry_id = await self._redis_client.xadd(
@@ -475,6 +494,7 @@ class ExportAuditEntry:
         item_count: Number of items exported (for archives).
         engagement_name: Name of the engagement.
         operator: Who initiated the export.
+        signed_timestamp: Cryptographically signed timestamp (Story 13.10).
     """
     event_type: str
     destination: str
@@ -485,6 +505,7 @@ class ExportAuditEntry:
     item_count: int | None = None
     engagement_name: str | None = None
     operator: str = "operator"
+    signed_timestamp: dict[str, Any] | None = None
     
     def to_dict(self) -> dict[str, Any]:
         """Convert audit entry to dictionary for storage.
@@ -712,6 +733,7 @@ class DeletionAuditEntry:
         total_deleted: Number of items deleted (for bulk).
         total_failed: Number of items that failed (for bulk).
         operator: Who initiated the deletion.
+        signed_timestamp: Cryptographically signed timestamp (Story 13.10).
     """
     event_type: str
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -723,6 +745,7 @@ class DeletionAuditEntry:
     total_deleted: int | None = None
     total_failed: int | None = None
     operator: str = "operator"
+    signed_timestamp: dict[str, Any] | None = None
     
     def to_dict(self) -> dict[str, Any]:
         """Convert audit entry to dictionary for storage.
@@ -919,3 +942,292 @@ def init_deletion_audit_logger(
     deletion_logger = DeletionAuditLogger(redis_client)
     set_deletion_audit_logger(deletion_logger)
     return deletion_logger
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CustodyAuditLogger - Story 13.11
+# ─────────────────────────────────────────────────────────────────────────────
+
+CUSTODY_STREAM_NAME = "custody"
+
+
+@dataclass
+class CustodyEvent:
+    """Chain of custody event for evidence handling.
+    
+    Story 13.11: Evidence Chain of Custody
+    
+    Tracks all access, export, and modification events for legal audit.
+    Per FR52: Chain of custody for legal defensibility.
+    
+    Attributes:
+        event_id: Unique event ID (UUID).
+        evidence_id: Evidence item being tracked.
+        engagement_id: Engagement context.
+        operator: Who accessed/exported the evidence.
+        action: ACCESS | EXPORT | MODIFY | CREATE | DELETE.
+        timestamp: ISO 8601 UTC timestamp.
+        file_hash: SHA-256 hash at time of event.
+        file_hash_before: For MODIFY events, hash before modification.
+        details: Additional context (export path, access reason, etc.).
+        signed_timestamp: Cryptographic timestamp signature (Story 13.10).
+    """
+    event_id: str
+    evidence_id: str
+    engagement_id: str
+    operator: str
+    action: str
+    timestamp: str
+    file_hash: str
+    file_hash_before: str | None = None
+    details: dict[str, Any] | None = None
+    signed_timestamp: dict[str, Any] | None = None
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert custody event to dictionary for storage.
+        
+        Returns:
+            Dictionary representation of the custody event.
+        """
+        result = {
+            "event_id": self.event_id,
+            "evidence_id": self.evidence_id,
+            "engagement_id": self.engagement_id,
+            "operator": self.operator,
+            "action": self.action,
+            "timestamp": self.timestamp,
+            "file_hash": self.file_hash,
+            "file_hash_before": self.file_hash_before,
+            "details": self.details or {},
+            "signed_timestamp": self.signed_timestamp,
+        }
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CustodyEvent":
+        """Create CustodyEvent from dictionary.
+        
+        Args:
+            data: Dictionary with custody event data.
+            
+        Returns:
+            CustodyEvent instance.
+            
+        Raises:
+            KeyError: If required fields are missing.
+            ValueError: If field values are invalid.
+        """
+        # Validate required fields
+        required_fields = ["event_id", "evidence_id", "engagement_id", "operator", "action", "timestamp", "file_hash"]
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            raise KeyError(f"Missing required custody event fields: {missing_fields}")
+        
+        # Validate action type
+        valid_actions = ["CREATE", "ACCESS", "EXPORT", "MODIFY", "DELETE"]
+        action = data["action"]
+        if action not in valid_actions:
+            raise ValueError(f"Invalid custody action '{action}', must be one of {valid_actions}")
+        
+        return cls(
+            event_id=data["event_id"],
+            evidence_id=data["evidence_id"],
+            engagement_id=data["engagement_id"],
+            operator=data["operator"],
+            action=action,
+            timestamp=data["timestamp"],
+            file_hash=data["file_hash"],
+            file_hash_before=data.get("file_hash_before"),
+            details=data.get("details"),
+            signed_timestamp=data.get("signed_timestamp"),
+        )
+
+
+class CustodyAuditLogger:
+    """Audit logger for evidence chain of custody.
+    
+    Story 13.11: Evidence Chain of Custody
+    
+    Logs all evidence access, export, and modification events to
+    Redis Streams for tamper-evident audit trail.
+    
+    Implements FR52: Chain of custody for legal defensibility.
+    
+    Attributes:
+        _engagement_id: Engagement ID for stream key.
+        _redis_client: Redis client for stream operations.
+        _stream_key: Redis stream key (custody:{engagement_id}).
+        _signing_key: Key for signing timestamps.
+    """
+    
+    def __init__(
+        self,
+        engagement_id: str,
+        redis_client: "RedisClient",
+        signing_key: bytes | None = None,
+    ) -> None:
+        """Initialize CustodyAuditLogger.
+        
+        Args:
+            engagement_id: Engagement ID for stream key.
+            redis_client: Redis client for stream operations.
+            signing_key: Key for signing timestamps (default: placeholder).
+        """
+        self._engagement_id = engagement_id
+        self._redis_client = redis_client
+        self._stream_key = f"{CUSTODY_STREAM_NAME}:{engagement_id}"
+        # Use derived key from engagement_id for consistency with RedisClient
+        if signing_key is None:
+            from cyberred.core.keystore import derive_key
+            self._signing_key = derive_key(engagement_id, salt=b"hmac-sha256")
+        else:
+            self._signing_key = signing_key
+    
+    async def log_custody_event(
+        self,
+        evidence_id: str,
+        operator: str,
+        action: str,
+        file_hash: str,
+        details: dict[str, Any] | None = None,
+        file_hash_before: str | None = None,
+    ) -> str:
+        """Log custody event to Redis Streams.
+        
+        Args:
+            evidence_id: Evidence item ID.
+            operator: Who performed the action.
+            action: Action type (CREATE, ACCESS, EXPORT, MODIFY, DELETE).
+            file_hash: SHA-256 hash at time of event.
+            details: Additional context dict.
+            file_hash_before: For MODIFY actions, hash before modification.
+            
+        Returns:
+            Event ID for tracking.
+        """
+        import uuid
+        from cyberred.core.time import sign_event_timestamp
+        
+        # Generate unique event ID
+        event_id = str(uuid.uuid4())
+        
+        # Sign timestamp bound to file hash
+        signed_ts = sign_event_timestamp(file_hash, self._signing_key)
+        
+        # Create event
+        event = CustodyEvent(
+            event_id=event_id,
+            evidence_id=evidence_id,
+            engagement_id=self._engagement_id,
+            operator=operator,
+            action=action,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            file_hash=file_hash,
+            file_hash_before=file_hash_before,
+            details=details or {},
+            signed_timestamp=signed_ts,
+        )
+        
+        # Write to Redis Streams (append-only)
+        await self._redis_client.xadd(self._stream_key, event.to_dict())
+        
+        logger.info(
+            "Custody event logged: %s (action=%s, evidence=%s, operator=%s)",
+            event_id,
+            action,
+            evidence_id,
+            operator,
+        )
+        
+        return event_id
+    
+    async def get_custody_chain(
+        self,
+        evidence_id: str,
+        limit: int = 1000,
+    ) -> list[CustodyEvent]:
+        """Reconstruct chain of custody for evidence.
+        
+        Returns all custody events for given evidence_id,
+        ordered chronologically (oldest to newest).
+        
+        Implements pagination to prevent memory exhaustion on large chains.
+        
+        Args:
+            evidence_id: Evidence item ID to query.
+            limit: Maximum number of events to retrieve (default: 1000).
+            
+        Returns:
+            List of CustodyEvent ordered by timestamp.
+        """
+        # Read events from stream with pagination
+        events = await self._redis_client.xrange(
+            self._stream_key, 
+            "-", 
+            "+",
+            count=limit,
+        )
+        
+        # Filter by evidence_id and parse
+        chain = []
+        for event_id, event_data in events:
+            if event_data.get("evidence_id") == evidence_id:
+                try:
+                    chain.append(CustodyEvent.from_dict(event_data))
+                except (KeyError, ValueError, TypeError) as e:
+                    # Log corrupted event but continue processing
+                    logger.warning(
+                        "Skipping corrupted custody event: %s (evidence=%s, error=%s)",
+                        event_id,
+                        evidence_id,
+                        str(e),
+                    )
+        
+        # Sort chronologically
+        chain.sort(key=lambda e: e.timestamp)
+        
+        return chain
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level custody audit logger instance (singleton pattern)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_custody_audit_logger_instance: CustodyAuditLogger | None = None
+
+
+def get_custody_audit_logger() -> CustodyAuditLogger | None:
+    """Get the global custody audit logger instance.
+    
+    Returns:
+        CustodyAuditLogger instance, or None if not initialized.
+    """
+    return _custody_audit_logger_instance
+
+
+def set_custody_audit_logger(logger_instance: CustodyAuditLogger | None) -> None:
+    """Set the global custody audit logger instance.
+    
+    Args:
+        logger_instance: CustodyAuditLogger instance to set, or None to reset.
+    """
+    global _custody_audit_logger_instance
+    _custody_audit_logger_instance = logger_instance
+
+
+def init_custody_audit_logger(
+    engagement_id: str,
+    redis_client: "RedisClient",
+) -> CustodyAuditLogger:
+    """Initialize and set the global custody audit logger.
+    
+    Args:
+        engagement_id: Engagement ID for stream key.
+        redis_client: Redis client for stream operations.
+        
+    Returns:
+        Initialized CustodyAuditLogger instance.
+    """
+    custody_logger = CustodyAuditLogger(engagement_id, redis_client)
+    set_custody_audit_logger(custody_logger)
+    return custody_logger

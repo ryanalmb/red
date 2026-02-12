@@ -491,14 +491,21 @@ class PreFlightRunner:
     """
     
     def __init__(self, checks: Optional[list[PreFlightCheck]] = None) -> None:
-        self.checks: list[PreFlightCheck] = checks or [
-            RedisCheck(),
-            LLMCheck(),
-            ScopeCheck(),
-            DiskCheck(),
-            MemoryCheck(),
-            CertCheck(),
-        ]
+        if checks is None:
+            # Import here to avoid circular dependency
+            from cyberred.daemon.preflight_waiver import WaiverPreFlightCheck
+            
+            checks = [
+                RedisCheck(),
+                LLMCheck(),
+                ScopeCheck(),
+                DiskCheck(),
+                MemoryCheck(),
+                CertCheck(),
+                WaiverPreFlightCheck(),
+            ]
+        
+        self.checks: list[PreFlightCheck] = checks
 
     async def run_all(self, engagement_config: dict[str, Any]) -> list[CheckResult]:
         """Run all configured checks in priority order."""

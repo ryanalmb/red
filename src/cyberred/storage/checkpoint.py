@@ -75,6 +75,7 @@ class CheckpointData:
     agents: list[AgentState] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
+    signed_timestamp: dict[str, str] | None = None
 
 
 class CheckpointScopeChangedError(CheckpointIntegrityError):
@@ -422,6 +423,11 @@ class CheckpointManager:
             )
             self._set_metadata(conn, "signature", signature)
             
+            # Create signed timestamp for checkpoint (Story 13.10)
+            from cyberred.core.time import sign_event_timestamp
+            signed_timestamp = sign_event_timestamp(signature, b"checkpoint_key_placeholder_32__")
+            self._set_metadata(conn, "signed_timestamp", json.dumps(signed_timestamp, cls=CheckpointJSONEncoder))
+            
             conn.commit()
             conn.close()
             
@@ -566,6 +572,20 @@ class CheckpointManager:
                             actual_scope_hash=current_hash,
                         )
             
+            # Load signed_timestamp (Story 13.10)
+            signed_timestamp_str = self._get_metadata(conn, "signed_timestamp")
+            signed_timestamp = None
+            if signed_timestamp_str:
+                signed_timestamp = json.loads(signed_timestamp_str)
+                
+                # Verify signature
+                from cyberred.core.time import verify_event_timestamp
+                if not verify_event_timestamp(signed_timestamp, b"checkpoint_key_placeholder_32__"):
+                    log.warning(
+                        "checkpoint_timestamp_signature_invalid",
+                        path=str(checkpoint_path),
+                    )
+            
             log.info(
                 "checkpoint_loaded",
                 engagement_id=engagement_id,
@@ -582,6 +602,7 @@ class CheckpointManager:
                 agents=agents,
                 findings=findings,
                 config=config,
+                signed_timestamp=signed_timestamp,
             )
             
         finally:

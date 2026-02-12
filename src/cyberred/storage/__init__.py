@@ -52,14 +52,31 @@ from cyberred.storage.operator_audit import (
     init_operator_audit_log,
 )
 from cyberred.storage.report_generator import (
+    HTMLReportGenerator,
     MarkdownReportGenerator,
     ReportData,
     SignedReport,
     TimelineEvent,
+    embed_screenshot,
+    embed_screenshots_in_html,
     save_report,
     save_signed_report,
     sign_report,
     verify_signature,
+)
+from cyberred.storage.sarif_exporter import (
+    SARIFExporter,
+    validate_sarif,
+)
+from cyberred.storage.stix_exporter import (
+    STIXExporter,
+    validate_stix,
+)
+from cyberred.storage.csv_excel_exporter import (
+    CSVExporter,
+    ExcelExporter,
+    export_findings_csv,
+    export_findings_xlsx,
 )
 
 __all__ = [
@@ -112,4 +129,19 @@ __all__ = [
     "save_signed_report",
     "sign_report",
     "verify_signature",
+    # HTML Report Generator (Story 13.5)
+    "HTMLReportGenerator",
+    "embed_screenshot",
+    "embed_screenshots_in_html",
+    # SARIF Exporter (Story 13.6)
+    "SARIFExporter",
+    "validate_sarif",
+    # STIX Exporter (Story 13.7)
+    "STIXExporter",
+    "validate_stix",
+    # CSV/Excel Exporter (Story 13.8)
+    "CSVExporter",
+    "ExcelExporter",
+    "export_findings_csv",
+    "export_findings_xlsx",
 ]

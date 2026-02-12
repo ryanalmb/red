@@ -55,6 +55,8 @@ class OperatorAction(str, Enum):
         RESUME: Operator resumed engagement
         START: Operator started engagement
         STOP: Operator stopped engagement
+        WAIVER_ACCEPTED: Operator accepted pre-engagement waiver
+        WAIVER_DECLINED: Operator declined pre-engagement waiver
     """
     APPROVE = "approve"
     DENY = "deny"
@@ -64,6 +66,8 @@ class OperatorAction(str, Enum):
     RESUME = "resume"
     START = "start"
     STOP = "stop"
+    WAIVER_ACCEPTED = "waiver_accepted"
+    WAIVER_DECLINED = "waiver_declined"
 
 
 # =============================================================================

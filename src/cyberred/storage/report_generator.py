@@ -1,16 +1,22 @@
-"""Markdown Report Generation for Cyber-Red (Story 13.4).
+"""Report Generation for Cyber-Red (Stories 13.4, 13.5).
 
-This module provides Markdown report generation using Jinja2 templates.
+This module provides Markdown and HTML report generation using Jinja2 templates.
 Reports include executive summary, findings grouped by severity, timeline,
 and cryptographic signature for integrity verification.
+
+Story 13.4: Markdown report generation
+Story 13.5: HTML report with embedded screenshots
 
 Usage:
     from cyberred.storage.report_generator import (
         MarkdownReportGenerator,
+        HTMLReportGenerator,
         ReportData,
         TimelineEvent,
         sign_report,
         save_report,
+        embed_screenshot,
+        embed_screenshots_in_html,
     )
 
     # Create report data
@@ -24,20 +30,26 @@ Usage:
         timeline_events=[...],
     )
 
-    # Generate report
-    generator = MarkdownReportGenerator()
-    content = generator.generate(report_data)
+    # Generate Markdown report
+    md_generator = MarkdownReportGenerator()
+    md_content = md_generator.generate(report_data)
+
+    # Generate HTML report with screenshots
+    html_generator = HTMLReportGenerator()
+    html_content = html_generator.generate(report_data, evidence_dir=Path("evidence/"))
 
     # Sign and save
-    signed = sign_report(content, signing_key)
-    save_signed_report(signed, Path("report.md"))
+    signed = sign_report(html_content, signing_key)
+    save_signed_report(signed, Path("report.html"))
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import resources
@@ -52,7 +64,7 @@ import jinja2
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class TimelineEvent:
     """Timeline event for engagement activity tracking.
 
@@ -62,6 +74,9 @@ class TimelineEvent:
         description: Human-readable event description.
         agent_id: ID of agent that triggered the event.
         details: Optional additional event details.
+
+    Note:
+        This dataclass is frozen (immutable) for data integrity.
     """
 
     timestamp: str
@@ -71,7 +86,7 @@ class TimelineEvent:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReportData:
     """Complete data for report generation.
 
@@ -84,6 +99,9 @@ class ReportData:
         findings: List of finding dictionaries.
         timeline_events: List of TimelineEvent objects.
         metadata: Optional additional metadata.
+
+    Note:
+        This dataclass is frozen (immutable) for data integrity.
     """
 
     engagement_id: str
@@ -91,8 +109,8 @@ class ReportData:
     start_time: datetime
     end_time: datetime | None
     scope: dict[str, Any]
-    findings: list[dict[str, Any]]
-    timeline_events: list[TimelineEvent]
+    findings: tuple[dict[str, Any], ...]
+    timeline_events: tuple[TimelineEvent, ...]
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def findings_by_severity(self) -> dict[str, list[dict[str, Any]]]:
@@ -125,7 +143,7 @@ class ReportData:
         return sorted(self.timeline_events, key=lambda e: e.timestamp)
 
 
-@dataclass
+@dataclass(frozen=True)
 class SignedReport:
     """Signed report with cryptographic signature.
 
@@ -135,6 +153,10 @@ class SignedReport:
         timestamp: Signing timestamp (ISO 8601).
         key_id: Identifier for the signing key.
         content_hash: SHA-256 hash of content.
+
+    Note:
+        This dataclass is frozen (immutable) for security - prevents
+        tampering with signed content after signature generation.
     """
 
     content: str
@@ -289,12 +311,19 @@ class MarkdownReportGenerator:
 
         Returns:
             Formatted duration string.
+
+        Raises:
+            ValueError: If end_time is before start_time.
         """
         if end_time is None:
             return "Ongoing"
 
         delta = end_time - start_time
         total_seconds = int(delta.total_seconds())
+
+        # Validate: end_time must not be before start_time
+        if total_seconds < 0:
+            raise ValueError("end_time cannot be before start_time")
 
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
@@ -303,6 +332,10 @@ class MarkdownReportGenerator:
             if minutes > 0:
                 return f"{hours} hours {minutes} minutes"
             return f"{hours} hours"
+        
+        # Handle zero or very short durations clearly
+        if minutes == 0:
+            return "< 1 minute"
         return f"{minutes} minutes"
 
     def _generate_executive_summary(
@@ -401,6 +434,195 @@ class MarkdownReportGenerator:
             agent_id = event.agent_id
             agent_counts[agent_id] = agent_counts.get(agent_id, 0) + 1
         return agent_counts
+
+
+# =============================================================================
+# HTML Report Generator (Story 13.5)
+# =============================================================================
+
+
+class HTMLReportGenerator:
+    """Generates HTML reports using Jinja2 templates.
+
+    Produces self-contained HTML reports with embedded dark theme CSS
+    and optional base64-encoded screenshots.
+
+    Uses composition with MarkdownReportGenerator for shared context preparation
+    logic to avoid code duplication.
+
+    Attributes:
+        template: Loaded Jinja2 template.
+        template_path: Path to the template file.
+        _md_generator: Internal MarkdownReportGenerator for shared logic.
+    """
+
+    def __init__(self, template_path: Path | None = None) -> None:
+        """Initialize the HTML report generator.
+
+        Args:
+            template_path: Optional custom template path. If None, uses default.
+
+        Raises:
+            FileNotFoundError: If custom template path doesn't exist.
+        """
+        if template_path is not None:
+            if not template_path.exists():
+                raise FileNotFoundError(f"Template not found: {template_path}")
+            self.template_path = template_path
+            # Load custom template
+            env = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(template_path.parent),
+                autoescape=True,
+                trim_blocks=True,
+                lstrip_blocks=True,
+            )
+            self.template = env.get_template(template_path.name)
+        else:
+            # Load default template from package
+            self.template_path = self._get_default_template_path()
+            env = jinja2.Environment(
+                loader=jinja2.FileSystemLoader(self.template_path.parent),
+                autoescape=True,
+                trim_blocks=True,
+                lstrip_blocks=True,
+            )
+            self.template = env.get_template(self.template_path.name)
+        
+        # Use composition for shared context preparation logic
+        self._md_generator = MarkdownReportGenerator()
+
+    def _get_default_template_path(self) -> Path:
+        """Get path to default HTML template.
+
+        Returns:
+            Path to the default report_html.jinja2 template.
+        """
+        # Use importlib.resources for package resources
+        try:
+            # Python 3.9+ style
+            template_dir = resources.files("cyberred.templates")
+            template_path = template_dir.joinpath("report_html.jinja2")
+            # Convert to Path for consistency
+            return Path(str(template_path))
+        except (TypeError, AttributeError):  # pragma: no cover
+            # Fallback for older Python or edge cases
+            import cyberred.templates
+            template_dir = Path(cyberred.templates.__file__).parent
+            return template_dir / "report_html.jinja2"
+
+    def generate(
+        self,
+        report_data: ReportData,
+        evidence_dir: Path | None = None,
+    ) -> str:
+        """Generate HTML report from data.
+
+        Args:
+            report_data: Complete report data.
+            evidence_dir: Optional directory containing evidence images.
+                If provided, images will be embedded as base64.
+
+        Returns:
+            Rendered HTML report string.
+        """
+        # Prepare template context using shared logic from MarkdownReportGenerator
+        context = self._md_generator._prepare_context(report_data)
+        
+        # Re-render with HTML template to get proper hash
+        context["report_hash"] = "pending"
+        initial_content = self.template.render(**context)
+        context["report_hash"] = hashlib.sha256(initial_content.encode()).hexdigest()[:16]
+
+        # Render template
+        html_content = self.template.render(**context)
+
+        # Embed screenshots if evidence directory provided
+        if evidence_dir is not None:
+            html_content = embed_screenshots_in_html(html_content, evidence_dir)
+
+        return html_content
+
+
+# =============================================================================
+# Screenshot Embedding (Story 13.5)
+# =============================================================================
+
+
+def embed_screenshot(image_path: Path) -> str:
+    """Embed image as base64 data URI.
+
+    Args:
+        image_path: Path to image file.
+
+    Returns:
+        Base64 data URI string.
+
+    Raises:
+        FileNotFoundError: If image doesn't exist.
+        ValueError: If image format not supported.
+    """
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    suffix = image_path.suffix.lower()
+    mime_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+    }
+
+    if suffix not in mime_types:
+        raise ValueError(f"Unsupported image format: {suffix}")
+
+    mime_type = mime_types[suffix]
+    image_data = image_path.read_bytes()
+    b64_data = base64.b64encode(image_data).decode("ascii")
+
+    return f"data:{mime_type};base64,{b64_data}"
+
+
+def embed_screenshots_in_html(html: str, evidence_dir: Path) -> str:
+    """Replace image src attributes with base64 data URIs.
+
+    Handles:
+    - <img src="screenshot.png">
+    - <img src="evidence/screenshot.jpg">
+    - Finding evidence references
+
+    Args:
+        html: HTML content with image references.
+        evidence_dir: Directory containing evidence images.
+
+    Returns:
+        HTML with embedded base64 images.
+    """
+    # Pattern to match img tags and capture the src value
+    pattern = r'(<img\s+[^>]*src=["\'])([^"\']+)(["\'][^>]*>)'
+
+    def replace_src(match: re.Match[str]) -> str:
+        prefix = match.group(1)
+        src = match.group(2)
+        suffix = match.group(3)
+
+        # Skip already embedded images
+        if src.startswith("data:"):
+            return match.group(0)
+
+        # Resolve path relative to evidence_dir
+        image_path = evidence_dir / src
+        if image_path.exists():
+            try:
+                data_uri = embed_screenshot(image_path)
+                return f"{prefix}{data_uri}{suffix}"
+            except ValueError:
+                # Unsupported format, keep original
+                return match.group(0)
+
+        # Keep original if not found
+        return match.group(0)
+
+    return re.sub(pattern, replace_src, html)
 
 
 # =============================================================================

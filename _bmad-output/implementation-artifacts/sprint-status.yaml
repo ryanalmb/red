@@ -260,14 +260,14 @@ development_status:
   13-2-append-only-audit-log: ready-for-dev
   13-3-sqlite-checkpoint-storage: ready-for-dev
   13-4-markdown-report-generation: ready-for-dev
-  13-5-html-report-with-screenshots: backlog
-  13-6-sarif-export: backlog
-  13-7-stix-taxii-export: backlog
-  13-8-csv-excel-export: backlog
-  13-9-pre-engagement-liability-waiver: backlog
-  13-10-timestamp-integrity: backlog
-  13-11-evidence-chain-of-custody: backlog
-  13-12-engagement-summary-statistics: backlog
+  13-5-html-report-with-screenshots: ready-for-dev
+  13-6-sarif-export: ready-for-dev
+  13-7-stix-taxii-export: ready-for-dev
+  13-8-csv-excel-export: ready-for-dev
+  13-9-pre-engagement-liability-waiver: in-progress  # Code review fixes applied, SessionManager integration partially complete
+  13-10-timestamp-integrity: ready-for-dev
+  13-11-evidence-chain-of-custody: ready-for-dev
+  13-12-engagement-summary-statistics: done
   epic-13-retrospective: optional
 
   # Epic 14: External API & Governance

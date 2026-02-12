@@ -211,10 +211,10 @@ def sample_report_data(
         start_time=datetime(2026, 2, 12, 9, 0, 0, tzinfo=timezone.utc),
         end_time=datetime(2026, 2, 12, 15, 0, 0, tzinfo=timezone.utc),
         scope=sample_scope,
-        findings=sample_findings,
-        timeline_events=[
+        findings=tuple(sample_findings),
+        timeline_events=tuple(
             TimelineEvent(**event) for event in sample_timeline_events
-        ],
+        ),
         metadata={"client": "Example Corp", "tester": "Cyber-Red"},
     )
 
@@ -270,8 +270,8 @@ class TestReportData:
             start_time=datetime(2026, 2, 12, 9, 0, 0, tzinfo=timezone.utc),
             end_time=datetime(2026, 2, 12, 15, 0, 0, tzinfo=timezone.utc),
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         assert report_data.engagement_id == "eng-001"
         assert report_data.title == "Test Report"
@@ -285,8 +285,8 @@ class TestReportData:
             start_time=datetime(2026, 2, 12, 9, 0, 0, tzinfo=timezone.utc),
             end_time=None,
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         assert report_data.end_time is None
 
@@ -314,8 +314,8 @@ class TestReportData:
             start_time=datetime.now(timezone.utc),
             end_time=None,
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         grouped = report_data.findings_by_severity()
         
@@ -331,7 +331,7 @@ class TestReportData:
             start_time=datetime.now(timezone.utc),
             end_time=None,
             scope=sample_scope,
-            findings=[
+            findings=(
                 {
                     "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
                     "type": "test",
@@ -346,8 +346,8 @@ class TestReportData:
                     "target": "192.168.1.2",
                     "description": "Valid finding",
                 },
-            ],
-            timeline_events=[],
+            ),
+            timeline_events=(),
         )
         grouped = report_data.findings_by_severity()
         
@@ -376,8 +376,8 @@ class TestReportData:
             start_time=datetime.now(timezone.utc),
             end_time=None,
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
             metadata={"extra": "data"},
         )
         assert report_data.metadata == {"extra": "data"}
@@ -390,8 +390,8 @@ class TestReportData:
             start_time=datetime.now(timezone.utc),
             end_time=None,
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         assert report_data.metadata == {} or report_data.metadata is None
 
@@ -515,8 +515,8 @@ class TestReportSections:
             start_time=start,
             end_time=end,
             scope=sample_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         
         result = generator.generate(report_data)
@@ -544,6 +544,25 @@ class TestReportSections:
         generator = MarkdownReportGenerator()
         duration = generator._format_duration(start, end)
         assert duration == "2 hours 30 minutes"
+
+    def test_duration_zero_seconds(self, sample_scope) -> None:
+        """Test duration formatting when start equals end (0 duration)."""
+        start = datetime(2026, 2, 12, 9, 0, 0, tzinfo=timezone.utc)
+        end = start  # Same time = 0 duration
+        
+        generator = MarkdownReportGenerator()
+        duration = generator._format_duration(start, end)
+        # Should indicate instant/zero duration clearly
+        assert duration == "< 1 minute"
+
+    def test_duration_negative_raises_error(self, sample_scope) -> None:
+        """Test duration formatting raises error when end is before start."""
+        start = datetime(2026, 2, 12, 12, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 2, 12, 10, 0, 0, tzinfo=timezone.utc)  # End before start
+        
+        generator = MarkdownReportGenerator()
+        with pytest.raises(ValueError, match="end_time cannot be before start_time"):
+            generator._format_duration(start, end)
 
     def test_executive_summary_includes_finding_counts(
         self, sample_report_data
@@ -647,6 +666,45 @@ class TestReportSections:
 # =============================================================================
 
 
+class TestDataclassImmutability:
+    """Tests for dataclass immutability (security requirement)."""
+
+    def test_signed_report_is_frozen(self, signing_key: bytes) -> None:
+        """Test SignedReport cannot be modified after creation."""
+        content = "# Test Report"
+        signed = sign_report(content, signing_key)
+        
+        with pytest.raises(AttributeError):
+            signed.content = "TAMPERED"
+
+    def test_timeline_event_is_frozen(self) -> None:
+        """Test TimelineEvent cannot be modified after creation."""
+        event = TimelineEvent(
+            timestamp="2026-02-12T10:00:00Z",
+            event_type="test",
+            description="Test event",
+            agent_id="agent-1",
+        )
+        
+        with pytest.raises(AttributeError):
+            event.timestamp = "TAMPERED"
+
+    def test_report_data_is_frozen(self, sample_scope) -> None:
+        """Test ReportData cannot be modified after creation."""
+        report_data = ReportData(
+            engagement_id="eng-001",
+            title="Test Report",
+            start_time=datetime.now(timezone.utc),
+            end_time=None,
+            scope=sample_scope,
+            findings=(),
+            timeline_events=(),
+        )
+        
+        with pytest.raises(AttributeError):
+            report_data.engagement_id = "TAMPERED"
+
+
 class TestReportSigning:
     """Tests for report signing functionality."""
 
@@ -717,10 +775,16 @@ class TestReportSigning:
         content = "# Test Report\n\nOriginal content."
         
         signed = sign_report(content, signing_key)
-        # Tamper with content
-        signed.content = "# Test Report\n\nTampered content!"
+        # Create a new SignedReport with tampered content (since SignedReport is frozen)
+        tampered = SignedReport(
+            content="# Test Report\n\nTampered content!",
+            signature=signed.signature,
+            timestamp=signed.timestamp,
+            key_id=signed.key_id,
+            content_hash=signed.content_hash,
+        )
         
-        result = verify_signature(signed, signing_key)
+        result = verify_signature(tampered, signing_key)
         
         assert result is False
 

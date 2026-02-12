@@ -272,8 +272,8 @@ def realistic_report_data(
         start_time=datetime(2026, 2, 12, 9, 0, 0, tzinfo=timezone.utc),
         end_time=datetime(2026, 2, 12, 15, 0, 0, tzinfo=timezone.utc),
         scope=realistic_scope,
-        findings=realistic_findings,
-        timeline_events=realistic_timeline,
+        findings=tuple(realistic_findings),
+        timeline_events=tuple(realistic_timeline),
         metadata={
             "client": "Example Corporation",
             "tester": "Cyber-Red Automated Assessment",
@@ -520,7 +520,7 @@ High: {{ findings_high | length }}
             start_time=datetime.now(timezone.utc),
             end_time=None,
             scope=realistic_scope,
-            findings=[
+            findings=(
                 {
                     "id": "550e8400-e29b-41d4-a716-446655440099",
                     "type": "xss",
@@ -535,9 +535,9 @@ High: {{ findings_high | length }}
                     "cve_id": None,
                     "cvss_score": 7.0,
                     "description": "XSS with Unicode: éàü ñ 中文",
-                }
-            ],
-            timeline_events=[],
+                },
+            ),
+            timeline_events=(),
         )
         
         generator = MarkdownReportGenerator()
@@ -554,8 +554,8 @@ High: {{ findings_high | length }}
             start_time=datetime.now(timezone.utc),
             end_time=datetime.now(timezone.utc),
             scope=realistic_scope,
-            findings=[],
-            timeline_events=[],
+            findings=(),
+            timeline_events=(),
         )
         
         generator = MarkdownReportGenerator()
