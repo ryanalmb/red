@@ -250,16 +250,16 @@ development_status:
   12-7-wifi-toolkit-wrapper: done
   12-8-natural-language-drop-box-setup: done
   12-9-pre-flight-protocol: review
-  12-10-drop-box-abort-and-wipe: backlog
-  12-11-drop-box-reconnection-handling: backlog
+  12-10-drop-box-abort-and-wipe: ready-for-dev
+  12-11-drop-box-reconnection-handling: ready-for-dev
   epic-12-retrospective: optional
 
   # Epic 13: Evidence, Reporting & Audit
-  epic-13: backlog
-  13-1-evidence-file-storage: backlog
-  13-2-append-only-audit-log: backlog
-  13-3-sqlite-checkpoint-storage: backlog
-  13-4-markdown-report-generation: backlog
+  epic-13: in-progress
+  13-1-evidence-file-storage: ready-for-dev
+  13-2-append-only-audit-log: ready-for-dev
+  13-3-sqlite-checkpoint-storage: ready-for-dev
+  13-4-markdown-report-generation: ready-for-dev
   13-5-html-report-with-screenshots: backlog
   13-6-sarif-export: backlog
   13-7-stix-taxii-export: backlog

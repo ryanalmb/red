@@ -74,6 +74,7 @@ class CheckpointData:
     schema_version: str
     agents: list[AgentState] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 class CheckpointScopeChangedError(CheckpointIntegrityError):
@@ -271,6 +272,7 @@ class CheckpointManager:
         created_at: str,
         agents: list[AgentState],
         findings: list[Finding],
+        config: Optional[dict[str, Any]] = None,
     ) -> str:
         """Calculate a deterministic signature based on checkpoint content.
         
@@ -302,7 +304,8 @@ class CheckpointManager:
                     "agent": f.agent_id,
                     "ts": f.timestamp.isoformat() if f.timestamp else created_at
                 } for f in findings_sorted
-            ]
+            ],
+            "config": json.dumps(config or {}, sort_keys=True, cls=CheckpointJSONEncoder),
         }
         
         # Calculate SHA-256 of canonical JSON representation
@@ -316,6 +319,7 @@ class CheckpointManager:
         scope_path: Optional[Path] = None,
         agents: Optional[list[AgentState]] = None,
         findings: Optional[list[Finding]] = None,
+        config: Optional[dict[str, Any]] = None,
     ) -> Path:
         """Save engagement state to checkpoint atomically.
         
@@ -324,6 +328,7 @@ class CheckpointManager:
         """
         agents = agents or []
         findings = findings or []
+        config = config or {}
         
         final_path = self._get_checkpoint_path(engagement_id)
         # Write to temp file first to ensure atomicity
@@ -355,6 +360,7 @@ class CheckpointManager:
             self._set_metadata(conn, "scope_hash", scope_hash)
             self._set_metadata(conn, "created_at", created_at)
             self._set_metadata(conn, "schema_version", SCHEMA_VERSION)
+            self._set_metadata(conn, "config", json.dumps(config, cls=CheckpointJSONEncoder))
             
             # Store engagement record (required for FKs)
             conn.execute(
@@ -412,7 +418,7 @@ class CheckpointManager:
             
             # Calculate logical signature
             signature = self._calculate_content_signature(
-                engagement_id, scope_hash, created_at, agents, findings
+                engagement_id, scope_hash, created_at, agents, findings, config
             )
             self._set_metadata(conn, "signature", signature)
             
@@ -463,6 +469,8 @@ class CheckpointManager:
             created_at_str = self._get_metadata(conn, "created_at") or ""
             schema_version = self._get_metadata(conn, "schema_version") or ""
             signature = self._get_metadata(conn, "signature") or ""
+            config_str = self._get_metadata(conn, "config") or "{}"
+            config = json.loads(config_str)
             
             # Version checking (Task 10)
             if schema_version:
@@ -530,7 +538,7 @@ class CheckpointManager:
 
             # 2. Verify Integrity (Content-based)
             calculated_sig = self._calculate_content_signature(
-                engagement_id, scope_hash, created_at_str, agents, findings
+                engagement_id, scope_hash, created_at_str, agents, findings, config
             )
             
             if signature != calculated_sig:
@@ -573,6 +581,7 @@ class CheckpointManager:
                 schema_version=schema_version,
                 agents=agents,
                 findings=findings,
+                config=config,
             )
             
         finally:
@@ -605,6 +614,8 @@ class CheckpointManager:
                 scope_hash = self._get_metadata(conn, "scope_hash")
                 created_at_str = self._get_metadata(conn, "created_at")
                 signature = self._get_metadata(conn, "signature")
+                config_str = self._get_metadata(conn, "config") or "{}"
+                config = json.loads(config_str)
                 
                 if not all([engagement_id, created_at_str, signature]): # scope_hash can be empty
                     return False
@@ -636,7 +647,7 @@ class CheckpointManager:
                     ))
                     
                 calc_sig = self._calculate_content_signature(
-                    engagement_id, scope_hash, created_at_str, agents, findings
+                    engagement_id, scope_hash, created_at_str, agents, findings, config
                 )
                 
                 return signature == calc_sig
@@ -651,6 +662,8 @@ class CheckpointManager:
     async def delete(self, engagement_id: str) -> bool:
         """Delete checkpoint for an engagement.
         
+        Also cleans up WAL and SHM journal files to prevent resource leaks.
+        
         Args:
             engagement_id: Engagement identifier.
             
@@ -658,11 +671,28 @@ class CheckpointManager:
             True if deleted, False if not found.
         """
         checkpoint_path = self._get_checkpoint_path(engagement_id)
+        deleted = False
+        
         if checkpoint_path.exists():
             checkpoint_path.unlink()
+            deleted = True
+        
+        # Clean up WAL and SHM journal files (SQLite WAL mode artifacts)
+        wal_path = checkpoint_path.with_suffix(".sqlite-wal")
+        shm_path = checkpoint_path.with_suffix(".sqlite-shm")
+        
+        if wal_path.exists():
+            wal_path.unlink()
+            log.debug("checkpoint_wal_deleted", path=str(wal_path))
+        
+        if shm_path.exists():
+            shm_path.unlink()
+            log.debug("checkpoint_shm_deleted", path=str(shm_path))
+        
+        if deleted:
             log.info("checkpoint_deleted", engagement_id=engagement_id, path=str(checkpoint_path))
-            return True
-        return False
+        
+        return deleted
 
     def list_checkpoints(self) -> list[tuple[str, Path]]:
         """List all available checkpoints.

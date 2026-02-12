@@ -33,6 +33,16 @@ from cyberred.c2.nl_interpreter import (
     DropBoxDeploymentInterpreter,
     InterpretationError,
 )
+from cyberred.c2.abort import (
+    AbortCommand,
+    AbortController,
+    AbortControllerConfig,
+    AbortReason,
+    AbortResult,
+    WipeResult,
+    WipeStatus,
+    create_abort_command_message,
+)
 from cyberred.c2.preflight import (
     PreFlightConfig,
     PreFlightProtocol,
@@ -97,4 +107,13 @@ __all__ = [
     "PreFlightStep",
     "PreFlightStepResult",
     "StepStatus",
+    # Story 12.10: Drop Box Abort & Wipe
+    "AbortCommand",
+    "AbortController",
+    "AbortControllerConfig",
+    "AbortReason",
+    "AbortResult",
+    "WipeResult",
+    "WipeStatus",
+    "create_abort_command_message",
 ]

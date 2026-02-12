@@ -443,6 +443,13 @@ class DaemonServer:
         )
 
         # Build initial state snapshot
+        scope_targets = []
+        if context.orchestrator and hasattr(context.orchestrator, "get_scope_targets"):
+            try:
+                scope_targets = context.orchestrator.get_scope_targets()
+            except Exception:
+                pass
+
         snapshot = {
             "engagement_id": engagement_id,
             "state": str(context.state),
@@ -451,6 +458,7 @@ class DaemonServer:
             "subscription_id": subscription_id,
             "agents": [],
             "findings": [],
+            "scope_targets": scope_targets,
         }
 
         log.info(

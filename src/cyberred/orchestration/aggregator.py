@@ -307,13 +307,13 @@ class FindingAggregator:
         """Stop collecting and cleanup subscriptions."""
         self._running = False
         
-        # Cleanup subscriptions
-        for subscription in self._subscriptions:
+        # Cleanup subscriptions (asyncio.Task objects from psubscribe)
+        for task in self._subscriptions:
             try:
-                await subscription.unsubscribe()
+                task.cancel()
             except Exception as e:
                 self._log.warning(
-                    "subscription_unsubscribe_error",
+                    "subscription_cancel_error",
                     error=str(e),
                 )
         self._subscriptions.clear()
@@ -586,10 +586,7 @@ class FindingAggregator:
             window_end=self._window_end,
             findings=prioritized,
         )
-        
-        # Clear window after retrieval (prepare for next cycle)
-        self.reset_window()
-        
+
         return summary
 
     # =========================================================================
@@ -644,10 +641,11 @@ class FindingAggregator:
         pattern = "findings:*"
 
         try:
-            await self._event_bus.psubscribe(
+            task = await self._event_bus.psubscribe(
                 pattern,
                 self._handle_finding_event,
             )
+            self._subscriptions.append(task)
 
             self._log.info(
                 "subscribed_to_findings",
@@ -674,8 +672,8 @@ class FindingAggregator:
         if not self._running:
             return
 
-        # Skip batch aggregation messages (no individual target/type fields)
-        if ":aggregated:" in channel:
+        # Skip batch aggregation and intel-enriched messages (no individual target/type fields)
+        if ":aggregated:" in channel or ":intel_enriched" in channel:
             return
 
         # Handle both string (JSON) and dict (pre-deserialized by EventBus)
@@ -705,7 +703,17 @@ class FindingAggregator:
         finding_type = inner.get("type", inner.get("finding_type", ""))
         severity_str = inner.get("severity", "info").upper()
         agent_id = inner.get("agent_id", data.get("agent_id", "unknown"))
-        timestamp = inner.get("timestamp", time.time())
+        raw_ts = inner.get("timestamp", None)
+        if isinstance(raw_ts, str):
+            try:
+                from datetime import datetime
+                timestamp = datetime.fromisoformat(raw_ts).timestamp()
+            except (ValueError, TypeError):
+                timestamp = time.time()
+        elif isinstance(raw_ts, (int, float)):
+            timestamp = float(raw_ts)
+        else:
+            timestamp = time.time()
         
         if not target or not finding_type:
             self._log.warning(

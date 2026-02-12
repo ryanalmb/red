@@ -43,7 +43,7 @@ HASH_PATTERNS: dict[str, tuple[str, int, str]] = {
 class CredentialAgent(StigmergicAgent):
     """Credential harvesting and cracking agent - thin subclass with LLM-driven tool selection."""
 
-    DEFAULT_MAX_ITERATIONS: int = 8
+    DEFAULT_MAX_ITERATIONS: int = 2
     DEFAULT_LOCKOUT_THRESHOLD: int = 3  # Max attempts before lockout risk
     DEFAULT_LOCKOUT_WINDOW: int = 30    # Minutes to wait between spray rounds
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 75
@@ -147,7 +147,7 @@ class CredentialAgent(StigmergicAgent):
             try:
                 selection = await self.select_tool(tool_context)
                 tool_name = selection.tool_name
-                result = await kali_execute(selection.command)
+                result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result)
@@ -335,7 +335,7 @@ class CredentialAgent(StigmergicAgent):
             )
 
             selection = await self.select_tool(tool_context)
-            result = await kali_execute(selection.command)
+            result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
             if result.success and result.stdout:
                 # Parse cracked passwords from output
@@ -405,7 +405,7 @@ class CredentialAgent(StigmergicAgent):
             )
 
             selection = await self.select_tool(tool_context)
-            result = await kali_execute(selection.command)
+            result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
             if result.success and result.stdout:
                 # Check for lockout indicators
@@ -449,7 +449,7 @@ class CredentialAgent(StigmergicAgent):
             )
 
             selection = await self.select_tool(tool_context)
-            result = await kali_execute(selection.command)
+            result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
             if result.success and result.stdout:
                 # Parse harvested credentials based on access type

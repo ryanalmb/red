@@ -443,6 +443,14 @@ class CyberRedApp(App):
 
     async def _handle_stream_event(self, event) -> None:
         """Route daemon stream events to appropriate handlers."""
+        try:
+            await self._route_stream_event(event)
+        except Exception:
+            # Never kill the stream loop — individual handler errors are non-fatal
+            pass
+
+    async def _route_stream_event(self, event) -> None:
+        """Internal event router (separated for testability)."""
         if event.event_type == StreamEventType.AGENT_STATUS:
             await self.handle_status_update(event.data)
         elif event.event_type == StreamEventType.FINDING:
@@ -534,10 +542,20 @@ class CyberRedApp(App):
 
     async def _handle_finding(self, data: dict) -> None:
         """Handle finding discovery event."""
-        log = self.query_one("#kill-chain", KillChainLog)
-        severity = data.get("severity", "INFO")
-        finding_id = data.get("finding_id", "unknown")
-        log.log_event("now", severity, f"Finding: {finding_id}")
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+        except NoMatches:
+            return
+        # Unwrap sharded bus wrapper: {"agent_id": ..., "data": {...}}
+        inner = data.get("data", data) if isinstance(data.get("data"), dict) else data
+        severity = inner.get("severity", data.get("severity", "INFO"))
+        finding_type = inner.get("type", inner.get("finding_type", "unknown"))
+        target = inner.get("target", "")
+        log.log_event(
+            "now",
+            severity.upper() if isinstance(severity, str) else "INFO",
+            f"[{finding_type}] {target}",
+        )
 
     async def _handle_state_change(self, data: dict) -> None:
         """Handle engagement state change event.
@@ -574,9 +592,25 @@ class CyberRedApp(App):
                 agent_id = agent.get("id") or agent.get("agent_id")
                 status = agent.get("status", "idle")
                 if agent_id:
-                    grid.update_agent(agent_id, status)
+                    if isinstance(agent_id, str):
+                        grid_pos = (hash(agent_id) % 100) + 1
+                    else:
+                        grid_pos = agent_id
+                    grid.update_agent(grid_pos, status)
         except NoMatches:
             pass
+
+        # Populate scope tree with targets
+        scope_targets = data.get("scope_targets", [])
+        if scope_targets:
+            try:
+                tree = self.query_one(AttackTree)
+                root = tree.root
+                for target in scope_targets:
+                    root.add_leaf(f"{target}")
+                root.expand()
+            except NoMatches:
+                pass
 
     async def _handle_strategy_update(self, data: dict) -> None:
         """Handle Director strategy update event (Story 8.11).
@@ -629,14 +663,24 @@ class CyberRedApp(App):
             pass
 
     async def handle_status_update(self, data: dict) -> None:
-        grid = self.query_one("#hive-grid", HiveGrid)
+        try:
+            grid = self.query_one("#hive-grid", HiveGrid)
+        except NoMatches:
+            return
         agent_id = data.get("agent_id")
         if agent_id:
-            grid.update_agent(agent_id, data.get("status", "idle"))
+            if isinstance(agent_id, str):
+                grid_pos = (hash(agent_id) % 100) + 1
+            else:
+                grid_pos = agent_id
+            grid.update_agent(grid_pos, data.get("status", "idle"))
 
     async def handle_worker_status(self, data: dict) -> None:
         """Handle worker pool status updates."""
-        grid = self.query_one("#hive-grid", HiveGrid)
+        try:
+            grid = self.query_one("#hive-grid", HiveGrid)
+        except NoMatches:
+            return
         worker_id = data.get("worker_id", "")
         status = data.get("status", "idle")
 
@@ -649,7 +693,10 @@ class CyberRedApp(App):
 
     async def handle_tool_event(self, data: dict) -> None:
         """Handle tool start/complete events - show in terminal."""
-        term = self.query_one("#terminal-stream", TerminalLog)
+        try:
+            term = self.query_one("#terminal-stream", TerminalLog)
+        except NoMatches:
+            return
         tool = data.get("tool", "unknown")
 
         if "target" in data:
@@ -660,19 +707,33 @@ class CyberRedApp(App):
             term.log_stream("TOOL", f"{success} {tool} complete ({findings} findings)")
 
     async def handle_log_update(self, data: dict) -> None:
-        log = self.query_one("#kill-chain", KillChainLog)
-        log.log_event(
-            data.get("timestamp", "00:00"),
-            data.get("category", "INFO"),
-            data.get("message", ""),
-        )
+        category = data.get("category", "INFO")
+        message = data.get("message", "")
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+            log.log_event(data.get("timestamp", "00:00"), category, message)
+        except NoMatches:
+            pass
+        # Director logs also go to BrainStream
+        if category == "DIRECTOR":
+            try:
+                brain = self.query_one("#brain-stream", ThinkingLog)
+                brain.log_thought("STRATEGY", message)
+            except NoMatches:
+                pass
 
     async def handle_terminal_update(self, data: dict) -> None:
-        term = self.query_one("#terminal-stream", TerminalLog)
+        try:
+            term = self.query_one("#terminal-stream", TerminalLog)
+        except NoMatches:
+            return
         term.log_stream(data.get("source", "Unknown"), data.get("text", ""))
 
     async def handle_brain_update(self, data: dict) -> None:
-        brain = self.query_one("#brain-stream", ThinkingLog)
+        try:
+            brain = self.query_one("#brain-stream", ThinkingLog)
+        except NoMatches:
+            return
         brain.log_thought(data.get("category", "INFO"), data.get("text", ""))
 
     async def handle_auth_request(self, data: dict) -> None:
@@ -686,8 +747,11 @@ class CyberRedApp(App):
         """
         target = data.get("target", "Unknown")
         agent_id = data.get("agent_id")
-        
-        log = self.query_one("#kill-chain", KillChainLog)
+
+        try:
+            log = self.query_one("#kill-chain", KillChainLog)
+        except NoMatches:
+            return
         log.log_event("now", "AUTH", f"Authorization requested for: {target}")
         
         # Story 10.1 Task 6: Update agent status to AUTH_PENDING for anomaly bubbling

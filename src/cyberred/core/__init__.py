@@ -10,6 +10,7 @@ from cyberred.core.exceptions import (
     ConfigurationError,
     CheckpointIntegrityError,
     DecryptionError,
+    IntegrityError,
     # LLM Exceptions (Story 3.5)
     LLMError,
     LLMProviderUnavailable,
@@ -75,6 +76,7 @@ __all__ = [
     "ConfigurationError",
     "CheckpointIntegrityError",
     "DecryptionError",
+    "IntegrityError",
     # LLM Exceptions (Story 3.5)
     "LLMError",
     "LLMProviderUnavailable",

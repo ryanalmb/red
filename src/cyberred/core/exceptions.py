@@ -319,6 +319,63 @@ class DecryptionError(CyberRedError):
         return f"DecryptionError(reason={self.reason!r})"
 
 
+class IntegrityError(CyberRedError):
+    """Evidence integrity check failed.
+
+    Story 13.1: Evidence File Storage.
+
+    Raised when SHA-256 hash verification fails for stored evidence,
+    indicating potential tampering or corruption.
+
+    Attributes:
+        evidence_id: ID of the evidence that failed integrity check.
+        expected_hash: The expected SHA-256 hash from manifest.
+        actual_hash: The actual SHA-256 hash of the file content.
+    """
+
+    def __init__(
+        self,
+        evidence_id: str | None = None,
+        expected_hash: str | None = None,
+        actual_hash: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Initialize IntegrityError.
+
+        Args:
+            evidence_id: ID of the evidence that failed.
+            expected_hash: Expected SHA-256 hash.
+            actual_hash: Actual SHA-256 hash.
+            message: Optional custom message.
+        """
+        self.evidence_id = evidence_id
+        self.expected_hash = expected_hash
+        self.actual_hash = actual_hash
+
+        if message is None:
+            message = "Evidence integrity check failed"
+            if evidence_id:
+                message = f"Evidence integrity check failed for {evidence_id}"
+
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for integrity error."""
+        return {
+            "evidence_id": self.evidence_id,
+            "expected_hash": self.expected_hash,
+            "actual_hash": self.actual_hash,
+        }
+
+    def __repr__(self) -> str:
+        """Return debug representation with attributes."""
+        return (
+            f"IntegrityError(evidence_id={self.evidence_id!r}, "
+            f"expected_hash={self.expected_hash!r}, actual_hash={self.actual_hash!r})"
+        )
+
+
 class IPCProtocolError(CyberRedError):
     """Invalid or malformed IPC message.
 

@@ -476,3 +476,92 @@ class TestCheckpointManagerAgentState:
 
         # decision_context should be loaded (stored as JSON)
         assert loaded.decision_context is not None
+
+
+class TestCheckpointDeleteCleanup:
+    """Tests for WAL/SHM file cleanup on delete."""
+
+    @pytest.mark.asyncio
+    async def test_delete_cleans_up_wal_file(self, tmp_path: Path):
+        """Test delete() removes WAL journal file."""
+        manager = CheckpointManager(base_path=tmp_path)
+        # Save checkpoint to create files
+        path = await manager.save(engagement_id="eng-wal-test")
+        
+        # Manually create WAL file to simulate SQLite WAL mode artifact
+        wal_path = path.with_suffix(".sqlite-wal")
+        wal_path.write_bytes(b"fake wal data")
+        
+        assert path.exists()
+        assert wal_path.exists()
+        
+        # Delete should clean up both
+        result = await manager.delete("eng-wal-test")
+        
+        assert result is True
+        assert not path.exists()
+        assert not wal_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_cleans_up_shm_file(self, tmp_path: Path):
+        """Test delete() removes SHM shared memory file."""
+        manager = CheckpointManager(base_path=tmp_path)
+        path = await manager.save(engagement_id="eng-shm-test")
+        
+        # Manually create SHM file
+        shm_path = path.with_suffix(".sqlite-shm")
+        shm_path.write_bytes(b"fake shm data")
+        
+        assert path.exists()
+        assert shm_path.exists()
+        
+        result = await manager.delete("eng-shm-test")
+        
+        assert result is True
+        assert not path.exists()
+        assert not shm_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_cleans_up_both_wal_and_shm(self, tmp_path: Path):
+        """Test delete() removes both WAL and SHM files."""
+        manager = CheckpointManager(base_path=tmp_path)
+        path = await manager.save(engagement_id="eng-both-test")
+        
+        wal_path = path.with_suffix(".sqlite-wal")
+        shm_path = path.with_suffix(".sqlite-shm")
+        wal_path.write_bytes(b"wal")
+        shm_path.write_bytes(b"shm")
+        
+        result = await manager.delete("eng-both-test")
+        
+        assert result is True
+        assert not wal_path.exists()
+        assert not shm_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_when_not_found(self, tmp_path: Path):
+        """Test delete() returns False when checkpoint doesn't exist."""
+        manager = CheckpointManager(base_path=tmp_path)
+        result = await manager.delete("nonexistent-engagement")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_cleans_orphan_wal_without_main_file(self, tmp_path: Path):
+        """Test delete() cleans WAL/SHM even if main file already gone."""
+        manager = CheckpointManager(base_path=tmp_path)
+        path = manager._get_checkpoint_path("eng-orphan")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create orphan WAL/SHM without main file
+        wal_path = path.with_suffix(".sqlite-wal")
+        shm_path = path.with_suffix(".sqlite-shm")
+        wal_path.write_bytes(b"orphan wal")
+        shm_path.write_bytes(b"orphan shm")
+        
+        result = await manager.delete("eng-orphan")
+        
+        # Returns False because main file didn't exist
+        assert result is False
+        # But WAL/SHM should still be cleaned
+        assert not wal_path.exists()
+        assert not shm_path.exists()

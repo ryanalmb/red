@@ -31,7 +31,7 @@ INTELLIGENCE_TIMEOUT = 5.0
 class WirelessAgent(StigmergicAgent):
     """LLM-driven wireless network testing agent - thin subclass setting role=WIRELESS."""
 
-    DEFAULT_MAX_ITERATIONS: int = 5
+    DEFAULT_MAX_ITERATIONS: int = 2
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 15
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
@@ -110,7 +110,7 @@ class WirelessAgent(StigmergicAgent):
                 selection = await self.select_tool(context)
                 tool_name = selection.tool_name
                 self._log.info("executing_tool", tool=tool_name, command=selection.command[:80])
-                result = await kali_execute(selection.command)
+                result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
                 if result.success and result.stdout:
                     finding = self._create_finding(interface, selection, result, intel)

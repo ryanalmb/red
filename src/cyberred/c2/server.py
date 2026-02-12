@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import ssl
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -158,6 +159,10 @@ class C2Server:
         self._running = False
         self._start_time: Optional[float] = None
         self._heartbeat_monitor = heartbeat_monitor
+        # Drop box tracking (Story 12.9, 12.10)
+        self._drop_box_connections: dict[str, WebSocketServerProtocol] = {}
+        self._response_queues: dict[tuple[str, str], asyncio.Queue[dict[str, Any]]] = {}
+        self._lost_connections: dict[str, dict[str, Any]] = {}
 
     async def start(self) -> None:
         """Start the C2 server.
@@ -403,6 +408,112 @@ class C2Server:
     def connection_count(self) -> int:
         """Get number of active connections."""
         return len(self._connections)
+
+    # =========================================================================
+    # Drop Box Communication (Story 12.9, 12.10)
+    # =========================================================================
+
+    async def send_to_drop_box(
+        self,
+        drop_box_id: str,
+        command: str,
+        args: dict[str, Any],
+    ) -> None:
+        """Send a command to a specific drop box.
+
+        Args:
+            drop_box_id: Target drop box identifier.
+            command: Command name to execute.
+            args: Command arguments.
+
+        Raises:
+            RuntimeError: If drop box is not connected.
+        """
+        from cyberred.c2.protocol import create_command_message
+
+        # Find the WebSocket connection for this drop box
+        websocket = self._drop_box_connections.get(drop_box_id)
+        if websocket is None:
+            raise RuntimeError(f"Drop box {drop_box_id} is not connected")
+
+        if self._config.shared_secret is None:
+            raise RuntimeError("No shared secret configured")
+
+        # Create signed command message
+        message = create_command_message(command, args, self._config.shared_secret)
+
+        log.debug(
+            "c2_send_to_drop_box",
+            drop_box_id=drop_box_id,
+            command=command,
+            message_id=message.id,
+        )
+
+        await websocket.send(message.to_json())
+
+    async def receive_from_drop_box(
+        self,
+        drop_box_id: str,
+        command: str,
+    ) -> dict[str, Any] | None:
+        """Receive a response from a specific drop box.
+
+        Waits for the next message from the drop box that matches the command.
+
+        Args:
+            drop_box_id: Drop box identifier.
+            command: Command name to match response against.
+
+        Returns:
+            Response payload dict, or None if no matching response.
+
+        Raises:
+            RuntimeError: If drop box is not connected.
+        """
+        # Check for pending response in queue
+        queue_key = (drop_box_id, command)
+        if queue_key in self._response_queues:
+            queue = self._response_queues[queue_key]
+            if not queue.empty():
+                return await queue.get()
+
+        # Create queue if not exists
+        if queue_key not in self._response_queues:
+            self._response_queues[queue_key] = asyncio.Queue()
+
+        # Wait for response
+        return await self._response_queues[queue_key].get()
+
+    def mark_as_lost(self, drop_box_id: str, reason: str) -> None:
+        """Mark a drop box as lost.
+
+        Per ERR4: Drop box connection loss — Log warning, mark lost.
+
+        Args:
+            drop_box_id: Drop box identifier.
+            reason: Reason for marking as lost.
+        """
+        log.warning(
+            "c2_drop_box_lost",
+            drop_box_id=drop_box_id,
+            reason=reason,
+        )
+
+        # Remove from active connections
+        if drop_box_id in self._drop_box_connections:
+            del self._drop_box_connections[drop_box_id]
+
+        # Track in lost connections for audit
+        self._lost_connections[drop_box_id] = {
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Update heartbeat monitor if available
+        if self._heartbeat_monitor:
+            from cyberred.c2.heartbeat_monitor import ConnectionStatus
+            # The heartbeat monitor will handle status transition
+            pass
 
     async def reload_ssl_context(self, cert_manager: "CertificateManager") -> None:
         """Hot-reload SSL context with new certificates.

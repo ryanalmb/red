@@ -961,7 +961,9 @@ class TestHandleStatusUpdate:
         data = {"agent_id": "recon-1", "status": "scanning"}
         await app.handle_status_update(data)
         
-        mock_grid.update_agent.assert_called_once_with("recon-1", "scanning")
+        # String agent_ids are hashed to grid position (1-100)
+        expected_pos = (hash("recon-1") % 100) + 1
+        mock_grid.update_agent.assert_called_once_with(expected_pos, "scanning")
 
     @pytest.mark.asyncio
     async def test_handle_status_update_handles_missing_grid(self) -> None:
@@ -1242,15 +1244,13 @@ class TestHandleFinding:
     async def test_handle_finding_handles_missing_log(self) -> None:
         """Test _handle_finding handles missing KillChainLog."""
         from cyberred.tui.app import CyberRedApp
-        
+        from textual.css.query import NoMatches
+
         app = CyberRedApp()
-        app.query_one = MagicMock(side_effect=Exception("Not found"))
-        
-        # Should not raise
-        try:
-            await app._handle_finding({"finding_id": "test"})
-        except Exception:
-            pass
+        app.query_one = MagicMock(side_effect=NoMatches("Not found"))
+
+        # Should not raise — returns early on NoMatches
+        await app._handle_finding({"finding_id": "test"})
 
 
 class TestHandleStateChange:
@@ -1758,23 +1758,23 @@ class TestTextualPilotAuthorizationModal:
     async def test_handle_auth_request_logs_to_killchain(self) -> None:
         """Test handle_auth_request logs to KillChainLog."""
         from cyberred.tui.app import CyberRedApp
-        
+        from textual.css.query import NoMatches
+
         app = CyberRedApp()
-        
+
         mock_log = MagicMock()
-        original_query_one = app.query_one
-        
+
         def mock_query_one(selector, widget_type=None):
             if "#kill-chain" in selector:
                 return mock_log
-            return original_query_one(selector, widget_type)
-        
+            raise NoMatches(f"Widget not found: {selector}")
+
         app.query_one = mock_query_one
         app.push_screen = MagicMock()  # Mock to prevent actual screen push
-        
+
         auth_data = {"target": "192.168.1.1", "message": "Authorize?"}
         await app.handle_auth_request(auth_data)
-        
+
         # Should log authorization request
         mock_log.log_event.assert_called()
         assert "AUTH" in str(mock_log.log_event.call_args)

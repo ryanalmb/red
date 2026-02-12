@@ -350,6 +350,7 @@ class TUIClient:
                     "findings": data.get("findings", []),
                     "agent_count": data.get("agent_count", 0),
                     "finding_count": data.get("finding_count", 0),
+                    "scope_targets": data.get("scope_targets", []),
                 },
             )
 

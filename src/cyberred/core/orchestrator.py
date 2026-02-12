@@ -24,6 +24,7 @@ from cyberred.core.roe_loader import RoELoader
 from cyberred.core.models import Scope
 from cyberred.orchestration.router import SwarmRouterWrapper
 from cyberred.orchestration.spawner import DynamicSpawner
+from cyberred.orchestration.crash_monitor import AgentCrashMonitor
 from cyberred.llm import (
     initialize_gateway, get_gateway, shutdown_gateway,
     RateLimiter, ModelRouter, LLMPriorityQueue, RetryPolicy,
@@ -117,6 +118,12 @@ class Orchestrator:
         self._strategy_publisher: Any = None
         self._replan_manager: Any = None
         self._current_phase: str = "recon"
+
+        # Crash recovery / respawn
+        self._stopping: bool = False
+        self._respawn_counts: dict[str, int] = {}  # role -> respawn count
+        self._max_respawns_per_role: int = 3
+        self._crash_monitor: AgentCrashMonitor | None = None
 
         # Stats
         self._jobs_processed = 0
@@ -595,10 +602,28 @@ class Orchestrator:
             ),
         })
 
+        # --- Crash Monitor ---
+        try:
+            from cyberred.storage.checkpoint import CheckpointManager
+            checkpoint_mgr = CheckpointManager()
+
+            self._crash_monitor = AgentCrashMonitor(
+                event_bus=self.bus,
+                checkpoint_manager=checkpoint_mgr,
+                on_crash_callback=self._on_agent_crash,
+            )
+            await self._crash_monitor.start()
+            self.logger.info("Crash monitor started")
+        except Exception as e:
+            self.logger.warning(f"Crash monitor init failed (non-fatal): {e}")
+
         # Initialize each agent (EventBus subscriptions, heartbeat)
         # and launch role-specific execution
         self._active_jobs += len(agents)
         for agent in agents:
+            # Register with crash monitor
+            if self._crash_monitor:
+                await self._crash_monitor.register_agent(agent.agent_id, engagement_id)
             task = asyncio.create_task(
                 self._run_stigmergic_agent(agent, target, job_data)
             )
@@ -673,8 +698,141 @@ class Orchestrator:
             except Exception:
                 pass  # Never let pivot logic break agent lifecycle
         finally:
+            # Unregister from crash monitor (prevents double-detection)
+            if self._crash_monitor:
+                await self._crash_monitor.unregister_agent(agent.agent_id)
             self._active_jobs -= 1
             self._jobs_processed += 1
+            # Respawn unless engagement is shutting down
+            if not self._stopping:
+                try:
+                    await self._respawn_agent(agent, target, job_data)
+                except Exception as e:
+                    self.logger.warning(f"Agent respawn failed: {e}")
+
+    async def _respawn_agent(self, old_agent: Any, target: str, job_data: dict) -> None:
+        """Respawn a completed/crashed agent with hydrated context.
+
+        Creates a fresh agent of the same role, hydrates it with accumulated
+        findings and active strategy, and launches it.
+
+        Args:
+            old_agent: The agent that completed or crashed.
+            target: Target string for the engagement.
+            job_data: Original job data dict.
+        """
+        import uuid
+
+        role_value = old_agent.role.value if hasattr(old_agent, 'role') else 'recon'
+        engagement_id = self._engagement_id or "default"
+
+        # Check respawn limit per role
+        current_count = self._respawn_counts.get(role_value, 0)
+        if current_count >= self._max_respawns_per_role:
+            self.logger.info(
+                f"Respawn limit reached for {role_value} "
+                f"({current_count}/{self._max_respawns_per_role}), not respawning"
+            )
+            return
+
+        # Gather hydration data from FindingAggregator (in-memory, no Redis needed)
+        hydration_findings: list[dict] = []
+        if self._finding_aggregator:
+            try:
+                summary = self._finding_aggregator.get_summary()
+                for f in summary.findings[:50]:
+                    hydration_findings.append({
+                        "type": f.finding_type,
+                        "target": f.target,
+                        "tool": "",
+                        "severity": f.severity.name if hasattr(f.severity, 'name') else str(f.severity),
+                        "evidence": "",
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to gather hydration findings: {e}")
+
+        # Get active strategy from old agent
+        active_strategy = None
+        if hasattr(old_agent, '_active_strategy') and old_agent._active_strategy:
+            active_strategy = old_agent._active_strategy
+
+        # Create replacement agent with fresh UUID
+        new_agent_id = str(uuid.uuid4())
+        try:
+            new_agent = await self.router.create_agent(
+                role=old_agent.role,
+                agent_id=new_agent_id,
+                engagement_id=engagement_id,
+                event_bus=self.bus,
+                llm_gateway=self.spawner._llm_gateway if self.spawner else None,
+                manifest_loader=self.spawner._manifest_loader if self.spawner else None,
+                intel_aggregator=self.spawner._intel_aggregator if self.spawner else None,
+                rag_escalator=self.spawner._rag_escalator if self.spawner else None,
+                sharded_event_bus=self._sharded_bus,
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to create replacement agent: {e}")
+            return
+
+        # Hydrate with accumulated swarm knowledge
+        if hydration_findings or active_strategy:
+            new_agent.hydrate_context(hydration_findings, active_strategy)
+
+        # Track
+        self._respawn_counts[role_value] = current_count + 1
+        self.agents[new_agent_id] = new_agent
+
+        # Register with crash monitor
+        if self._crash_monitor:
+            await self._crash_monitor.register_agent(new_agent_id, engagement_id)
+
+        # Launch
+        self._active_jobs += 1
+        task = asyncio.create_task(
+            self._run_stigmergic_agent(new_agent, target, job_data)
+        )
+        self._swarm_tasks.append(task)
+
+        self.logger.info(
+            f"Respawned {role_value} agent {new_agent_id[:8]}.. "
+            f"(gen {current_count + 1}/{self._max_respawns_per_role}, "
+            f"hydrated {len(hydration_findings)} findings)"
+        )
+        await self.bus.publish("swarm:log", {
+            "category": "RESPAWN",
+            "message": (
+                f"Respawned {role_value} agent {new_agent_id[:8]}.. "
+                f"(gen {current_count + 1}, {len(hydration_findings)} findings hydrated)"
+            ),
+        })
+
+    async def _on_agent_crash(self, agent_id: str, engagement_id: str) -> None:
+        """Callback invoked by AgentCrashMonitor when an agent is detected as crashed.
+
+        Looks up the crashed agent and triggers respawn.
+        """
+        old_agent = self.agents.get(agent_id)
+        if not old_agent:
+            self.logger.warning(f"Crash detected for unknown agent {agent_id}")
+            return
+
+        # Need target/job_data — extract from engagement config
+        target = ""
+        if self._engagement_config:
+            targets = self._engagement_config.get("targets", {})
+            for name, info in targets.items():
+                if isinstance(info, dict) and info.get("ip"):
+                    target = info["ip"]
+                    break
+                else:
+                    target = name
+                    break
+
+        job_data = {"full_attack": True}
+        try:
+            await self._respawn_agent(old_agent, target, job_data)
+        except Exception as e:
+            self.logger.error(f"Crash respawn failed for {agent_id}: {e}")
 
     async def _check_swarm_failure_pivot(self, failed_role: str, error_msg: str) -> None:
         """Check if accumulated swarm failures warrant a Director RAG pivot."""
@@ -891,6 +1049,23 @@ class Orchestrator:
             webapps=webapps,
         )
 
+    def get_scope_targets(self) -> list[str]:
+        """Return list of in-scope target IPs/hostnames from engagement config."""
+        targets: list[str] = []
+        if not self._engagement_config:
+            return targets
+        target_map = self._engagement_config.get("targets", {})
+        for name, info in target_map.items():
+            if isinstance(info, dict):
+                ip = info.get("ip")
+                if ip:
+                    targets.append(ip)
+                else:
+                    targets.append(name)
+            else:
+                targets.append(name)
+        return targets
+
     async def handle_stop_agent(self, data: dict):
         """Handle request to stop an agent."""
         agent_id = data.get("agent_id")
@@ -963,7 +1138,15 @@ class Orchestrator:
 
     async def stop_all_agents(self):
         """Emergency stop all agents."""
+        self._stopping = True
         self.logger.warning("PANIC: Stopping all agents")
+
+        # Stop crash monitor
+        if self._crash_monitor:
+            try:
+                await self._crash_monitor.stop()
+            except Exception:
+                pass
 
         # Stop Director layer if running
         if self._replan_manager:
@@ -1037,7 +1220,15 @@ class Orchestrator:
 
     async def shutdown(self) -> None:
         """Graceful shutdown - stop all agents and LLM gateway."""
+        self._stopping = True
         self.logger.info("Orchestrator shutting down...")
+
+        # Stop crash monitor
+        if self._crash_monitor:
+            try:
+                await self._crash_monitor.stop()
+            except Exception:
+                pass
 
         # Cancel swarm tasks
         for task in self._swarm_tasks:

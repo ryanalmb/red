@@ -286,7 +286,7 @@ class TestReconAgentV2LLMSelection:
                     await recon_agent_v2.execute_recon(target="10.0.0.1")
 
                     # Verify kali_execute was called with LLM-generated command
-                    mock_kali_execute.assert_called_with("nmap -sV -T4 10.0.0.1")
+                    mock_kali_execute.assert_called_with("nmap -sV -T4 10.0.0.1", timeout=None)
 
     @pytest.mark.asyncio
     async def test_execute_recon_respects_max_iterations(

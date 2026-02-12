@@ -372,6 +372,10 @@ class DynamicSpawner:
             agent_id=crashed_agent_id,  # Inherit ID
             engagement_id=engagement_id,
             event_bus=self.event_bus,
+            llm_gateway=self._llm_gateway,
+            manifest_loader=self._manifest_loader,
+            intel_aggregator=self._intel_aggregator,
+            rag_escalator=self._rag_escalator,
             sharded_event_bus=self._sharded_event_bus,
         )
         

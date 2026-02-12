@@ -44,6 +44,8 @@ dependencies = [
     "prometheus_client>=0.20.0",
     # Story 12.8: QR code generation for mobile drop box deployment
     "qrcode>=7.4.0",
+    # Story 13.4: Markdown report generation
+    "Jinja2>=3.1.0",
 ]
 
 [project.scripts]

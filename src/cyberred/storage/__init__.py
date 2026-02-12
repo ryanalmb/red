@@ -8,6 +8,19 @@ from cyberred.storage.checkpoint import (
     CheckpointManager,
     CheckpointData,
     SCHEMA_VERSION,
+    AgentState,
+    Finding,
+    CheckpointScopeChangedError,
+    IncompatibleSchemaError,
+)
+from cyberred.storage.checkpoint_queue import (
+    AsyncCheckpointQueue,
+    CheckpointRequest,
+)
+from cyberred.storage.checkpoint_scheduler import (
+    CheckpointScheduler,
+    CheckpointTrigger,
+    should_trigger_checkpoint,
 )
 from cyberred.storage.schema import (
     Base,
@@ -25,12 +38,46 @@ from cyberred.storage.redis_client import (
     PubSubSubscription,
     HealthStatus,
 )
+from cyberred.storage.evidence_store import (
+    EvidenceStore,
+    EvidenceItem,
+    EvidenceType,
+)
+from cyberred.storage.operator_audit import (
+    OperatorAction,
+    OperatorAuditEntry,
+    OperatorAuditLog,
+    get_operator_audit_log,
+    set_operator_audit_log,
+    init_operator_audit_log,
+)
+from cyberred.storage.report_generator import (
+    MarkdownReportGenerator,
+    ReportData,
+    SignedReport,
+    TimelineEvent,
+    save_report,
+    save_signed_report,
+    sign_report,
+    verify_signature,
+)
 
 __all__ = [
     # Checkpoint manager
     "CheckpointManager",
     "CheckpointData",
     "SCHEMA_VERSION",
+    "AgentState",
+    "Finding",
+    "CheckpointScopeChangedError",
+    "IncompatibleSchemaError",
+    # Checkpoint queue (Story 13.3)
+    "AsyncCheckpointQueue",
+    "CheckpointRequest",
+    # Checkpoint scheduler (Story 13.3)
+    "CheckpointScheduler",
+    "CheckpointTrigger",
+    "should_trigger_checkpoint",
     # Schema models
     "Base",
     "Engagement",
@@ -45,4 +92,24 @@ __all__ = [
     "RedisClient",
     "PubSubSubscription",
     "HealthStatus",
+    # Evidence Store (Story 13.1)
+    "EvidenceStore",
+    "EvidenceItem",
+    "EvidenceType",
+    # Operator Audit Log (Story 13.2)
+    "OperatorAction",
+    "OperatorAuditEntry",
+    "OperatorAuditLog",
+    "get_operator_audit_log",
+    "set_operator_audit_log",
+    "init_operator_audit_log",
+    # Report Generator (Story 13.4)
+    "MarkdownReportGenerator",
+    "ReportData",
+    "SignedReport",
+    "TimelineEvent",
+    "save_report",
+    "save_signed_report",
+    "sign_report",
+    "verify_signature",
 ]

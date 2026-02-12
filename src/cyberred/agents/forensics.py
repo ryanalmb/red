@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 class ForensicsAgent(StigmergicAgent):
     """Digital forensics agent with chain-of-custody tracking."""
 
-    DEFAULT_MAX_ITERATIONS: int = 5  # Covers typical artifact analysis cycle
+    DEFAULT_MAX_ITERATIONS: int = 2  # Reduced for respawn testing
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50  # Prevents infinite collection loops
     INTELLIGENCE_TIMEOUT: float = 5.0
 
@@ -100,7 +100,7 @@ class ForensicsAgent(StigmergicAgent):
             try:
                 selection = await self.select_tool(tool_context)
                 tool_name = selection.tool_name
-                result = await kali_execute(selection.command)
+                result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result)

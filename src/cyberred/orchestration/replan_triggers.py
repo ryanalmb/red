@@ -333,27 +333,33 @@ class ReplanTriggerManager:
                     channel=channel,
                 )
                 return
-        
-        severity = finding.get("severity", "").lower()
+
+        # Unwrap sharded bus format: {"agent_id":..., "data":{...}}
+        if "data" in finding and isinstance(finding["data"], dict):
+            inner = finding["data"]
+        else:
+            inner = finding
+
+        severity = inner.get("severity", "").lower()
         
         if severity != "critical":
             return
         
         self._log.info(
             "critical_finding_detected",
-            finding_id=finding.get("finding_id"),
+            finding_id=inner.get("id", inner.get("finding_id")),
             severity=severity,
         )
-        
+
         trigger = ReplanTrigger(
             trigger_type=TriggerType.CRITICAL_FINDING,
             engagement_id=self._engagement_id or "",
             metadata={
-                "finding_id": finding.get("finding_id"),
+                "finding_id": inner.get("id", inner.get("finding_id")),
                 "severity": severity,
-                "target": finding.get("target"),
-                "cve_id": finding.get("cve_id"),
-                "technique": finding.get("technique"),
+                "target": inner.get("target"),
+                "cve_id": inner.get("cve_id"),
+                "technique": inner.get("technique"),
             },
         )
         

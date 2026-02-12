@@ -48,7 +48,7 @@ class ReconAgent(StigmergicAgent):
     """
 
     #: Default max iterations for recon loop
-    DEFAULT_MAX_ITERATIONS: int = 8
+    DEFAULT_MAX_ITERATIONS: int = 2
     #: Default findings threshold to consider phase complete
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 50
     #: Intelligence query timeout
@@ -165,7 +165,7 @@ class ReconAgent(StigmergicAgent):
                 tool_name = selection.tool_name
 
                 self._log.info("executing_tool", tool=tool_name, command=selection.command[:80], confidence=selection.confidence)
-                result = await kali_execute(selection.command)
+                result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
                 if not result.success:
                     self._log.warning("tool_execution_failed", tool=tool_name, error=result.stderr[:200] if result.stderr else "")

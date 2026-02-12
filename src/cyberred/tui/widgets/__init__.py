@@ -252,7 +252,7 @@ class KillChainLog(Log):
         if category == "SUCCESS": color = "green"
         if category == "FAIL": color = "red"
         if category == "AUTH": color = "yellow"
-        self.write(f"[{timestamp}] [{color}]{category}[/{color}]: {message}")
+        self.write_line(f"[{timestamp}] [{color}]{category}[/{color}]: {message}")
 
 
 class TerminalLog(Log):
@@ -265,7 +265,7 @@ class TerminalLog(Log):
             source: The source of the output (e.g., "TOOL", "nmap").
             text: The output text to display.
         """
-        self.write(f"[{source}] {text}")
+        self.write_line(f"[{source}] {text}")
 
 
 class ThinkingLog(Log):
@@ -282,7 +282,7 @@ class ThinkingLog(Log):
         if category == "THINKING": color = "magenta"
         if category == "STRATEGY": color = "blue"
         if category == "CODE": color = "green"
-        self.write(f"[{color}]{category}[/{color}]: {text}")
+        self.write_line(f"[{color}]{category}[/{color}]: {text}")
 
 
 # Story 10.1: AuthorizationModal moved to screens/authorization.py

@@ -198,12 +198,45 @@ class StigmergicAgent(Agent):
         # Director-Agent Feedback Loop (Story 7.17)
         self.__active_strategy: Optional["EmergentStrategy"] = None
 
+    async def _publish_status(self, status: str) -> None:
+        """Publish agent status to swarm:status for TUI visualization."""
+        if self.event_bus:
+            await self.event_bus.publish("swarm:status", {
+                "agent_id": self.agent_id,
+                "status": status,
+                "role": self.role.value if self.role else "unknown",
+            })
+
+    async def _publish_terminal(self, command: str, output: str, tool_name: str = "kali") -> None:
+        """Publish command + output to swarm:terminal for TUI TerminalStream."""
+        if self.event_bus:
+            await self.event_bus.publish("swarm:terminal", {
+                "source": tool_name,
+                "text": f"$ {command}\n{(output or '')[:500]}",
+            })
+
+    async def _kali_execute_and_publish(self, command: str, tool_name: str = "kali", timeout: int | None = None):
+        """Execute via kali_execute and publish result to swarm:terminal.
+
+        Resolves kali_execute from the subclass module so that test patches
+        on e.g. ``cyberred.agents.ad.kali_execute`` are respected.
+        """
+        import sys
+        caller_module = sys.modules.get(type(self).__module__)
+        execute_fn = getattr(caller_module, "kali_execute", None) if caller_module else None
+        if execute_fn is None:
+            from cyberred.tools.kali_executor import kali_execute as execute_fn
+        result = await execute_fn(command, timeout=timeout)
+        await self._publish_terminal(command, result.stdout or result.stderr or "", tool_name)
+        return result
+
     async def spawn(self):
         """Initialize async components and subscriptions."""
         await self._setup_subscriptions()
         await self._start_throttle_monitor()
         await self._start_heartbeat()  # Story 7.12
         self._status = "active"
+        await self._publish_status("active")
         self._log.info("agent_spawned", status="active")
 
     async def _setup_subscriptions(self):
@@ -414,6 +447,26 @@ class StigmergicAgent(Agent):
             return "status"
 
     # === Director-Agent Feedback Loop Methods (Story 7.17) ===
+
+    def hydrate_context(self, findings: list[dict], strategy: dict | None = None) -> None:
+        """Bulk-load swarm findings and strategy into agent (for respawn hydration).
+
+        Populates _swarm_findings so the tool selection prompt includes
+        predecessor knowledge. Optionally sets active strategy.
+
+        Args:
+            findings: List of finding dicts with type/target/tool/severity/evidence.
+            strategy: Optional strategy dict to set as active strategy.
+        """
+        for f in findings:
+            self._swarm_findings.append(f)
+        if strategy is not None:
+            self.__active_strategy = strategy
+        self._log.info(
+            "context_hydrated",
+            findings_count=len(findings),
+            has_strategy=strategy is not None,
+        )
 
     @property
     def _active_strategy(self) -> Optional["EmergentStrategy"]:
@@ -703,6 +756,7 @@ class StigmergicAgent(Agent):
         }
         await self.event_bus.publish(channel, message)
         self._status = "idle"
+        await self._publish_status(status)
 
     # AgentProtocol Implementation
 
@@ -1149,6 +1203,9 @@ Respond with JSON only:
         # Build selection prompt
         prompt = self._build_tool_selection_prompt(context)
 
+        # Publish "thinking" status for TUI
+        await self._publish_status("thinking")
+
         # Query LLM
         if self._llm_gateway:
             from cyberred.llm.provider import LLMRequest
@@ -1191,6 +1248,16 @@ Respond with JSON only:
             rationale=selection.rationale[:100],
             selection_id=selection.selection_id,
         )
+
+        # Publish to swarm:brain for TUI BrainStream widget
+        if self.event_bus:
+            await self.event_bus.publish("swarm:brain", {
+                "category": "THINKING",
+                "text": f"[{self.agent_name}] -> {selection.tool_name}: {selection.command[:80]}",
+            })
+
+        # Publish "scanning" status for TUI
+        await self._publish_status("scanning")
 
         return selection
 

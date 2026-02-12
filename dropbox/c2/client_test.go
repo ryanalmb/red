@@ -162,9 +162,15 @@ func TestClientSendResultNotConnected(t *testing.T) {
 	client, _ := NewClient(NewConfig())
 	client.SetSharedSecret([]byte("secret"))
 
+	// Story 12.11: SendResult now queues messages when disconnected (AC #2)
 	err := client.SendResult("cmd-123", []byte("result"))
-	if err == nil {
-		t.Error("SendResult() should fail when not connected")
+	if err != nil {
+		t.Errorf("SendResult() when disconnected should queue, got error: %v", err)
+	}
+
+	// Verify message was queued
+	if client.messageQueue.Count() != 1 {
+		t.Errorf("messageQueue.Count() = %d, want 1 (result should be queued)", client.messageQueue.Count())
 	}
 }
 
@@ -274,12 +280,15 @@ func TestClientSendResultNoConnection(t *testing.T) {
 	client.SetSharedSecret([]byte("secret"))
 	// conn is nil
 
+	// Story 12.11: SendResult now queues messages when connection is nil (AC #2)
 	err := client.SendResult("cmd-123", []byte(`{"result": "ok"}`))
-	if err == nil {
-		t.Error("SendResult() should fail with nil connection")
+	if err != nil {
+		t.Errorf("SendResult() with nil conn should queue, got error: %v", err)
 	}
-	if err.Error() != "connection is nil" {
-		t.Errorf("SendResult() error = %q, want %q", err.Error(), "connection is nil")
+
+	// Verify message was queued
+	if client.messageQueue.Count() != 1 {
+		t.Errorf("messageQueue.Count() = %d, want 1 (result should be queued)", client.messageQueue.Count())
 	}
 }
 
@@ -287,16 +296,18 @@ func TestClientSendResultJSONParsing(t *testing.T) {
 	client, _ := NewClient(NewConfig())
 	client.setState(StateConnected)
 	client.SetSharedSecret([]byte("secret"))
-	// conn is nil, but we test up to JSON parsing
+	// conn is nil, but we test JSON parsing behavior
 
-	// Non-JSON result should be converted to string
+	// Non-JSON result should be converted to string and queued
+	// Story 12.11: SendResult now queues when connection is nil
 	err := client.SendResult("cmd-123", []byte("plain text result"))
-	if err == nil {
-		t.Error("SendResult() should fail with nil connection")
+	if err != nil {
+		t.Errorf("SendResult() with plain text should queue, got error: %v", err)
 	}
-	// Error is expected due to nil conn, but JSON parsing should not fail
-	if err.Error() != "connection is nil" {
-		t.Errorf("SendResult() error = %q, want %q", err.Error(), "connection is nil")
+
+	// Verify message was queued with string payload
+	if client.messageQueue.Count() != 1 {
+		t.Errorf("messageQueue.Count() = %d, want 1", client.messageQueue.Count())
 	}
 }
 
@@ -455,5 +466,138 @@ func TestReceiveCommandWithContextDone(t *testing.T) {
 	}
 	if err.Error() != "client disconnected" {
 		t.Errorf("Error = %q, want %q", err.Error(), "client disconnected")
+	}
+}
+
+// TestSetSharedSecret_NilSecret tests setting a nil shared secret
+func TestSetSharedSecret_NilSecret(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+
+	// First set a non-nil secret
+	client.SetSharedSecret([]byte("test-secret"))
+	if client.sharedSecret == nil {
+		t.Error("SetSharedSecret() should set non-nil secret")
+	}
+
+	// Then set nil secret
+	client.SetSharedSecret(nil)
+	if client.sharedSecret != nil {
+		t.Error("SetSharedSecret(nil) should set sharedSecret to nil")
+	}
+}
+
+// TestCheckAndResetBackoffCycle_ZeroTime tests early return when reconnectStartTime is zero
+func TestCheckAndResetBackoffCycle_ZeroTime(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+
+	// Ensure reconnectStartTime is zero
+	client.reconnectStartTime = time.Time{}
+	client.attempt = 5
+
+	// Call checkAndResetBackoffCycle
+	client.checkAndResetBackoffCycle()
+
+	// Attempt should NOT be reset since reconnectStartTime is zero
+	if client.attempt != 5 {
+		t.Errorf("attempt = %d, want 5 (should not reset when reconnectStartTime is zero)", client.attempt)
+	}
+}
+
+// TestCheckAndResetBackoffCycle_WithinTimeout tests no reset when within 30s timeout
+func TestCheckAndResetBackoffCycle_WithinTimeout(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+
+	// Set reconnectStartTime to 10 seconds ago (within 30s timeout)
+	client.reconnectStartTime = time.Now().Add(-10 * time.Second)
+	client.attempt = 5
+
+	// Call checkAndResetBackoffCycle
+	client.checkAndResetBackoffCycle()
+
+	// Attempt should NOT be reset since we're within the 30s timeout
+	if client.attempt != 5 {
+		t.Errorf("attempt = %d, want 5 (should not reset when within timeout)", client.attempt)
+	}
+}
+
+// TestDrainQueue_NilQueue tests drainQueue when messageQueue is nil
+func TestDrainQueue_NilQueue(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+	client.messageQueue = nil
+
+	err := client.drainQueue()
+	if err != nil {
+		t.Errorf("drainQueue() with nil queue error = %v, want nil", err)
+	}
+}
+
+// TestDrainQueue_EmptyQueue tests drainQueue when queue is empty
+func TestDrainQueue_EmptyQueue(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+	client.setState(StateConnected)
+
+	// Queue is empty
+	err := client.drainQueue()
+	if err != nil {
+		t.Errorf("drainQueue() with empty queue error = %v, want nil", err)
+	}
+}
+
+// TestDrainQueue_NotConnected tests drainQueue returns error when not connected
+func TestDrainQueue_NotConnected(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+	// State is StateDisconnected by default
+
+	// Add a message to queue
+	msg := &C2Message{
+		Type:      MessageTypeResult,
+		ID:        "test",
+		Timestamp: "2026-02-12T00:00:00Z",
+		Payload:   Payload{"data": "test"},
+		Signature: "sig",
+	}
+	_ = client.messageQueue.Enqueue(msg)
+
+	err := client.drainQueue()
+	if err == nil {
+		t.Error("drainQueue() when not connected should return error")
+	}
+	if err.Error() != "cannot drain queue: not connected" {
+		t.Errorf("drainQueue() error = %q, want %q", err.Error(), "cannot drain queue: not connected")
+	}
+}
+
+// TestDrainQueue_NilConnection tests drainQueue re-queues messages when conn is nil
+func TestDrainQueue_NilConnection(t *testing.T) {
+	client, _ := NewClient(NewConfig())
+	client.setState(StateConnected)
+	// conn is nil
+
+	// Add messages to queue
+	for i := 0; i < 3; i++ {
+		msg := &C2Message{
+			Type:      MessageTypeResult,
+			ID:        "test",
+			Timestamp: "2026-02-12T00:00:00Z",
+			Payload:   Payload{"order": i},
+			Signature: "sig",
+		}
+		_ = client.messageQueue.Enqueue(msg)
+	}
+
+	initialCount := client.messageQueue.Count()
+	if initialCount != 3 {
+		t.Fatalf("Initial queue count = %d, want 3", initialCount)
+	}
+
+	// Drain will fail because conn is nil, should re-queue
+	err := client.drainQueue()
+	if err == nil {
+		t.Error("drainQueue() with nil conn should return error")
+	}
+
+	// Messages should be re-queued
+	if client.messageQueue.Count() != 3 {
+		t.Errorf("messageQueue.Count() after failed drain = %d, want 3 (should re-queue)", client.messageQueue.Count())
 	}
 }

@@ -32,7 +32,7 @@ INTELLIGENCE_TIMEOUT = 5.0
 class WebAppAgent(StigmergicAgent):
     """LLM-driven web application testing agent - thin subclass setting role=WEBAPP."""
 
-    DEFAULT_MAX_ITERATIONS: int = 8
+    DEFAULT_MAX_ITERATIONS: int = 2
     DEFAULT_PHASE_COMPLETE_THRESHOLD: int = 30
 
     def __init__(self, agent_id: str, engagement_id: str, event_bus: EventBus,
@@ -109,7 +109,7 @@ class WebAppAgent(StigmergicAgent):
                 selection = await self.select_tool(context)
                 tool_name = selection.tool_name
                 self._log.info("executing_tool", tool=tool_name, command=selection.command[:80])
-                result = await kali_execute(selection.command)
+                result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result, intel)

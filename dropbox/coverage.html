@@ -1,0 +1,374 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>abort: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/cyber-red/dropbox/abort/handler.go (79.2%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package abort provides drop box abort and wipe functionality.
+//
+// Story 12.10: Drop Box Abort &amp; Wipe
+// Per FR30: Operator can send abort/wipe command to any drop box
+// Per ERR4: Drop box connection loss — wipe proceeds anyway (fail-safe)
+//
+// Security: Sensitive files are overwritten with random data before deletion
+// to prevent forensic recovery.
+package abort
+
+import (
+        "context"
+        "crypto/rand"
+        "fmt"
+        "os"
+        "path/filepath"
+        "sync"
+        "time"
+
+        "github.com/cyber-red/dropbox/internal"
+)
+
+// AbortReason represents why the abort was triggered.
+type AbortReason string
+
+const (
+        // ReasonOperatorInitiated is a normal operator-triggered abort.
+        ReasonOperatorInitiated AbortReason = "operator_initiated"
+        // ReasonCompromised indicates drop box suspected to be compromised.
+        ReasonCompromised AbortReason = "compromised"
+        // ReasonEngagementEnded indicates the engagement has concluded.
+        ReasonEngagementEnded AbortReason = "engagement_ended"
+        // ReasonEmergency is an emergency abort (fastest path).
+        ReasonEmergency AbortReason = "emergency"
+)
+
+// WipeStatus represents the status of the wipe operation.
+type WipeStatus string
+
+const (
+        // WipeSuccess indicates all sensitive files wiped successfully.
+        WipeSuccess WipeStatus = "success"
+        // WipePartial indicates some files wiped, some failed.
+        WipePartial WipeStatus = "partial"
+        // WipeFailed indicates wipe failed completely.
+        WipeFailed WipeStatus = "failed"
+        // WipeInProgress indicates wipe is currently executing.
+        WipeInProgress WipeStatus = "in_progress"
+)
+
+// AbortCommand represents an abort command from the C2 server.
+type AbortCommand struct {
+        Reason       AbortReason `json:"reason"`
+        DeleteBinary bool        `json:"delete_binary"`
+}
+
+// WipeResult contains the result of a wipe operation.
+type WipeResult struct {
+        Status      WipeStatus `json:"status"`
+        FilesWiped  int        `json:"files_wiped"`
+        FilesFailed int        `json:"files_failed"`
+        Errors      []string   `json:"errors"`
+        DurationMS  int64      `json:"duration_ms"`
+}
+
+// AbortResult contains the overall result of an abort operation.
+type AbortResult struct {
+        WipeResult           *WipeResult `json:"wipe_result"`
+        SelfDestructInitiated bool       `json:"self_destruct_initiated"`
+}
+
+// Handler manages abort and wipe operations.
+type Handler struct {
+        mu            sync.Mutex
+        sensitiveDir  string // Directory containing sensitive files
+        binaryPath    string // Path to the drop box binary
+        cancelFuncs   []context.CancelFunc
+        logger        *internal.Logger
+}
+
+// NewHandler creates a new abort handler.
+func NewHandler(sensitiveDir, binaryPath string, logger *internal.Logger) *Handler <span class="cov8" title="1">{
+        return &amp;Handler{
+                sensitiveDir: sensitiveDir,
+                binaryPath:   binaryPath,
+                logger:       logger,
+        }
+}</span>
+
+// RegisterCancelFunc registers a cancel function for stopping operations.
+func (h *Handler) RegisterCancelFunc(cancel context.CancelFunc) <span class="cov8" title="1">{
+        h.mu.Lock()
+        defer h.mu.Unlock()
+        h.cancelFuncs = append(h.cancelFuncs, cancel)
+}</span>
+
+// HandleAbort processes an abort command.
+// It stops all operations, wipes sensitive files, and initiates self-destruct.
+func (h *Handler) HandleAbort(cmd AbortCommand) AbortResult <span class="cov8" title="1">{
+        h.logger.Info("abort_received: reason=%s delete_binary=%v", string(cmd.Reason), cmd.DeleteBinary)
+
+        // Step 1: Stop all operations immediately (AC#2)
+        h.StopAllOperations()
+
+        // Step 2: Execute secure wipe (AC#3)
+        wipeResult := h.SecureWipe()
+
+        // Step 3: Self-destruct (AC#4)
+        selfDestructInitiated := h.SelfDestruct(cmd.DeleteBinary)
+
+        return AbortResult{
+                WipeResult:           wipeResult,
+                SelfDestructInitiated: selfDestructInitiated,
+        }
+}</span>
+
+// StopAllOperations cancels all running contexts and stops command processing.
+// Per AC#2: Drop box stops all operations immediately.
+func (h *Handler) StopAllOperations() <span class="cov8" title="1">{
+        h.mu.Lock()
+        defer h.mu.Unlock()
+
+        h.logger.Info("stopping_all_operations: cancel_funcs=%d", len(h.cancelFuncs))
+
+        for _, cancel := range h.cancelFuncs </span><span class="cov8" title="1">{
+                cancel()
+        }</span>
+        <span class="cov8" title="1">h.cancelFuncs = nil</span>
+}
+
+// SecureWipe overwrites and deletes all sensitive files.
+// Per AC#3: Files are overwritten with random data before deletion.
+func (h *Handler) SecureWipe() *WipeResult <span class="cov8" title="1">{
+        start := time.Now()
+
+        paths := h.GetSensitiveFilePaths()
+        h.logger.Info("secure_wipe_started: file_count=%d", len(paths))
+
+        var (
+                wiped   int
+                failed  int
+                errors  []string
+        )
+
+        for _, path := range paths </span><span class="cov8" title="1">{
+                if err := SecureWipeFile(path); err != nil </span><span class="cov0" title="0">{
+                        failed++
+                        errors = append(errors, fmt.Sprintf("%s: %v", path, err))
+                        h.logger.Warn("secure_wipe_file_failed: path=%s error=%v", path, err)
+                }</span> else<span class="cov8" title="1"> {
+                        wiped++
+                        h.logger.Debug("secure_wipe_file_success: path=%s", path)
+                }</span>
+        }
+
+        <span class="cov8" title="1">durationMS := time.Since(start).Milliseconds()
+
+        status := WipeSuccess
+        if failed &gt; 0 &amp;&amp; wiped &gt; 0 </span><span class="cov0" title="0">{
+                status = WipePartial
+        }</span> else<span class="cov8" title="1"> if failed &gt; 0 &amp;&amp; wiped == 0 </span><span class="cov0" title="0">{
+                status = WipeFailed
+        }</span>
+
+        <span class="cov8" title="1">h.logger.Info("secure_wipe_completed: status=%s wiped=%d failed=%d duration_ms=%d",
+                string(status), wiped, failed, durationMS)
+
+        return &amp;WipeResult{
+                Status:      status,
+                FilesWiped:  wiped,
+                FilesFailed: failed,
+                Errors:      errors,
+                DurationMS:  durationMS,
+        }</span>
+}
+
+// GetSensitiveFilePaths returns paths to certs, logs, cache, and config.
+func (h *Handler) GetSensitiveFilePaths() []string <span class="cov8" title="1">{
+        var paths []string
+
+        // Sensitive file patterns
+        patterns := []string{
+                "*.crt", "*.pem", "*.key",  // Certificates
+                "*.log",                     // Logs
+                "*.db", "*.cache",           // Cache/database
+                "config.yaml", "config.json", // Config
+        }
+
+        for _, pattern := range patterns </span><span class="cov8" title="1">{
+                matches, err := filepath.Glob(filepath.Join(h.sensitiveDir, pattern))
+                if err != nil </span><span class="cov0" title="0">{
+                        h.logger.Warn("glob_pattern_failed: pattern=%s error=%v", pattern, err)
+                        continue</span>
+                }
+                <span class="cov8" title="1">paths = append(paths, matches...)</span>
+        }
+
+        <span class="cov8" title="1">return paths</span>
+}
+
+// SelfDestruct exits the process and optionally deletes the binary.
+// Per AC#4: Drop box process exits cleanly, optionally removes binary.
+func (h *Handler) SelfDestruct(deleteBinary bool) bool <span class="cov8" title="1">{
+        h.logger.Info("self_destruct_initiated: delete_binary=%v", deleteBinary)
+
+        if deleteBinary &amp;&amp; h.binaryPath != "" </span><span class="cov8" title="1">{
+                // Schedule binary deletion after process exit
+                // We can't delete a running binary on some OSes, so we try our best
+                if err := os.Remove(h.binaryPath); err != nil </span><span class="cov8" title="1">{
+                        h.logger.Warn("binary_delete_failed: path=%s error=%v", h.binaryPath, err)
+                        // Continue with exit anyway
+                }</span> else<span class="cov8" title="1"> {
+                        h.logger.Info("binary_deleted: path=%s", h.binaryPath)
+                }</span>
+        }
+
+        // Exit is deferred to allow the caller to send the result back to C2
+        // The actual os.Exit() should be called by the main process
+        <span class="cov8" title="1">return true</span>
+}
+
+// SecureWipeFile overwrites a file with random data before deletion.
+// Per architecture security requirements:
+// 1. Overwrite with random data (crypto-grade)
+// 2. Sync to disk
+// 3. Delete the file
+func SecureWipeFile(path string) error <span class="cov8" title="1">{
+        info, err := os.Stat(path)
+        if err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("stat failed: %w", err)
+        }</span>
+
+        // Skip directories
+        <span class="cov8" title="1">if info.IsDir() </span><span class="cov8" title="1">{
+                return nil
+        }</span>
+
+        // Open file for writing
+        <span class="cov8" title="1">f, err := os.OpenFile(path, os.O_WRONLY, 0)
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("open failed: %w", err)
+        }</span>
+
+        // Overwrite with random data
+        <span class="cov8" title="1">size := info.Size()
+        randomData := make([]byte, size)
+        if _, err := rand.Read(randomData); err != nil </span><span class="cov0" title="0">{
+                f.Close()
+                return fmt.Errorf("random read failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if _, err := f.Write(randomData); err != nil </span><span class="cov0" title="0">{
+                f.Close()
+                return fmt.Errorf("write failed: %w", err)
+        }</span>
+
+        // Sync to ensure data is written to disk
+        <span class="cov8" title="1">if err := f.Sync(); err != nil </span><span class="cov0" title="0">{
+                f.Close()
+                return fmt.Errorf("sync failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">f.Close()
+
+        // Now delete the file
+        if err := os.Remove(path); err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("remove failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

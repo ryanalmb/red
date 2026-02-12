@@ -1,0 +1,146 @@
+# {{ title }}
+
+**Engagement ID:** {{ engagement_id }}
+**Generated:** {{ generated_at }}
+**Duration:** {{ duration }}
+
+---
+
+## Executive Summary
+
+{{ executive_summary }}
+
+---
+
+## Scope
+
+### Targets
+{% for target in scope.targets %}
+- {{ target }}
+{% endfor %}
+
+### Exclusions
+{% for exclusion in scope.exclusions %}
+- {{ exclusion }}
+{% endfor %}
+
+---
+
+## Findings
+
+### Critical ({{ findings_critical | length }})
+{% for finding in findings_critical %}
+
+#### {{ finding.type | upper }}: {{ finding.description[:80] }}{% if finding.description | length > 80 %}...{% endif %}
+
+- **CVE:** {{ finding.cve_id or 'N/A' }}
+- **CVSS:** {{ finding.cvss_score if finding.cvss_score is not none else 'N/A' }}
+- **Target:** {{ finding.target }}
+- **Tool:** {{ finding.tool }}
+- **Description:** {{ finding.description }}
+- **Evidence:** {{ finding.evidence }}
+
+{% endfor %}
+{% if findings_critical | length == 0 %}
+No critical findings.
+{% endif %}
+
+### High ({{ findings_high | length }})
+{% for finding in findings_high %}
+
+#### {{ finding.type | upper }}: {{ finding.description[:80] }}{% if finding.description | length > 80 %}...{% endif %}
+
+- **CVE:** {{ finding.cve_id or 'N/A' }}
+- **CVSS:** {{ finding.cvss_score if finding.cvss_score is not none else 'N/A' }}
+- **Target:** {{ finding.target }}
+- **Tool:** {{ finding.tool }}
+- **Description:** {{ finding.description }}
+- **Evidence:** {{ finding.evidence }}
+
+{% endfor %}
+{% if findings_high | length == 0 %}
+No high severity findings.
+{% endif %}
+
+### Medium ({{ findings_medium | length }})
+{% for finding in findings_medium %}
+
+#### {{ finding.type | upper }}: {{ finding.description[:80] }}{% if finding.description | length > 80 %}...{% endif %}
+
+- **CVE:** {{ finding.cve_id or 'N/A' }}
+- **CVSS:** {{ finding.cvss_score if finding.cvss_score is not none else 'N/A' }}
+- **Target:** {{ finding.target }}
+- **Tool:** {{ finding.tool }}
+- **Description:** {{ finding.description }}
+- **Evidence:** {{ finding.evidence }}
+
+{% endfor %}
+{% if findings_medium | length == 0 %}
+No medium severity findings.
+{% endif %}
+
+### Low ({{ findings_low | length }})
+{% for finding in findings_low %}
+
+#### {{ finding.type | upper }}: {{ finding.description[:80] }}{% if finding.description | length > 80 %}...{% endif %}
+
+- **CVE:** {{ finding.cve_id or 'N/A' }}
+- **CVSS:** {{ finding.cvss_score if finding.cvss_score is not none else 'N/A' }}
+- **Target:** {{ finding.target }}
+- **Tool:** {{ finding.tool }}
+- **Description:** {{ finding.description }}
+- **Evidence:** {{ finding.evidence }}
+
+{% endfor %}
+{% if findings_low | length == 0 %}
+No low severity findings.
+{% endif %}
+
+### Info ({{ findings_info | length }})
+{% for finding in findings_info %}
+
+#### {{ finding.type | upper }}: {{ finding.description[:80] }}{% if finding.description | length > 80 %}...{% endif %}
+
+- **Target:** {{ finding.target }}
+- **Tool:** {{ finding.tool }}
+- **Description:** {{ finding.description }}
+- **Evidence:** {{ finding.evidence }}
+
+{% endfor %}
+{% if findings_info | length == 0 %}
+No informational findings.
+{% endif %}
+
+---
+
+## Timeline
+
+| Timestamp | Event | Agent | Details |
+|-----------|-------|-------|---------|
+{% for event in timeline %}
+| {{ event.timestamp }} | {{ event.event_type }} | {{ event.agent_id }} | {{ event.description }} |
+{% endfor %}
+
+---
+
+## Appendix
+
+### Tool Execution Summary
+
+| Tool | Executions |
+|------|------------|
+{% for tool, count in tool_summary.items() %}
+| {{ tool }} | {{ count }} |
+{% endfor %}
+
+### Agent Activity Summary
+
+| Agent | Actions |
+|-------|---------|
+{% for agent, count in agent_summary.items() %}
+| {{ agent }} | {{ count }} |
+{% endfor %}
+
+---
+
+**Report Hash:** {{ report_hash }}

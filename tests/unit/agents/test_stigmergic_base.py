@@ -101,12 +101,17 @@ class TestStigmergicAgentBase:
         # Act
         await agent.on_complete(status="success", result={"data": "done"})
         
-        # Assert
+        # Assert — on_complete publishes to agents:{id}:status AND swarm:status
         expected_channel = f"agents:{agent.agent_id}:status"
         event_bus.publish.assert_called()
-        call_args = event_bus.publish.call_args
-        assert call_args[0][0] == expected_channel
-        assert call_args[0][1]['status'] == "success"
+        # Find the agents:*:status call among all publish calls
+        found = False
+        for call in event_bus.publish.call_args_list:
+            if call[0][0] == expected_channel:
+                assert call[0][1]["status"] == "success"
+                found = True
+                break
+        assert found, f"Expected publish to {expected_channel}"
 
     @pytest.mark.asyncio
     async def test_initialization_subscribes_to_topics(self, agent, event_bus):

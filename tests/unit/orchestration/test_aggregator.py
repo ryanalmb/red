@@ -947,10 +947,15 @@ class TestGetFindingsSince:
         # First call gets findings
         summary1 = aggregator.get_findings_since()
         assert summary1.total_count == 1
-        
-        # Second call should be empty (window cleared)
+
+        # Second call still returns findings (callers manage their own reset)
         summary2 = aggregator.get_findings_since()
-        assert summary2.total_count == 0
+        assert summary2.total_count == 1
+
+        # After explicit reset, findings are cleared
+        aggregator.reset_window()
+        summary3 = aggregator.get_findings_since()
+        assert summary3.total_count == 0
 
 
 # =============================================================================
@@ -989,28 +994,28 @@ class TestAsyncLifecycle:
 
     @pytest.mark.asyncio
     async def test_stop_clears_subscriptions(self) -> None:
-        """Test stop clears subscriptions list."""
+        """Test stop clears subscriptions list (tasks are cancelled)."""
         aggregator = FindingAggregator()
         await aggregator.start("test-engagement")
-        # Manually add a mock subscription
-        mock_sub = AsyncMock()
-        aggregator._subscriptions.append(mock_sub)
-        
+        # Manually add a mock task subscription
+        mock_task = MagicMock()
+        aggregator._subscriptions.append(mock_task)
+
         await aggregator.stop()
         assert len(aggregator._subscriptions) == 0
-        mock_sub.unsubscribe.assert_called_once()
+        mock_task.cancel.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_stop_handles_subscription_error(self) -> None:
-        """Test stop handles subscription unsubscribe errors gracefully."""
+        """Test stop handles subscription cancel errors gracefully."""
         aggregator = FindingAggregator()
         await aggregator.start("test-engagement")
-        
-        # Add mock subscription that raises error
-        mock_sub = AsyncMock()
-        mock_sub.unsubscribe.side_effect = Exception("Connection lost")
-        aggregator._subscriptions.append(mock_sub)
-        
+
+        # Add mock task that raises error on cancel
+        mock_task = MagicMock()
+        mock_task.cancel.side_effect = Exception("Connection lost")
+        aggregator._subscriptions.append(mock_task)
+
         # Should not raise, just log warning
         await aggregator.stop()
         assert len(aggregator._subscriptions) == 0
