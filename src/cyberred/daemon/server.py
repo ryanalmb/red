@@ -402,9 +402,17 @@ class DaemonServer:
             )
         config_path = Path(config_path)
         ignore_warnings = request.params.get("ignore_warnings", False)
+
+        # Waiver data collected client-side (Issues #2/#3 fix):
+        # The CLI client prompts the operator on its own terminal and sends
+        # the acceptance data here so the daemon never calls input().
+        waiver_data = request.params.get("waiver_data")
         
         try:
-            engagement_id = self._session_manager.create_engagement(config_path)
+            engagement_id = self._session_manager.create_engagement(
+                config_path,
+                waiver_data=waiver_data,
+            )
             new_state = await self._session_manager.start_engagement(engagement_id, ignore_warnings=ignore_warnings)
             return IPCResponse.create_ok(
                 {"id": engagement_id, "state": str(new_state)},

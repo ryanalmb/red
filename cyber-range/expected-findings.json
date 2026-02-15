@@ -1,264 +1,276 @@
 {
-    "version": "1.0.0",
-    "description": "Known vulnerabilities in cyber-range environment for test validation",
-    "generated": "2025-12-31",
+    "version": "2.0.0",
+    "description": "Expected findings for Cyber-Red cyber-range — Phase 1 (Tier 1 DMZ + Tier 2 Corporate)",
+    "spec_reference": "docs/3-solutioning/advanced-cyber-range-spec.md",
+    "generated": "2026-02-15",
+    "tiers": {
+        "dmz": {"count": 36, "targets": 4},
+        "corp": {"count": 36, "targets": 4}
+    },
     "targets": {
         "dvwa": {
             "host": "cyber-range-dvwa",
             "port": 80,
-            "description": "Damn Vulnerable Web Application",
+            "tier": 1,
+            "network": "cyber-range-net",
+            "description": "Damn Vulnerable Web Application (dual-homed pivot host)",
+            "pivot_to": "cyber-range-corp",
             "vulnerabilities": [
-                {
-                    "id": "DVWA-SQLI-001",
-                    "type": "sqli",
-                    "severity": "critical",
-                    "location": "/vulnerabilities/sqli/",
-                    "description": "SQL Injection in user ID parameter",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/sqli/?id=1' OR '1'='1",
-                    "expected_evidence": "First name: admin",
-                    "attack_vector": "Parameter 'id' is vulnerable to SQL injection"
-                },
-                {
-                    "id": "DVWA-SQLI-002",
-                    "type": "sqli",
-                    "severity": "critical",
-                    "location": "/vulnerabilities/sqli_blind/",
-                    "description": "Blind SQL Injection",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/sqli_blind/?id=1' AND SLEEP(5)--",
-                    "expected_evidence": "Response time > 5 seconds",
-                    "attack_vector": "Time-based blind SQL injection"
-                },
-                {
-                    "id": "DVWA-XSS-001",
-                    "type": "xss",
-                    "severity": "high",
-                    "location": "/vulnerabilities/xss_r/",
-                    "description": "Reflected XSS in name parameter",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/xss_r/?name=<script>alert('XSS')</script>",
-                    "expected_evidence": "<script>alert('XSS')</script>",
-                    "attack_vector": "User input reflected without sanitization"
-                },
-                {
-                    "id": "DVWA-XSS-002",
-                    "type": "xss",
-                    "severity": "high",
-                    "location": "/vulnerabilities/xss_s/",
-                    "description": "Stored XSS in guestbook",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/xss_s/",
-                    "expected_evidence": "Script persisted in database and executed on page load",
-                    "attack_vector": "Stored cross-site scripting via message field"
-                },
-                {
-                    "id": "DVWA-XSS-003",
-                    "type": "xss",
-                    "severity": "medium",
-                    "location": "/vulnerabilities/xss_d/",
-                    "description": "DOM-based XSS",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/xss_d/?default=<script>alert('DOM XSS')</script>",
-                    "expected_evidence": "Script executed via DOM manipulation",
-                    "attack_vector": "DOM-based cross-site scripting"
-                },
-                {
-                    "id": "DVWA-CMD-001",
-                    "type": "command_injection",
-                    "severity": "critical",
-                    "location": "/vulnerabilities/exec/",
-                    "description": "OS Command Injection",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/exec/",
-                    "expected_evidence": "Command output in response (e.g., /etc/passwd contents)",
-                    "attack_vector": "IP parameter allows command chaining with ; or |"
-                },
-                {
-                    "id": "DVWA-FI-001",
-                    "type": "file_inclusion",
-                    "severity": "critical",
-                    "location": "/vulnerabilities/fi/",
-                    "description": "Local File Inclusion",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/fi/?page=../../../../../../etc/passwd",
-                    "expected_evidence": "root:x:0:0:root",
-                    "attack_vector": "Path traversal to access system files"
-                },
-                {
-                    "id": "DVWA-UPLOAD-001",
-                    "type": "file_upload",
-                    "severity": "critical",
-                    "location": "/vulnerabilities/upload/",
-                    "description": "Unrestricted File Upload",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/upload/",
-                    "expected_evidence": "PHP file uploaded and executed",
-                    "attack_vector": "No file type validation on upload"
-                },
-                {
-                    "id": "DVWA-CSRF-001",
-                    "type": "csrf",
-                    "severity": "medium",
-                    "location": "/vulnerabilities/csrf/",
-                    "description": "Cross-Site Request Forgery",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/csrf/",
-                    "expected_evidence": "Password changed without user confirmation",
-                    "attack_vector": "No CSRF token validation"
-                },
-                {
-                    "id": "DVWA-BRUTE-001",
-                    "type": "brute_force",
-                    "severity": "high",
-                    "location": "/vulnerabilities/brute/",
-                    "description": "Brute Force Login",
-                    "cve": null,
-                    "endpoint": "/vulnerabilities/brute/",
-                    "expected_evidence": "Login successful with admin:password",
-                    "attack_vector": "No rate limiting or account lockout"
-                }
+                {"id": "DMZ-01", "type": "webapp", "severity": "critical", "cve": "CWE-89", "description": "SQL Injection (Union) in user ID parameter", "location": "/vulnerabilities/sqli/", "detection_tools": ["sqlmap", "nuclei", "nikto"]},
+                {"id": "DMZ-02", "type": "webapp", "severity": "critical", "cve": "CWE-89", "description": "SQL Injection (Blind) — time-based", "location": "/vulnerabilities/sqli_blind/", "detection_tools": ["sqlmap", "nuclei"]},
+                {"id": "DMZ-03", "type": "exploit", "severity": "critical", "cve": "CWE-78", "description": "OS Command Injection via IP parameter", "location": "/vulnerabilities/exec/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-04", "type": "webapp", "severity": "high", "cve": "CWE-79", "description": "Reflected XSS in name parameter", "location": "/vulnerabilities/xss_r/", "detection_tools": ["nuclei", "nikto"]},
+                {"id": "DMZ-05", "type": "webapp", "severity": "high", "cve": "CWE-79", "description": "Stored XSS in guestbook message field", "location": "/vulnerabilities/xss_s/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-06", "type": "exploit", "severity": "critical", "cve": "CWE-434", "description": "Unrestricted File Upload — PHP webshell execution", "location": "/vulnerabilities/upload/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-07", "type": "exploit", "severity": "high", "cve": "CWE-98", "description": "Local File Inclusion — /etc/passwd readable", "location": "/vulnerabilities/fi/", "detection_tools": ["nuclei", "ffuf"]},
+                {"id": "DMZ-08", "type": "exploit", "severity": "critical", "cve": "CWE-98", "description": "Remote File Inclusion", "location": "/vulnerabilities/fi/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-09", "type": "webapp", "severity": "medium", "cve": "CWE-352", "description": "Cross-Site Request Forgery — password change without token", "location": "/vulnerabilities/csrf/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-10", "type": "webapp", "severity": "low", "cve": "CWE-804", "description": "Insecure CAPTCHA — bypassable", "location": "/vulnerabilities/captcha/", "detection_tools": ["manual"]},
+                {"id": "DMZ-11", "type": "credential", "severity": "medium", "cve": "CWE-330", "description": "Weak Session IDs — predictable generation", "location": "/vulnerabilities/weak_id/", "detection_tools": ["manual"]},
+                {"id": "DMZ-12", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Default Credentials (admin/password)", "location": "/login.php", "credentials": {"username": "admin", "password": "password"}, "detection_tools": ["hydra", "nuclei"]}
             ]
         },
-        "ssh-weak": {
-            "host": "cyber-range-ssh",
-            "port": 2222,
-            "description": "SSH server with weak credentials",
+        "wordpress": {
+            "host": "cyber-range-wordpress",
+            "port": 80,
+            "tier": 1,
+            "network": "cyber-range-net",
+            "description": "WordPress with vulnerable plugin stack (dual-homed pivot host)",
+            "pivot_to": "cyber-range-corp",
             "vulnerabilities": [
-                {
-                    "id": "SSH-WEAK-001",
-                    "type": "weak_credentials",
-                    "severity": "high",
-                    "location": "SSH service",
-                    "description": "Weak password for testuser account",
-                    "cve": null,
-                    "credentials": {
-                        "username": "testuser",
-                        "password": "password123"
-                    },
-                    "expected_evidence": "SSH authentication successful",
-                    "attack_vector": "Password brute force or dictionary attack"
-                },
-                {
-                    "id": "SSH-ENUM-001",
-                    "type": "information_disclosure",
-                    "severity": "low",
-                    "location": "SSH banner",
-                    "description": "SSH version disclosure",
-                    "cve": null,
-                    "expected_evidence": "SSH-2.0-OpenSSH version info",
-                    "attack_vector": "Banner grabbing reveals service version"
-                }
+                {"id": "DMZ-13", "type": "credential", "severity": "high", "cve": "CWE-307", "description": "WordPress XML-RPC brute force — no rate limiting", "location": "/xmlrpc.php", "detection_tools": ["wpscan", "nuclei"]},
+                {"id": "DMZ-14", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "WordPress user enumeration via ?author=N", "location": "/?author=1", "detection_tools": ["wpscan", "nuclei"]},
+                {"id": "DMZ-15", "type": "exploit", "severity": "critical", "cve": "CVE-2016-10956", "description": "Plugin RCE — Mail Masta LFI", "location": "/wp-content/plugins/mail-masta/inc/campaign/count_of_send.php", "detection_tools": ["wpscan", "nuclei"]},
+                {"id": "DMZ-16", "type": "webapp", "severity": "critical", "cve": "CWE-89", "description": "Plugin SQL Injection — Survey plugin", "location": "/wp-content/plugins/", "detection_tools": ["wpscan", "sqlmap"]},
+                {"id": "DMZ-17", "type": "exploit", "severity": "high", "cve": "CWE-22", "description": "Theme directory traversal", "location": "/wp-content/themes/", "detection_tools": ["wpscan", "nuclei"]},
+                {"id": "DMZ-18", "type": "credential", "severity": "critical", "cve": "CWE-312", "description": "wp-config.php database credentials exposed via LFI", "location": "/wp-config.php", "credentials": {"username": "wpuser", "password": "wppass123"}, "detection_tools": ["wpscan", "manual"]},
+                {"id": "DMZ-19", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Unauthenticated REST API user enumeration", "location": "/wp-json/wp/v2/users", "detection_tools": ["wpscan", "nuclei", "curl"]},
+                {"id": "DMZ-20", "type": "exploit", "severity": "high", "cve": "CWE-502", "description": "PHP Object Injection via serialized data", "location": "/xmlrpc.php", "detection_tools": ["wpscan", "manual"]},
+                {"id": "DMZ-21", "type": "exploit", "severity": "high", "cve": "CWE-611", "description": "XXE in XML-RPC", "location": "/xmlrpc.php", "detection_tools": ["nuclei", "manual"]},
+                {"id": "DMZ-22", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Weak admin credentials (admin/admin123)", "location": "/wp-login.php", "credentials": {"username": "admin", "password": "admin123"}, "detection_tools": ["wpscan", "hydra"]}
             ]
         },
-        "smb-vuln": {
-            "host": "cyber-range-smb",
-            "port": 445,
-            "description": "SMB server with weak configuration",
+        "mail": {
+            "host": "cyber-range-mail",
+            "ports": [25, 143, 993],
+            "tier": 1,
+            "network": "cyber-range-net",
+            "description": "Postfix + Dovecot mail server with weak configuration",
             "vulnerabilities": [
-                {
-                    "id": "SMB-NULL-001",
-                    "type": "null_session",
-                    "severity": "medium",
-                    "location": "SMB service",
-                    "description": "SMB null session allowed",
-                    "cve": null,
-                    "expected_evidence": "Share enumeration without credentials",
-                    "attack_vector": "Null authentication to enumerate shares"
-                },
-                {
-                    "id": "SMB-SHARE-001",
-                    "type": "misconfiguration",
-                    "severity": "high",
-                    "location": "public share",
-                    "description": "World-readable share with sensitive data",
-                    "cve": null,
-                    "expected_evidence": "Access to /share/public without authentication",
-                    "attack_vector": "Anonymous access to file shares"
-                },
-                {
-                    "id": "SMB-WEAK-001",
-                    "type": "weak_credentials",
-                    "severity": "high",
-                    "location": "admin account",
-                    "description": "Weak password for admin account",
-                    "cve": null,
-                    "credentials": {
-                        "username": "admin",
-                        "password": "weakpass"
-                    },
-                    "expected_evidence": "Access to confidential share",
-                    "attack_vector": "Password brute force reveals admin credentials"
-                }
+                {"id": "DMZ-23", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "Open SMTP relay — accepts mail from anyone to anyone", "location": "SMTP port 25", "detection_tools": ["nmap", "nuclei", "manual"]},
+                {"id": "DMZ-24", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "VRFY user enumeration enabled", "location": "SMTP port 25", "detection_tools": ["nmap", "smtp-user-enum"]},
+                {"id": "DMZ-25", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "EXPN mailing list enumeration enabled", "location": "SMTP port 25", "detection_tools": ["nmap", "smtp-user-enum"]},
+                {"id": "DMZ-26", "type": "credential", "severity": "high", "cve": "CWE-319", "description": "Cleartext authentication — no STARTTLS required", "location": "SMTP/IMAP", "detection_tools": ["nmap", "nuclei"]},
+                {"id": "DMZ-27", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Weak mailbox credentials (user1/password1)", "location": "IMAP port 143", "credentials": {"username": "user1", "password": "password1"}, "detection_tools": ["hydra", "nmap"]},
+                {"id": "DMZ-28", "type": "recon", "severity": "low", "cve": "CWE-200", "description": "IMAP IDLE information disclosure", "location": "IMAP port 143", "detection_tools": ["manual"]},
+                {"id": "DMZ-29", "type": "config", "severity": "medium", "cve": "CWE-290", "description": "Missing SPF/DKIM/DMARC records", "location": "DNS/SMTP", "detection_tools": ["nmap", "dig"]},
+                {"id": "DMZ-30", "type": "exploit", "severity": "high", "cve": "CWE-93", "description": "SMTP command injection", "location": "SMTP port 25", "detection_tools": ["manual"]}
             ]
         },
-        "ftp-anon": {
-            "host": "cyber-range-ftp",
-            "port": 21,
-            "description": "FTP server with anonymous access",
+        "dns": {
+            "host": "cyber-range-dns",
+            "port": 53,
+            "tier": 1,
+            "network": "cyber-range-net",
+            "description": "BIND9 DNS server with misconfigured zones",
             "vulnerabilities": [
-                {
-                    "id": "FTP-ANON-001",
-                    "type": "anonymous_access",
-                    "severity": "high",
-                    "location": "FTP service",
-                    "description": "Anonymous FTP login allowed",
-                    "cve": null,
-                    "credentials": {
-                        "username": "anonymous",
-                        "password": "anonymous"
-                    },
-                    "expected_evidence": "FTP login successful with anonymous credentials",
-                    "attack_vector": "No authentication required for file access"
-                },
-                {
-                    "id": "FTP-WEAK-001",
-                    "type": "weak_credentials",
-                    "severity": "medium",
-                    "location": "ftpuser account",
-                    "description": "Weak password for FTP user",
-                    "cve": null,
-                    "credentials": {
-                        "username": "ftpuser",
-                        "password": "ftppass"
-                    },
-                    "expected_evidence": "FTP authentication successful",
-                    "attack_vector": "Password brute force or dictionary attack"
-                },
-                {
-                    "id": "FTP-ENUM-001",
-                    "type": "information_disclosure",
-                    "severity": "low",
-                    "location": "FTP banner",
-                    "description": "FTP version disclosure",
-                    "cve": null,
-                    "expected_evidence": "vsftpd version in banner",
-                    "attack_vector": "Banner grabbing reveals service version"
-                }
+                {"id": "DMZ-31", "type": "recon", "severity": "high", "cve": "CWE-200", "description": "Zone transfer (AXFR) allowed to any host", "location": "DNS port 53", "detection_tools": ["dig", "nmap", "dnsrecon"]},
+                {"id": "DMZ-32", "type": "config", "severity": "medium", "cve": "CWE-406", "description": "Open recursive resolver", "location": "DNS port 53", "detection_tools": ["dig", "nmap"]},
+                {"id": "DMZ-33", "type": "exploit", "severity": "high", "cve": "CWE-330", "description": "DNS cache poisoning — TXID prediction", "location": "DNS port 53", "detection_tools": ["manual"]},
+                {"id": "DMZ-34", "type": "recon", "severity": "low", "cve": "CWE-200", "description": "Version disclosure via version.bind CHAOS query", "location": "DNS port 53", "detection_tools": ["dig", "nmap"]},
+                {"id": "DMZ-35", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "Dynamic update zone allowed — no key required", "location": "DNS port 53", "detection_tools": ["nsupdate", "manual"]},
+                {"id": "DMZ-36", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Internal hostname leakage in zone records (psyche.local)", "location": "DNS port 53", "detection_tools": ["dig", "dnsrecon"]}
+            ]
+        },
+        "jenkins": {
+            "host": "cyber-range-jenkins",
+            "port": 8080,
+            "tier": 2,
+            "network": "cyber-range-corp",
+            "description": "Jenkins CI/CD with insecure defaults (requires pivot through DVWA/WordPress)",
+            "vulnerabilities": [
+                {"id": "CORP-01", "type": "exploit", "severity": "critical", "cve": "CVE-2019-1003000", "description": "Unauthenticated Script Console — Groovy RCE", "location": "/script", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-02", "type": "exploit", "severity": "critical", "cve": "CVE-2019-1003029", "description": "Groovy sandbox escape RCE", "location": "/script", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-03", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Default admin credentials (admin/admin)", "location": "/login", "credentials": {"username": "admin", "password": "admin"}, "detection_tools": ["hydra", "nuclei"]},
+                {"id": "CORP-04", "type": "credential", "severity": "high", "cve": "CWE-312", "description": "Credentials stored in plaintext (config.xml)", "location": "JENKINS_HOME/config.xml", "detection_tools": ["manual"]},
+                {"id": "CORP-05", "type": "credential", "severity": "high", "cve": "CWE-522", "description": "LDAP password in Jenkins credentials store", "location": "/credentials/", "detection_tools": ["manual"], "chain_to": "AD-01"},
+                {"id": "CORP-06", "type": "exploit", "severity": "high", "cve": "CWE-284", "description": "Open agent port (JNLP) — rogue agent connection", "location": "port 50000", "detection_tools": ["nmap", "manual"]},
+                {"id": "CORP-07", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Build history information disclosure", "location": "/job/*/console", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-08", "type": "exploit", "severity": "critical", "cve": "CWE-94", "description": "Pipeline script injection", "location": "/pipeline", "detection_tools": ["manual"]},
+                {"id": "CORP-09", "type": "exploit", "severity": "high", "cve": "CWE-22", "description": "Arbitrary file read via workspace", "location": "/job/*/ws/", "detection_tools": ["manual"]},
+                {"id": "CORP-10", "type": "credential", "severity": "critical", "cve": "CWE-321", "description": "SSH private key in build artifacts", "location": "/job/*/artifact/", "detection_tools": ["manual"], "chain_to": "gitlab-ssh"}
+            ]
+        },
+        "postgres": {
+            "host": "cyber-range-postgres",
+            "port": 5432,
+            "tier": 2,
+            "network": "cyber-range-corp",
+            "description": "PostgreSQL 13.4 with trust authentication (requires pivot through DVWA/WordPress)",
+            "vulnerabilities": [
+                {"id": "CORP-11", "type": "credential", "severity": "critical", "cve": "CWE-287", "description": "Trust authentication — no password for local connections", "location": "pg_hba.conf", "detection_tools": ["psql", "nmap"]},
+                {"id": "CORP-12", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Default postgres superuser password (postgres)", "location": "PostgreSQL auth", "credentials": {"username": "postgres", "password": "postgres"}, "detection_tools": ["hydra", "psql"]},
+                {"id": "CORP-13", "type": "exploit", "severity": "high", "cve": "CWE-284", "description": "pg_read_server_files role abuse — arbitrary file read", "location": "SQL", "detection_tools": ["psql", "manual"]},
+                {"id": "CORP-14", "type": "exploit", "severity": "critical", "cve": "CWE-78", "description": "COPY TO/FROM PROGRAM — OS command execution", "location": "SQL", "detection_tools": ["psql", "manual"]},
+                {"id": "CORP-15", "type": "credential", "severity": "high", "cve": "CWE-312", "description": "Database contains user credentials table with AD passwords", "location": "SQL tables", "detection_tools": ["psql", "manual"], "chain_to": "AD domain user"},
+                {"id": "CORP-16", "type": "config", "severity": "medium", "cve": "CWE-319", "description": "Unencrypted connections — no SSL configured", "location": "PostgreSQL", "detection_tools": ["nmap", "psql"]},
+                {"id": "CORP-17", "type": "config", "severity": "medium", "cve": "CWE-284", "description": "pg_hba.conf allows remote connections from any host", "location": "pg_hba.conf", "detection_tools": ["psql", "nmap"]},
+                {"id": "CORP-18", "type": "exploit", "severity": "high", "cve": "CWE-434", "description": "Large object file read/write", "location": "SQL", "detection_tools": ["psql", "manual"]}
+            ]
+        },
+        "gitlab": {
+            "host": "cyber-range-gitlab",
+            "port": 8082,
+            "tier": 2,
+            "network": "cyber-range-corp",
+            "description": "GitLab CE 14.0.0 — pre-CVE-2021-22205 (requires pivot through DVWA/WordPress)",
+            "vulnerabilities": [
+                {"id": "CORP-19", "type": "exploit", "severity": "critical", "cve": "CVE-2021-22205", "description": "ExifTool RCE — unauthenticated image upload", "location": "/uploads", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-20", "type": "exploit", "severity": "high", "cve": "CVE-2021-22214", "description": "SSRF via project import feature", "location": "/import", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-21", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Default root password (5iveL!fe)", "location": "/users/sign_in", "credentials": {"username": "root", "password": "5iveL!fe"}, "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-22", "type": "credential", "severity": "high", "cve": "CWE-798", "description": "API token leakage in commit history", "location": "/repos/commits", "detection_tools": ["trufflehog", "manual"]},
+                {"id": "CORP-23", "type": "credential", "severity": "high", "cve": "CWE-312", "description": "CI/CD variable exposure — secrets in pipeline variables", "location": "/settings/ci_cd", "detection_tools": ["manual"], "chain_to": "kubernetes tokens"},
+                {"id": "CORP-24", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Private repository enumeration", "location": "/explore/projects", "detection_tools": ["manual"]},
+                {"id": "CORP-25", "type": "credential", "severity": "critical", "cve": "CWE-312", "description": "Kubernetes config in repository", "location": "/repos/files", "detection_tools": ["trufflehog", "manual"]},
+                {"id": "CORP-26", "type": "credential", "severity": "high", "cve": "CWE-312", "description": ".env file with database and AD service account credentials", "location": "/repos/files/.env", "detection_tools": ["manual"], "chain_to": "AD service account"},
+                {"id": "CORP-27", "type": "exploit", "severity": "high", "cve": "CWE-22", "description": "Wiki arbitrary file read", "location": "/wikis", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-28", "type": "credential", "severity": "high", "cve": "CWE-200", "description": "Shared runner token extraction", "location": "/admin/runners", "detection_tools": ["manual"]}
+            ]
+        },
+        "flask-api": {
+            "host": "cyber-range-flask-api",
+            "port": 5000,
+            "tier": 2,
+            "network": "cyber-range-corp",
+            "description": "Vulnerable Flask REST API with OWASP Top 10 flaws (requires pivot through DVWA/WordPress)",
+            "vulnerabilities": [
+                {"id": "CORP-29", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "JWT secret hardcoded (supersecret)", "location": "JWT implementation", "detection_tools": ["manual", "nuclei"]},
+                {"id": "CORP-30", "type": "webapp", "severity": "high", "cve": "CWE-639", "description": "IDOR on /api/users/{id} — PII leakage", "location": "/api/users/<id>", "detection_tools": ["manual"]},
+                {"id": "CORP-31", "type": "webapp", "severity": "critical", "cve": "CWE-89", "description": "SQL Injection on search endpoint", "location": "/api/search", "detection_tools": ["sqlmap", "nuclei"]},
+                {"id": "CORP-32", "type": "exploit", "severity": "critical", "cve": "CWE-94", "description": "Server-Side Template Injection (Jinja2 SSTI)", "location": "/api/render", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-33", "type": "exploit", "severity": "critical", "cve": "CWE-489", "description": "Debug mode enabled — Werkzeug interactive console RCE", "location": "/console", "detection_tools": ["nuclei", "manual"]},
+                {"id": "CORP-34", "type": "webapp", "severity": "medium", "cve": "CWE-942", "description": "CORS wildcard (*) — allows cross-origin requests", "location": "HTTP headers", "detection_tools": ["nuclei", "curl"]},
+                {"id": "CORP-35", "type": "credential", "severity": "medium", "cve": "CWE-200", "description": "API key exposed in /api/config response headers", "location": "/api/config", "detection_tools": ["curl", "nuclei"]},
+                {"id": "CORP-36", "type": "exploit", "severity": "high", "cve": "CWE-434", "description": "Unrestricted file upload", "location": "/api/upload", "detection_tools": ["manual"]}
+            ]
+        },
+        "dc01": {
+            "host": "cyber-range-dc01",
+            "ports": [53, 88, 135, 139, 389, 445, 464, 636, 3268, 3269],
+            "tier": 3,
+            "network": "cyber-range-ad",
+            "description": "Samba AD Domain Controller — PSYCHE.LOCAL (dual-homed pivot to Tier 4)",
+            "pivot_to": "cyber-range-ot",
+            "vulnerabilities": [
+                {"id": "AD-01", "type": "credential", "severity": "high", "cve": "CWE-287", "description": "AS-REP Roasting — 5 accounts with no Kerberos pre-authentication", "location": "Kerberos port 88", "detection_tools": ["impacket", "rubeus", "manual"]},
+                {"id": "AD-02", "type": "credential", "severity": "high", "cve": "CWE-916", "description": "Kerberoasting — 3 SPNs with weak service passwords", "location": "Kerberos port 88", "detection_tools": ["impacket", "rubeus", "manual"]},
+                {"id": "AD-03", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "Unconstrained delegation on FILESERVER", "location": "AD delegation config", "detection_tools": ["bloodhound", "impacket"]},
+                {"id": "AD-04", "type": "config", "severity": "medium", "cve": "CWE-294", "description": "LDAP signing not required", "location": "LDAP port 389", "detection_tools": ["ldapsearch", "nmap"]},
+                {"id": "AD-05", "type": "config", "severity": "high", "cve": "CWE-521", "description": "Weak password policy — min 4 chars, no complexity", "location": "AD password policy", "detection_tools": ["crackmapexec", "manual"]},
+                {"id": "AD-06", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "Domain admin password reuse from Jenkins (da_jenkins/JenkinsAdmin2024!)", "location": "AD authentication", "credentials": {"username": "da_jenkins", "password": "JenkinsAdmin2024!"}, "detection_tools": ["crackmapexec", "impacket"], "chain_from": "CORP-05"},
+                {"id": "AD-07", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "DCSync rights on compromised service account (svc_repl)", "location": "AD replication", "detection_tools": ["impacket", "mimikatz"]},
+                {"id": "AD-08", "type": "credential", "severity": "critical", "cve": "CWE-312", "description": "GPP passwords in SYSVOL (cpassword for localadmin)", "location": "SYSVOL share", "detection_tools": ["crackmapexec", "gpp-decrypt", "manual"]},
+                {"id": "AD-09", "type": "exploit", "severity": "critical", "cve": "CVE-2021-34527", "description": "PrintNightmare — Print Spooler RCE", "location": "SMB port 445", "detection_tools": ["impacket", "manual"]},
+                {"id": "AD-10", "type": "exploit", "severity": "critical", "cve": "CVE-2020-1472", "description": "ZeroLogon — Netlogon elevation of privilege", "location": "RPC port 135", "detection_tools": ["impacket", "manual"]},
+                {"id": "AD-11", "type": "exploit", "severity": "high", "cve": "CWE-294", "description": "NTLM relay — SMB signing disabled", "location": "SMB port 445", "detection_tools": ["responder", "impacket", "ntlmrelayx"]},
+                {"id": "AD-12", "type": "exploit", "severity": "critical", "cve": "CWE-916", "description": "Golden Ticket possibility — weak KRBTGT hash extractable via DCSync", "location": "Kerberos", "detection_tools": ["impacket", "mimikatz"]},
+                {"id": "AD-13", "type": "config", "severity": "medium", "cve": "CWE-284", "description": "LAPS not deployed — local admin passwords not rotated", "location": "AD configuration", "detection_tools": ["crackmapexec", "manual"]},
+                {"id": "AD-14", "type": "exploit", "severity": "high", "cve": "CWE-284", "description": "AdminSDHolder ACL abuse — svc_repl in Account Operators", "location": "AD ACL", "detection_tools": ["bloodhound", "manual"]}
+            ]
+        },
+        "fileserver": {
+            "host": "cyber-range-fileserver",
+            "ports": [139, 445],
+            "tier": 3,
+            "network": "cyber-range-ad",
+            "description": "Samba file server with weak shares and sensitive documents",
+            "vulnerabilities": [
+                {"id": "AD-15", "type": "recon", "severity": "high", "cve": "CWE-284", "description": "Open shares — no authentication required for public share", "location": "SMB port 445", "detection_tools": ["smbclient", "crackmapexec", "nmap"]},
+                {"id": "AD-16", "type": "credential", "severity": "critical", "cve": "CWE-312", "description": "Sensitive docs in public share (passwords.xlsx with OT credentials)", "location": "\\\\fileserver\\public\\passwords.xlsx", "credentials": {"note": "Contains HMI admin/admin and DA creds"}, "detection_tools": ["smbclient", "manual"], "chain_to": "OT-03"},
+                {"id": "AD-17", "type": "config", "severity": "critical", "cve": "CWE-327", "description": "SMBv1 enabled — EternalBlue attack surface", "location": "SMB port 445", "detection_tools": ["nmap", "crackmapexec"]},
+                {"id": "AD-18", "type": "exploit", "severity": "high", "cve": "CWE-284", "description": "Writable SYSVOL share — allows GPO manipulation", "location": "\\\\fileserver\\sysvol", "detection_tools": ["smbclient", "manual"]},
+                {"id": "AD-19", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "Unconstrained delegation token capture", "location": "AD delegation", "detection_tools": ["rubeus", "impacket"]},
+                {"id": "AD-20", "type": "credential", "severity": "high", "cve": "CWE-798", "description": "Local admin credential reuse (localadmin/Admin123!)", "location": "Local auth", "credentials": {"username": "localadmin", "password": "Admin123!"}, "detection_tools": ["crackmapexec", "hydra"]},
+                {"id": "AD-21", "type": "credential", "severity": "critical", "cve": "CWE-312", "description": "SAM database accessible via admin share", "location": "\\\\fileserver\\admin$", "detection_tools": ["impacket", "manual"]},
+                {"id": "AD-22", "type": "credential", "severity": "high", "cve": "CWE-321", "description": "SSH private keys in user home directories", "location": "/home/jsmith/.ssh/id_rsa", "detection_tools": ["smbclient", "manual"]}
+            ]
+        },
+        "exchange": {
+            "host": "cyber-range-exchange",
+            "ports": [443, 25],
+            "tier": 3,
+            "network": "cyber-range-ad",
+            "description": "Exchange OWA simulator with ProxyShell/ProxyLogon attack surface",
+            "vulnerabilities": [
+                {"id": "AD-23", "type": "exploit", "severity": "critical", "cve": "CVE-2021-34473", "description": "ProxyShell chain — SSRF via autodiscover to RCE", "location": "/autodiscover/autodiscover.xml", "detection_tools": ["nuclei", "manual"]},
+                {"id": "AD-24", "type": "exploit", "severity": "critical", "cve": "CVE-2021-26855", "description": "ProxyLogon — pre-auth SSRF via /mapi/nspi", "location": "/mapi/nspi/", "detection_tools": ["nuclei", "manual"]},
+                {"id": "AD-25", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Global Address List enumeration via /oab/", "location": "/oab/", "detection_tools": ["curl", "manual"]},
+                {"id": "AD-26", "type": "credential", "severity": "high", "cve": "CWE-200", "description": "Autodiscover credential harvesting", "location": "/autodiscover/autodiscover.xml", "detection_tools": ["responder", "manual"]},
+                {"id": "AD-27", "type": "exploit", "severity": "high", "cve": "CWE-284", "description": "EWS API abuse with domain credentials", "location": "/ews/exchange.asmx", "detection_tools": ["curl", "manual"]},
+                {"id": "AD-28", "type": "exploit", "severity": "medium", "cve": "CWE-284", "description": "Internal phishing relay — no sender validation", "location": "/owa/compose", "detection_tools": ["manual"]}
+            ]
+        },
+        "scada-hmi": {
+            "host": "cyber-range-scada-hmi",
+            "ports": [502, 4840, 8443],
+            "tier": 4,
+            "network": "cyber-range-ot",
+            "description": "SCADA/HMI simulator — Modbus TCP + OPC-UA + Web dashboard",
+            "vulnerabilities": [
+                {"id": "OT-01", "type": "exploit", "severity": "critical", "cve": "CWE-306", "description": "Modbus TCP no authentication — read/write coils and registers", "location": "Modbus port 502", "detection_tools": ["nmap", "modbus-cli", "manual"]},
+                {"id": "OT-02", "type": "exploit", "severity": "critical", "cve": "CWE-287", "description": "OPC-UA anonymous access — read/write process variables", "location": "OPC-UA port 4840", "detection_tools": ["opcua-client", "manual"]},
+                {"id": "OT-03", "type": "credential", "severity": "critical", "cve": "CWE-798", "description": "HMI default credentials (admin/admin)", "location": "Web HMI port 8443", "credentials": {"username": "admin", "password": "admin"}, "detection_tools": ["hydra", "manual"], "chain_from": "AD-16"},
+                {"id": "OT-04", "type": "exploit", "severity": "critical", "cve": "CWE-78", "description": "HMI command injection via setpoint — shell=True with user input", "location": "/api/control", "detection_tools": ["manual"]},
+                {"id": "OT-05", "type": "recon", "severity": "high", "cve": "CWE-306", "description": "Modbus coil/register read without authentication", "location": "Modbus port 502", "detection_tools": ["nmap", "modbus-cli"]},
+                {"id": "OT-06", "type": "recon", "severity": "medium", "cve": "CWE-200", "description": "Firmware version disclosure via /api/status (no auth)", "location": "/api/status", "detection_tools": ["curl", "nuclei"]},
+                {"id": "OT-07", "type": "config", "severity": "high", "cve": "CWE-319", "description": "Cleartext Modbus protocol — sniffable on the wire", "location": "Modbus port 502", "detection_tools": ["wireshark", "manual"]},
+                {"id": "OT-08", "type": "config", "severity": "high", "cve": "CWE-799", "description": "No rate limiting on control commands", "location": "/api/control", "detection_tools": ["manual"]}
+            ]
+        },
+        "historian": {
+            "host": "cyber-range-historian",
+            "port": 8086,
+            "tier": 4,
+            "network": "cyber-range-ot",
+            "description": "InfluxDB 1.8 historian database with no authentication",
+            "vulnerabilities": [
+                {"id": "OT-09", "type": "credential", "severity": "critical", "cve": "CWE-306", "description": "No authentication enabled — full database access", "location": "HTTP API port 8086", "detection_tools": ["curl", "influx-cli"]},
+                {"id": "OT-10", "type": "recon", "severity": "high", "cve": "CWE-284", "description": "Full database read access — process data exfiltration", "location": "/query?q=SELECT * FROM ...", "detection_tools": ["curl", "influx-cli"]},
+                {"id": "OT-11", "type": "exploit", "severity": "critical", "cve": "CWE-284", "description": "Write access to historian — data manipulation/integrity attack", "location": "/write", "detection_tools": ["curl", "manual"]},
+                {"id": "OT-12", "type": "credential", "severity": "high", "cve": "CWE-916", "description": "JWT token weak signing key (when auth is enabled)", "location": "HTTP API", "detection_tools": ["manual"]},
+                {"id": "OT-13", "type": "credential", "severity": "medium", "cve": "CWE-530", "description": "Backup files accessible via API", "location": "/api/v1/backup", "detection_tools": ["curl", "manual"]},
+                {"id": "OT-14", "type": "exploit", "severity": "high", "cve": "CWE-89", "description": "Cross-database query injection via InfluxQL", "location": "/query", "detection_tools": ["curl", "manual"]}
             ]
         }
     },
+    "credential_chains": [
+        {"from": "DMZ-12", "to": "DVWA shell", "description": "DVWA admin creds → shell → pivot to cyber-range-corp"},
+        {"from": "DMZ-18", "to": "wordpress-db", "description": "wp-config.php DB creds → MariaDB → reused password for GitLab"},
+        {"from": "DMZ-22", "to": "WordPress shell", "description": "WordPress admin creds → plugin upload → shell → pivot to cyber-range-corp"},
+        {"from": "DMZ-27", "to": "CORP-03", "description": "Mail user1/password1 → email contains Jenkins admin credentials"},
+        {"from": "CORP-03", "to": "CORP-05", "description": "Jenkins admin → LDAP password in credentials store → Domain user"},
+        {"from": "CORP-10", "to": "gitlab-ssh", "description": "SSH key in Jenkins artifacts → GitLab server access"},
+        {"from": "CORP-12", "to": "CORP-15", "description": "PostgreSQL superuser → user credentials table → AD domain user"},
+        {"from": "CORP-21", "to": "CORP-26", "description": "GitLab root → .env file → AD service account credentials"},
+        {"from": "CORP-29", "to": "CORP-32", "description": "Flask JWT secret → SSTI → shell → AD network access"},
+        {"from": "CORP-05", "to": "AD-06", "description": "Jenkins LDAP password → Domain Admin da_jenkins (password reuse)"},
+        {"from": "CORP-15", "to": "AD-01", "description": "PostgreSQL user creds table → Domain user → AS-REP Roast"},
+        {"from": "CORP-26", "to": "AD-07", "description": "GitLab .env → AD service account svc_repl → DCSync"},
+        {"from": "AD-08", "to": "AD-20", "description": "GPP cpassword → localadmin on FILESERVER"},
+        {"from": "AD-02", "to": "AD-07", "description": "Kerberoast svc_repl → DCSync → KRBTGT hash"},
+        {"from": "AD-16", "to": "OT-03", "description": "passwords.xlsx on FILESERVER → HMI admin/admin credentials"},
+        {"from": "AD-07", "to": "AD-12", "description": "DCSync → KRBTGT hash → Golden Ticket"},
+        {"from": "OT-03", "to": "OT-04", "description": "HMI login → command injection → full OT control"},
+        {"from": "OT-09", "to": "OT-11", "description": "InfluxDB no auth → write historian data → integrity attack"}
+    ],
     "summary": {
-        "total_vulnerabilities": 20,
-        "by_severity": {
-            "critical": 5,
-            "high": 9,
-            "medium": 4,
-            "low": 2
-        },
-        "by_type": {
-            "sqli": 2,
-            "xss": 3,
-            "command_injection": 1,
-            "file_inclusion": 1,
-            "file_upload": 1,
-            "csrf": 1,
-            "brute_force": 1,
-            "weak_credentials": 4,
-            "null_session": 1,
-            "misconfiguration": 1,
-            "anonymous_access": 1,
-            "information_disclosure": 3
+        "total_vulnerabilities": 114,
+        "phase": "all",
+        "by_tier": {
+            "dmz": 36,
+            "corp": 36,
+            "ad": 28,
+            "ot": 14
         }
     }
 }

@@ -1,6 +1,43 @@
+# =============================================================================
+# Rules of Engagement — Cyber Range 4-Tier Engagement
+# =============================================================================
+
+# Authorized networks
 allowed_ips:
-  - "172.20.0.3" # Internal Metasploitable
-  - "45.33.32.156" # scanme.nmap.org
+  - "172.28.0.0/16"     # Tier 1: DMZ
+  - "10.10.10.0/24"     # Tier 2: Corporate
+  - "10.10.20.0/24"     # Tier 3: Active Directory
+  - "10.10.30.0/24"     # Tier 4: OT/Restricted
+  - "127.0.0.1"         # Localhost
+
+# No port restrictions within scope
 forbidden_ports: []
-aggression_level: "EXTREME"
-semantic_rules: "Authorized Red Team Exercise. Full scope allowed including intrusive scanning and stress testing."
+
+# Aggression level: HIGH allows exploitation, credential reuse, pivoting
+aggression_level: "HIGH"
+
+# Semantic rules for LLM-based agents
+semantic_rules: |
+  Authorized Red Team Exercise against isolated cyber-range environment.
+  
+  PERMITTED:
+  - Full vulnerability scanning (intrusive and non-intrusive)
+  - Exploitation of all discovered vulnerabilities
+  - Credential harvesting, cracking, and reuse across tiers
+  - Lateral movement via network pivoting through dual-homed hosts
+  - Post-exploitation enumeration and data collection
+  - Active Directory attacks (Kerberoasting, AS-REP, Pass-the-Hash)
+  - SCADA/ICS protocol interaction (Modbus, OPC-UA)
+  
+  PROHIBITED:
+  - Denial of service attacks against range infrastructure
+  - Exfiltration of data outside the cyber-range networks
+  - Modification of Docker host configuration
+  - Attacks against the Kali worker containers themselves
+  - Any activity outside the defined scope networks
+  
+  PIVOTING RULES:
+  - Tier 2 (Corporate) is only reachable via Tier 1 pivot hosts (DVWA, WordPress)
+  - Tier 3 (AD) is only reachable via Tier 2 pivot host (GitLab)
+  - Tier 4 (OT) is only reachable via Tier 3 pivot host (DC01)
+  - Agents must establish a foothold before attempting lateral movement

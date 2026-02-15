@@ -1,0 +1,17 @@
+; Reverse DNS for 172.28.0.0/16 — cyber-range DMZ
+$TTL 86400
+@   IN  SOA ns1.psyche.local. admin.psyche.local. (
+        2026021501  ; Serial
+        3600        ; Refresh
+        1800        ; Retry
+        604800      ; Expire
+        86400       ; Minimum TTL
+)
+@       IN  NS  ns1.psyche.local.
+53.0    IN  PTR ns1.psyche.local.
+10.0    IN  PTR dvwa.psyche.local.
+11.0    IN  PTR wordpress.psyche.local.
+12.0    IN  PTR mail.psyche.local.
+13.0    IN  PTR ssh.psyche.local.
+14.0    IN  PTR smb.psyche.local.
+15.0    IN  PTR ftp.psyche.local.

@@ -183,6 +183,7 @@ class TestShardedEventBus:
         bus = MagicMock()
         bus.publish = AsyncMock(return_value=1)
         bus.subscribe = AsyncMock(return_value=MagicMock())
+        bus.psubscribe = AsyncMock(return_value=MagicMock())
         return bus
 
     @pytest.fixture
@@ -256,11 +257,11 @@ class TestShardedEventBus:
             callback = AsyncMock()
             await bus.subscribe_findings(callback)
             
-            # Should subscribe to all 16 shards
-            assert mock_event_bus.subscribe.call_count == 16
+            # Should psubscribe to all 16 shards
+            assert mock_event_bus.psubscribe.call_count == 16
             
             # Verify all shard patterns
-            subscribed_patterns = [call[0][0] for call in mock_event_bus.subscribe.call_args_list]
+            subscribed_patterns = [call[0][0] for call in mock_event_bus.psubscribe.call_args_list]
             for i in range(16):
                 assert f"findings:shard:{i}:*" in subscribed_patterns
 
@@ -273,10 +274,10 @@ class TestShardedEventBus:
             callback = AsyncMock()
             await bus.subscribe_findings(callback, shard_subset=[0, 1, 2, 3])
             
-            # Should only subscribe to 4 shards
-            assert mock_event_bus.subscribe.call_count == 4
+            # Should only psubscribe to 4 shards
+            assert mock_event_bus.psubscribe.call_count == 4
             
-            subscribed_patterns = [call[0][0] for call in mock_event_bus.subscribe.call_args_list]
+            subscribed_patterns = [call[0][0] for call in mock_event_bus.psubscribe.call_args_list]
             for i in [0, 1, 2, 3]:
                 assert f"findings:shard:{i}:*" in subscribed_patterns
 
@@ -290,7 +291,7 @@ class TestShardedEventBus:
             await bus.subscribe_findings(callback, finding_type="sqli")
             
             # All patterns should filter by type
-            subscribed_patterns = [call[0][0] for call in mock_event_bus.subscribe.call_args_list]
+            subscribed_patterns = [call[0][0] for call in mock_event_bus.psubscribe.call_args_list]
             for pattern in subscribed_patterns:
                 assert pattern.endswith(":sqli")
 
@@ -409,6 +410,7 @@ class TestShardAggregator:
         bus = MagicMock()
         bus.publish = AsyncMock(return_value=1)
         bus.subscribe = AsyncMock(return_value=MagicMock())
+        bus.psubscribe = AsyncMock(return_value=MagicMock())
         return bus
 
     @pytest.fixture
@@ -444,9 +446,9 @@ class TestShardAggregator:
             
             await aggregator.start()
             
-            # Should have subscribed via ShardedEventBus
-            # The ShardedEventBus subscribes to all shards
-            assert mock_event_bus.subscribe.call_count == 8
+            # Should have psubscribed via ShardedEventBus
+            # The ShardedEventBus psubscribes to all shards
+            assert mock_event_bus.psubscribe.call_count == 8
             
             await aggregator.stop()
 
@@ -640,6 +642,7 @@ class TestShardingEdgeCases:
         bus = MagicMock()
         bus.publish = AsyncMock(return_value=1)
         bus.subscribe = AsyncMock(return_value=MagicMock())
+        bus.psubscribe = AsyncMock(return_value=MagicMock())
         return bus
 
     @pytest.fixture

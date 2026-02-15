@@ -1,0 +1,46 @@
+; =============================================================================
+; psyche.local zone — Cyber Range internal hostnames
+; DMZ-36: Internal hostname leakage — all internal targets listed
+; =============================================================================
+$TTL 86400
+@   IN  SOA ns1.psyche.local. admin.psyche.local. (
+        2026021501  ; Serial
+        3600        ; Refresh
+        1800        ; Retry
+        604800      ; Expire
+        86400       ; Minimum TTL
+)
+
+; Name servers
+@           IN  NS      ns1.psyche.local.
+
+; DMZ targets (Tier 1)
+ns1         IN  A       172.28.0.53
+dvwa        IN  A       172.28.0.10
+wordpress   IN  A       172.28.0.11
+mail        IN  A       172.28.0.12
+ssh         IN  A       172.28.0.13
+smb         IN  A       172.28.0.14
+ftp         IN  A       172.28.0.15
+
+; Internal hostname leakage (DMZ-36) — reveals corporate targets
+jenkins     IN  A       10.10.10.20
+gitlab      IN  A       10.10.10.21
+postgres    IN  A       10.10.10.22
+flask-api   IN  A       10.10.10.23
+
+; AD targets (leaked via DNS — should not be public)
+dc01        IN  A       10.10.20.10
+fileserver  IN  A       10.10.20.11
+exchange    IN  A       10.10.20.12
+
+; OT targets (leaked via DNS — crown jewels)
+scada-hmi   IN  A       10.10.30.10
+historian   IN  A       10.10.30.11
+
+; MX record for mail server
+@           IN  MX  10  mail.psyche.local.
+
+; SRV records (AD-style, leaked)
+_ldap._tcp      IN  SRV 0 100 389 dc01.psyche.local.
+_kerberos._tcp  IN  SRV 0 100 88  dc01.psyche.local.

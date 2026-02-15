@@ -1,0 +1,5 @@
+; version.bind CHAOS zone — DMZ-34: Version disclosure
+$TTL 0
+@   CH  SOA localhost. root.localhost. ( 1 3600 1800 604800 0 )
+@   CH  NS  localhost.
+@   CH  TXT "BIND 9.18.0"

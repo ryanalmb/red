@@ -253,11 +253,20 @@ class SessionManager:
             del self._engagements[candidates[i].id]
             log.info("engagement_pruned", engagement_id=candidates[i].id)
 
-    def create_engagement(self, config_path: Path) -> str:
+    def create_engagement(
+        self,
+        config_path: Path,
+        waiver_data: dict | None = None,
+    ) -> str:
         """Create a new engagement from configuration.
 
         Args:
             config_path: Path to engagement YAML configuration.
+            waiver_data: Optional pre-collected waiver acceptance data with keys:
+                ``waiver_hash``, ``waiver_signature``, ``waiver_timestamp``.
+                When provided the daemon skips the interactive waiver prompt,
+                allowing the CLI client to collect the waiver on its own
+                terminal where ``input()`` is safe.
 
         Returns:
             Generated engagement ID.
@@ -320,8 +329,11 @@ class SessionManager:
                 ),
             )
 
-        # Story 13.9: Show waiver and get acceptance
-        waiver_acceptance = self._get_waiver_acceptance(config_path)
+        # Story 13.9: Show waiver and get acceptance.
+        # When waiver_data is provided (from CLI client), skip the interactive
+        # prompt — the client already collected the acceptance on its own
+        # terminal where input() is safe to call.
+        waiver_acceptance = self._get_waiver_acceptance(config_path, waiver_data=waiver_data)
         
         # Store waiver data in config
         config["waiver_hash"] = waiver_acceptance.waiver_hash
@@ -360,35 +372,61 @@ class SessionManager:
 
         return engagement_id
     
-    def _get_waiver_acceptance(self, config_path: Path) -> "WaiverAcceptance":
-        """Get waiver acceptance from operator (TUI or CLI fallback).
+    def _get_waiver_acceptance(
+        self,
+        config_path: Path,
+        waiver_data: dict | None = None,
+    ) -> "WaiverAcceptance":
+        """Get waiver acceptance from operator (pre-provided, TUI, or CLI fallback).
         
         Story 13.9: Pre-engagement liability waiver workflow.
         
+        When *waiver_data* is supplied (e.g. from a CLI client that already
+        prompted the operator), the daemon uses it directly instead of calling
+        ``input()`` — which would block the async event loop.
+        
         Args:
             config_path: Path to engagement config (used to find waiver config).
+            waiver_data: Optional dict with ``waiver_hash``, ``waiver_signature``,
+                ``waiver_timestamp`` collected client-side.
             
         Returns:
             WaiverAcceptance with operator's decision.
             
         Raises:
-            ConfigurationError: If waiver is declined.
+            ConfigurationError: If waiver is declined or data is invalid.
         """
         from cyberred.tui.screens.waiver import (
             load_waiver_config,
             compute_waiver_hash,
             WaiverAcceptance,
         )
-        from datetime import datetime, timezone
         
-        # Load waiver configuration
+        # Fast path: waiver data already collected client-side
+        if waiver_data:
+            waiver_hash = waiver_data.get("waiver_hash", "")
+            signature = waiver_data.get("waiver_signature", "")
+            timestamp = waiver_data.get("waiver_timestamp", "")
+            
+            if not waiver_hash or not signature or not timestamp:
+                raise ConfigurationError(
+                    config_path=str(config_path),
+                    message="Incomplete waiver data: waiver_hash, waiver_signature, and waiver_timestamp are all required.",
+                )
+            
+            return WaiverAcceptance(
+                accepted=True,
+                signature=signature,
+                timestamp=timestamp,
+                waiver_hash=waiver_hash,
+            )
+        
+        # Fallback: interactive prompt (only safe when daemon stdin is a terminal)
         waiver_config_path = config_path.parent / "waiver.yaml"
         waiver_config = load_waiver_config(
             waiver_config_path if waiver_config_path.exists() else None
         )
         
-        # Check if we're in TUI context (has event loop and display)
-        # For now, use CLI fallback (TUI integration is Task 20 - future work)
         acceptance = self._cli_waiver_prompt(waiver_config)
         
         if not acceptance.accepted:
@@ -544,7 +582,16 @@ class SessionManager:
                 message=f"Failed to load config for pre-flight: {e}"
             )
 
-        # Store config for later use
+        # Merge waiver data from create_engagement() into the freshly-loaded
+        # config.  create_engagement() stores waiver_hash, waiver_signature,
+        # and waiver_timestamp in context.engagement_config but these fields
+        # are NOT in the on-disk YAML, so the reload above loses them.
+        if context.engagement_config:
+            for key in ("waiver_hash", "waiver_signature", "waiver_timestamp"):
+                if key in context.engagement_config and key not in config:
+                    config[key] = context.engagement_config[key]
+
+        # Store merged config for later use
         context.engagement_config = config
 
         # Run Pre-Flight Checks
@@ -580,6 +627,33 @@ class SessionManager:
             if _executor and hasattr(_executor._pool, 'worker_pool'):
                 _executor._pool.worker_pool = self._worker_pool
 
+            # Connect workers to the target network(s) specified in config.
+            # This allows the platform to target any Docker network, VPN bridge,
+            # or physical network — not just hardcoded ranges.
+            worker_network = (
+                config.get("infrastructure", {}).get("worker_network")
+                or config.get("worker_network")
+            )
+            if worker_network:
+                # Support single string or list of networks
+                networks = [worker_network] if isinstance(worker_network, str) else worker_network
+                for net in networks:
+                    try:
+                        connected = await self._worker_pool.connect_to_network(net)
+                        log.info(
+                            "workers_connected_to_network",
+                            engagement_id=engagement_id,
+                            network=net,
+                            workers_connected=connected,
+                        )
+                    except Exception as e:
+                        log.warning(
+                            "worker_network_connect_failed",
+                            engagement_id=engagement_id,
+                            network=net,
+                            error=str(e),
+                        )
+
         # Store engagement context in orchestrator
         orchestrator._engagement_id = engagement_id
         orchestrator._engagement_config = config
@@ -612,11 +686,12 @@ class SessionManager:
         orchestrator: "Orchestrator",
         config: dict,
     ) -> None:
-        """Trigger initial scan jobs from engagement config targets.
+        """Trigger initial jobs by deploying a full stigmergic swarm.
 
-        Story 7.26: Builds a Scope from config and calls orchestrator.start_swarm()
-        directly to spawn stigmergic agents. Falls back to per-target job:new events
-        if swarm spawning fails.
+        Resolves a primary target from the engagement config (IP or container
+        name) and calls ``orchestrator._deploy_stigmergic_swarm()`` which
+        initialises all subsystems (LLM, Intelligence, RAG, Director, crash
+        monitor) and actually launches every agent via ``create_task``.
 
         Args:
             context: The engagement context.
@@ -627,57 +702,62 @@ class SessionManager:
         directive = config.get("directive", "")
 
         if targets:
-            # Build Scope from config targets for stigmergic swarm
-            scope = self._build_scope_from_config(config)
+            # Resolve a primary target — prefer IP, fall back to container name
+            primary_target = None
+            all_services: list[str] = []
+            for target_name, target_info in targets.items():
+                if isinstance(target_info, dict):
+                    ip = target_info.get("ip")
+                    if ip:
+                        primary_target = ip
+                        break
+                    # Collect services for job_data context
+                    all_services.extend(target_info.get("services", []))
+                if primary_target is None:
+                    # Use the target name (Docker container name) as fallback
+                    primary_target = target_name
+
+            if not primary_target:
+                log.warning(
+                    "no_resolvable_target",
+                    engagement_id=context.id,
+                )
+                return
+
+            # Build job_data with full engagement context
+            job_data = {
+                "target": primary_target,
+                "full_attack": True,
+                "action": "scan",
+                "target_count": len(targets),
+                "services": list(set(all_services)),
+                "engagement_id": context.id,
+            }
 
             try:
-                # Spawn stigmergic swarm directly via orchestrator
-                agents = await orchestrator.start_swarm(
-                    scope=scope,
+                log.info(
+                    "deploying_stigmergic_swarm",
                     engagement_id=context.id,
+                    primary_target=primary_target,
+                    target_count=len(targets),
+                )
+                await orchestrator._deploy_stigmergic_swarm(
+                    primary_target, job_data
                 )
                 log.info(
-                    "stigmergic_swarm_started",
+                    "stigmergic_swarm_deployed",
                     engagement_id=context.id,
-                    agent_count=len(agents),
+                    primary_target=primary_target,
                 )
-
-                # Launch agents against their targets
-                for target_name, target_info in targets.items():
-                    target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
-                    if target_ip:
-                        await orchestrator.bus.publish("job:new", {
-                            "target": target_ip,
-                            "action": "scan",
-                            "full_attack": True,
-                            "target_name": target_name,
-                            "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
-                        })
-                        log.info("initial_job_queued",
-                            engagement_id=context.id,
-                            target=target_ip)
             except Exception as e:
-                log.warning(
-                    "stigmergic_swarm_failed_falling_back",
+                log.error(
+                    "stigmergic_swarm_deploy_failed",
                     engagement_id=context.id,
                     error=str(e),
+                    exc_info=True,
                 )
-                # Fallback: queue individual jobs (will use GhostAgent via handle_new_job)
-                for target_name, target_info in targets.items():
-                    target_ip = target_info.get("ip") if isinstance(target_info, dict) else None
-                    if target_ip:
-                        await orchestrator.bus.publish("job:new", {
-                            "target": target_ip,
-                            "action": "scan",
-                            "full_attack": True,
-                            "target_name": target_name,
-                            "services": target_info.get("services", []) if isinstance(target_info, dict) else [],
-                        })
-                        log.info("initial_job_queued",
-                            engagement_id=context.id,
-                            target=target_ip)
         elif directive:
-            # No targets - parse directive via NLP
+            # No targets — parse directive via NLP
             await orchestrator.bus.publish("cmd:nlp", {"text": directive})
             log.info("directive_submitted", engagement_id=context.id)
 

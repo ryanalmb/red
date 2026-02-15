@@ -5,6 +5,26 @@ from cyberred.daemon.session_manager import SessionManager
 from cyberred.core.exceptions import PreFlightCheckError, PreFlightWarningError
 from cyberred.daemon.preflight import CheckResult, CheckStatus, CheckPriority
 
+
+@pytest.fixture(autouse=True)
+def mock_waiver():
+    """Mock waiver acceptance globally to avoid interactive input()."""
+    from cyberred.tui.screens.waiver import WaiverAcceptance
+
+    mock_acceptance = WaiverAcceptance(
+        accepted=True,
+        signature="Test Operator",
+        timestamp="2026-01-01T00:00:00Z",
+        waiver_hash="a" * 64,
+    )
+    with patch.object(
+        SessionManager,
+        "_get_waiver_acceptance",
+        return_value=mock_acceptance,
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_runner():
     # Patch WHERE it is used

@@ -123,7 +123,10 @@ async def _send_ipc_request(command: IPCCommand, params: Optional[dict[str, Any]
         writer.write(encode_message(request))
         await writer.drain()
         
-        data = await reader.readline()
+        # Use a timeout to prevent hanging on a stale/blocked daemon
+        data = await asyncio.wait_for(reader.readline(), timeout=60.0)
+        if not data:
+            raise ConnectionError("Daemon closed the connection without responding")
         response = decode_message(data)
         
         writer.close()
@@ -147,9 +150,18 @@ async def _send_ipc_request(command: IPCCommand, params: Optional[dict[str, Any]
              typer.echo(f"Error: {error_msg}", err=True)
              
         raise typer.Exit(code=1)
-        
-    except (ConnectionRefusedError, FileNotFoundError, OSError):
-        typer.echo("Error: Daemon not running", err=True)
+
+    except asyncio.TimeoutError:
+        typer.echo(
+            "Error: Daemon not responding (timed out after 60s). "
+            "The daemon may be blocked or unresponsive. "
+            "Try 'cyber-red daemon stop' or restart the daemon.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except (ConnectionRefusedError, FileNotFoundError, OSError, ConnectionError):
+        # Socket file exists but daemon is dead → stale socket
+        typer.echo("Error: Daemon not running (stale socket detected)", err=True)
         raise typer.Exit(code=1)
 
 
@@ -375,6 +387,66 @@ def detach(
 
 
 
+def _collect_waiver_acceptance(config: Path) -> dict:
+    """Collect waiver acceptance from operator on the CLI terminal.
+
+    Prompts the operator to read and accept the pre-engagement liability
+    waiver.  This runs client-side so ``input()`` is safe — the daemon
+    never needs to touch stdin.
+
+    Args:
+        config: Path to engagement config (used to locate waiver.yaml).
+
+    Returns:
+        Dict with ``waiver_hash``, ``waiver_signature``, ``waiver_timestamp``.
+
+    Raises:
+        typer.Exit: If the operator declines the waiver.
+    """
+    from cyberred.tui.screens.waiver import (
+        load_waiver_config,
+        compute_waiver_hash,
+    )
+    from datetime import datetime, timezone
+
+    waiver_config_path = config.parent / "waiver.yaml"
+    waiver_config = load_waiver_config(
+        waiver_config_path if waiver_config_path.exists() else None
+    )
+
+    typer.echo("\n" + "=" * 80)
+    typer.echo("PRE-ENGAGEMENT LIABILITY WAIVER")
+    typer.echo("=" * 80)
+    typer.echo(f"Organization: {waiver_config.organization_name}\n")
+    typer.echo(waiver_config.waiver_text)
+    typer.echo("=" * 80 + "\n")
+
+    while True:
+        ack = input("Do you acknowledge and accept this waiver? (yes/no): ").strip().lower()
+        if ack in ("yes", "y"):
+            break
+        elif ack in ("no", "n"):
+            typer.echo("Waiver declined. Engagement creation cancelled.", err=True)
+            raise typer.Exit(code=1)
+        else:
+            typer.echo("Please enter 'yes' or 'no'.")
+
+    while True:
+        signature = input("Enter your full name (signature): ").strip()
+        if signature:
+            break
+        typer.echo("Signature cannot be empty.")
+
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    waiver_hash = compute_waiver_hash(waiver_config.waiver_text)
+
+    return {
+        "waiver_hash": waiver_hash,
+        "waiver_signature": signature,
+        "waiver_timestamp": timestamp,
+    }
+
+
 @app.command("new")
 def new_engagement(
     config: Path = typer.Option(
@@ -382,6 +454,9 @@ def new_engagement(
     ),
     ignore_warnings: bool = typer.Option(
         False, "--ignore-warnings", "-y", help="Ignore pre-flight warnings and start anyway"
+    ),
+    accept_waiver: bool = typer.Option(
+        False, "--accept-waiver", help="Auto-accept waiver (for CI/CD or scripted use)"
     ),
 ) -> None:
     """Start a new engagement."""
@@ -398,14 +473,36 @@ def new_engagement(
         typer.echo(f"Error: Invalid engagement config: {e}", err=True)
         raise typer.Exit(code=1)
 
+    # Collect waiver acceptance client-side (never blocks the daemon).
+    if accept_waiver:
+        # Non-interactive: auto-accept for CI/CD pipelines
+        from cyberred.tui.screens.waiver import load_waiver_config, compute_waiver_hash
+        from datetime import datetime, timezone
+
+        waiver_config_path = config.parent / "waiver.yaml"
+        waiver_config = load_waiver_config(
+            waiver_config_path if waiver_config_path.exists() else None
+        )
+        waiver_data = {
+            "waiver_hash": compute_waiver_hash(waiver_config.waiver_text),
+            "waiver_signature": "auto-accepted",
+            "waiver_timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+    else:
+        waiver_data = _collect_waiver_acceptance(config)
+
     log.info("new_engagement", config=str(config))
     typer.echo(f"Starting engagement from {config}...")
 
-    # Send IPC request to daemon to start engagement
+    # Send IPC request to daemon with waiver data
     try:
         result = asyncio.run(_send_ipc_request(
             IPCCommand.ENGAGEMENT_START,
-            {"config_path": str(config.absolute()), "ignore_warnings": ignore_warnings}
+            {
+                "config_path": str(config.absolute()),
+                "ignore_warnings": ignore_warnings,
+                "waiver_data": waiver_data,
+            }
         ))
         # Response contains id and state directly
         engagement_id = result.get("id", "unknown")

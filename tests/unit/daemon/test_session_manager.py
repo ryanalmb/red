@@ -28,8 +28,24 @@ from cyberred.core.exceptions import (
 
 @pytest.fixture(autouse=True)
 def mock_preflight():
-    """Mock pre-flight checks globally for all tests."""
-    with patch("cyberred.daemon.session_manager.PreFlightRunner") as MockRunner:
+    """Mock pre-flight checks and waiver prompt globally for all tests."""
+    from cyberred.tui.screens.waiver import WaiverAcceptance
+
+    mock_acceptance = WaiverAcceptance(
+        accepted=True,
+        signature="Test Operator",
+        timestamp="2026-01-01T00:00:00Z",
+        waiver_hash="a" * 64,
+    )
+
+    with (
+        patch("cyberred.daemon.session_manager.PreFlightRunner") as MockRunner,
+        patch.object(
+            SessionManager,
+            "_get_waiver_acceptance",
+            return_value=mock_acceptance,
+        ),
+    ):
         runner = MagicMock()
         runner.run_all = AsyncMock(return_value=[])
         runner.validate_results = MagicMock()

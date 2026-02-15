@@ -28,7 +28,7 @@ def initialize_gateway(
     queue: LLMPriorityQueue,
     retry_policy: Optional[RetryPolicy] = None,
     fallback_models: Optional[Dict[str, str]] = None,
-    num_workers: int = 4,
+    num_workers: int = 16,
 ) -> "LLMGateway":
     """Initialize the singleton gateway instance."""
     global _gateway_instance

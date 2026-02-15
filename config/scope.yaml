@@ -1,16 +1,51 @@
-# Scope definition for cyber-range engagement
+# Scope definition for cyber-range engagement — 4-tier topology
+# See: docs/3-solutioning/advanced-cyber-range-spec.md
 scope:
   allowed_targets:
+    # Tier 1: DMZ
     - "172.28.0.0/16"
+    # Tier 2: Corporate (via pivot)
+    - "10.10.10.0/24"
+    # Tier 3: Active Directory (via pivot)
+    - "10.10.20.0/24"
+    # Tier 4: OT/Restricted (via pivot)
+    - "10.10.30.0/24"
     - "127.0.0.1"
   allowed_ports:
-    - 80
-    - 8082
-    - 21
-    - 22
-    - 2222
-    - 139
-    - 445
-    - 3306
+    # Tier 1: DMZ services
+    - 20        # FTP data
+    - 21        # FTP
+    - 22        # SSH
+    - 25        # SMTP (Mail)
+    - 53        # DNS
+    - 80        # HTTP (DVWA, WordPress)
+    - 139       # NetBIOS / SMB
+    - 143       # IMAP (Mail)
+    - 445       # SMB
+    - 993       # IMAPS (Mail)
+    - 2222      # SSH (remapped)
+    - 3306      # MySQL
+    - 3307      # MariaDB (WordPress)
+    # Tier 2: Corporate services
+    - 5000      # Flask API
+    - 5432      # PostgreSQL
+    - 8080      # HTTP alt (DVWA host-mapped / Jenkins)
+    - 8083      # WordPress host-mapped
+    - 8082      # GitLab
+    - 50000     # Jenkins agent (JNLP)
+    # Tier 3: Active Directory services
+    - 88        # Kerberos
+    - 135       # RPC / MSRPC
+    - 389       # LDAP
+    - 443       # HTTPS (Exchange OWA)
+    - 464       # Kerberos password change
+    - 636       # LDAPS
+    - 3268      # Global Catalog
+    - 3269      # Global Catalog SSL
+    # Tier 4: OT services
+    - 502       # Modbus TCP
+    - 4840      # OPC-UA
+    - 8086      # InfluxDB HTTP API
+    - 8443      # SCADA HMI Web
   allow_private: true
   allow_loopback: true

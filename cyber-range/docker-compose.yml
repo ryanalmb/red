@@ -1,17 +1,26 @@
-# Cyber Range Test Environment
+# Cyber Range Test Environment — 4-Tier Enterprise Topology
 # Standardized vulnerable targets for E2E and emergence testing
-# See: docs/3-solutioning/architecture.md#Cyber Range Test Environment
+# See: docs/3-solutioning/advanced-cyber-range-spec.md
+#
+# Tier 1 (DMZ):       cyber-range-net    — direct access from Kali workers
+# Tier 2 (Corporate): cyber-range-corp   — pivot through DVWA or WordPress
+# Tier 3 (AD):        cyber-range-ad     — pivot through GitLab
+# Tier 4 (OT):        cyber-range-ot     — pivot through DC01
+#
+# Total: 19 services, 4 networks, 114 vulnerabilities
 
 services:
   # =============================================================================
-  # Vulnerable Web Application (DVWA-like)
+  # Vulnerable Web Application (DVWA-like) — PIVOT HOST
   # Provides: SQLi, XSS, Command Injection, File Upload vulnerabilities
+  # Dual-homed: sits on DMZ (cyber-range-net) AND corporate (cyber-range-corp)
   # =============================================================================
   dvwa:
     image: vulnerables/web-dvwa:latest
     container_name: cyber-range-dvwa
     networks:
       - cyber-range-net
+      - cyber-range-corp
     ports:
       - "8080:80"
     environment:
@@ -23,7 +32,7 @@ services:
       dvwa-db:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost/login.php" ]
+      test: [ "CMD-SHELL", "php -r \"file_get_contents('http://localhost/login.php');\" 2>/dev/null || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -119,7 +128,7 @@ services:
     volumes:
       - ftp-data:/home/vsftpd
     healthcheck:
-      test: [ "CMD-SHELL", "nc -z localhost 21 || exit 1" ]
+      test: [ "CMD-SHELL", "echo quit | timeout 2 bash -c 'cat > /dev/tcp/localhost/21' 2>/dev/null || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -143,13 +152,349 @@ services:
     command: >
       ./msfrpcd -P cyber_red_msf_password -f -a 0.0.0.0 -p 55553
     healthcheck:
-      test: [ "CMD-SHELL", "nc -z localhost 55553 || exit 1" ]
+      test: [ "CMD-SHELL", "ruby -e \"require 'socket'; TCPSocket.new('127.0.0.1',55553).close\" 2>/dev/null || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
 
+  # =============================================================================
+  # WordPress (Vulnerable Plugin Stack) — PIVOT HOST
+  # Provides: XML-RPC brute force, user enum, plugin RCE, SQLi, XXE
+  # Dual-homed: sits on DMZ (cyber-range-net) AND corporate (cyber-range-corp)
+  # Credentials: admin/admin123
+  # =============================================================================
+  wordpress:
+    build:
+      context: ./targets/web-app/wordpress
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-wordpress
+    networks:
+      - cyber-range-net
+      - cyber-range-corp
+    ports:
+      - "8083:80"
+    environment:
+      - WORDPRESS_DB_HOST=wordpress-db
+      - WORDPRESS_DB_USER=wpuser
+      - WORDPRESS_DB_PASSWORD=wppass123
+      - WORDPRESS_DB_NAME=wordpress
+    depends_on:
+      wordpress-db:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost/wp-login.php" ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  wordpress-db:
+    image: mariadb:10.5
+    container_name: cyber-range-wordpress-db
+    networks:
+      - cyber-range-net
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass
+      - MYSQL_DATABASE=wordpress
+      - MYSQL_USER=wpuser
+      - MYSQL_PASSWORD=wppass123
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  # =============================================================================
+  # Mail Server (Postfix + Dovecot) — Weak Configuration
+  # Provides: Open relay, VRFY/EXPN enum, cleartext auth, weak creds
+  # Credentials: user1/password1, admin/mailadmin, operator/operator123
+  # Contains: Email with Jenkins credentials (credential chain)
+  # =============================================================================
+  mail:
+    build:
+      context: ./targets/network/mail
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-mail
+    networks:
+      - cyber-range-net
+    ports:
+      - "25:25"
+      - "143:143"
+      - "993:993"
+    healthcheck:
+      test: [ "CMD-SHELL", "echo quit | timeout 2 bash -c 'cat > /dev/tcp/localhost/25' && echo quit | timeout 2 bash -c 'cat > /dev/tcp/localhost/143' || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # =============================================================================
+  # DNS Server (BIND9) — Misconfigured
+  # Provides: Zone transfer, open resolver, version disclosure, dynamic updates
+  # Zone: psyche.local (leaks internal hostnames for all tiers)
+  # =============================================================================
+  dns:
+    image: internetsystemsconsortium/bind9:9.18
+    container_name: cyber-range-dns
+    networks:
+      - cyber-range-net
+    ports:
+      - "5353:53/tcp"
+      - "5353:53/udp"
+    volumes:
+      - ./targets/network/dns/named.conf:/etc/bind/named.conf:ro
+      - ./targets/network/dns/zones:/etc/bind/zones:ro
+      - dns-cache:/var/cache/bind
+    healthcheck:
+      test: [ "CMD-SHELL", "dig @localhost version.bind chaos txt +short || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # TIER 2 — Corporate Network (behind DVWA pivot)
+  # Only reachable via DVWA or WordPress (dual-homed). NOT on cyber-range-net.
+  # ===========================================================================
+
+  # =============================================================================
+  # GitLab CE (Source Code Repository) — Pre-CVE-2021-22205
+  # Provides: ExifTool RCE, SSRF, default creds, credential leakage
+  # Credentials: root/5iveL!fe (default)
+  # =============================================================================
+  gitlab:
+    image: gitlab/gitlab-ce:14.0.0-ce.0
+    container_name: cyber-range-gitlab
+    networks:
+      - cyber-range-corp
+      - cyber-range-ad
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://gitlab:8082'
+        gitlab_rails['initial_root_password'] = '5iveL!fe'
+        prometheus_monitoring['enable'] = false
+        sidekiq['max_concurrency'] = 2
+        puma['worker_processes'] = 1
+    volumes:
+      - ./targets/network/gitlab/init-seed.sh:/seed/init-seed.sh:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8082/-/readiness" ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # =============================================================================
+  # Jenkins CI/CD — insecure defaults, no setup wizard
+  # Provides: Unauthenticated script console, Groovy RCE, default creds
+  # Credentials: admin/admin (setup wizard disabled)
+  # =============================================================================
+  jenkins:
+    image: jenkins/jenkins:2.346.1-lts
+    container_name: cyber-range-jenkins
+    networks:
+      - cyber-range-corp
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    volumes:
+      - ./targets/network/jenkins/init-seed.groovy:/usr/share/jenkins/ref/init.groovy.d/init-seed.groovy:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/login" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # =============================================================================
+  # PostgreSQL — weak configuration
+  # Provides: Default creds, trust auth, COPY TO PROGRAM RCE (CVE-2019-9193)
+  # Credentials: postgres/postgres
+  # =============================================================================
+  postgres:
+    image: postgres:13
+    container_name: cyber-range-postgres
+    networks:
+      - cyber-range-corp
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    volumes:
+      - ./targets/network/postgres/init-seed.sql:/docker-entrypoint-initdb.d/init-seed.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # =============================================================================
+  # Vulnerable Flask REST API
+  # Provides: IDOR, JWT weak secret, mass assignment, SSRF, Werkzeug debugger RCE
+  # Credentials: admin/admin, API key: sk-mantis-hardcoded-key-12345
+  # =============================================================================
+  flask-api:
+    build:
+      context: ./targets/api/vulnerable-flask
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-flask-api
+    environment:
+      - FLASK_RUN_HOST=0.0.0.0
+    networks:
+      - cyber-range-corp
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\" 2>/dev/null || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ===========================================================================
+  # TIER 3 — Active Directory (behind GitLab pivot)
+  # Only reachable via GitLab (dual-homed). Requires domain credentials
+  # discovered in Tiers 1-2.
+  # ===========================================================================
+
+  # =============================================================================
+  # Domain Controller (DC01) — Samba AD DC — PIVOT HOST
+  # Provides: AS-REP Roasting, Kerberoasting, DCSync, PrintNightmare, ZeroLogon
+  # Domain: PSYCHE.LOCAL
+  # Dual-homed: cyber-range-ad + cyber-range-ot (pivot to Tier 4)
+  # Credentials: Administrator/P@ssw0rd123!, da_jenkins/JenkinsAdmin2024!
+  # =============================================================================
+  dc01:
+    build:
+      context: ./targets/ad/dc01
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-dc01
+    hostname: dc01
+    privileged: true
+    networks:
+      - cyber-range-ad
+      - cyber-range-ot
+    environment:
+      - ADMIN_PASS=P@ssw0rd123!
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: [ "CMD-SHELL", "samba-tool domain info 127.0.0.1 2>/dev/null || smbclient -L localhost -N 2>/dev/null || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # =============================================================================
+  # File Server (FILESERVER01) — Samba with weak shares
+  # Provides: Open shares, sensitive docs, SMBv1, writable SYSVOL, SAM access
+  # Contains: passwords.xlsx with OT credentials (credential chain to Tier 4)
+  # Credentials: localadmin/Admin123!, jsmith/Summer2024!
+  # =============================================================================
+  fileserver:
+    build:
+      context: ./targets/ad/fileserver
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-fileserver
+    hostname: fileserver01
+    networks:
+      - cyber-range-ad
+    depends_on:
+      dc01:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "smbstatus 2>/dev/null || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # =============================================================================
+  # Exchange/Mail Simulator — OWA + EWS + ProxyShell/ProxyLogon
+  # Provides: ProxyShell SSRF, ProxyLogon, GAL enum, Autodiscover, EWS abuse
+  # Credentials: da_jenkins/JenkinsAdmin2024!, jsmith/Summer2024!
+  # =============================================================================
+  exchange:
+    build:
+      context: ./targets/ad/exchange
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-exchange
+    hostname: exchange
+    networks:
+      - cyber-range-ad
+    depends_on:
+      dc01:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import urllib.request,ssl; urllib.request.urlopen('https://localhost/', context=ssl._create_unverified_context())\" 2>/dev/null || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # TIER 4 — OT/Restricted Zone (behind DC01 pivot)
+  # Only reachable via DC01 (dual-homed). Represents the "crown jewels".
+  # ===========================================================================
+
+  # =============================================================================
+  # SCADA/HMI Simulator — Modbus TCP + OPC-UA + Web HMI
+  # Provides: Unauthenticated Modbus, OPC-UA anon, HMI default creds, cmd injection
+  # Credentials: admin/admin
+  # =============================================================================
+  scada-hmi:
+    build:
+      context: ./targets/ot/scada-hmi
+      dockerfile: Dockerfile
+      network: host
+    container_name: cyber-range-scada-hmi
+    hostname: scada-hmi
+    networks:
+      - cyber-range-ot
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8443/health')\" 2>/dev/null || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # =============================================================================
+  # Historian Database — InfluxDB 1.8 with no authentication
+  # Provides: No-auth database access, read/write process data, backup exposure
+  # =============================================================================
+  historian:
+    image: influxdb:1.8
+    container_name: cyber-range-historian
+    hostname: historian
+    networks:
+      - cyber-range-ot
+    environment:
+      - INFLUXDB_HTTP_AUTH_ENABLED=false
+      - INFLUXDB_DB=scada_data
+      - INFLUXDB_ADMIN_USER=root
+      - INFLUXDB_ADMIN_PASSWORD=
+    volumes:
+      - ./targets/ot/historian/init-seed.sh:/docker-entrypoint-initdb.d/init-seed.sh:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:8086/ping || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 networks:
+  # ---------------------------------------------------------------------------
+  # Tier 1: DMZ — reachable from Kali workers
+  # ---------------------------------------------------------------------------
   cyber-range-net:
     driver: bridge
     name: cyber-range-net
@@ -158,6 +503,47 @@ networks:
         - subnet: 172.28.0.0/16
           gateway: 172.28.0.1
 
+  # ---------------------------------------------------------------------------
+  # Tier 2: Corporate — NOT routable from Kali workers (internal: true)
+  # Pivot through DVWA or WordPress (dual-homed)
+  # ---------------------------------------------------------------------------
+  cyber-range-corp:
+    driver: bridge
+    name: cyber-range-corp
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
+          gateway: 10.10.10.1
+
+  # ---------------------------------------------------------------------------
+  # Tier 3: Active Directory — NOT routable from Kali workers (internal: true)
+  # Pivot through GitLab (dual-homed)
+  # ---------------------------------------------------------------------------
+  cyber-range-ad:
+    driver: bridge
+    name: cyber-range-ad
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.10.20.0/24
+          gateway: 10.10.20.1
+
+  # ---------------------------------------------------------------------------
+  # Tier 4: OT/Restricted — NOT routable from Kali workers (internal: true)
+  # Pivot through DC01 (dual-homed)
+  # ---------------------------------------------------------------------------
+  cyber-range-ot:
+    driver: bridge
+    name: cyber-range-ot
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.10.30.0/24
+          gateway: 10.10.30.1
+
 volumes:
   ftp-data:
     name: cyber-range-ftp-data
+  dns-cache:
+    name: cyber-range-dns-cache

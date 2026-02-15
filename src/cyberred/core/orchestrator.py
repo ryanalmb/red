@@ -147,7 +147,7 @@ class Orchestrator:
                 TaskComplexity.COMPLEX: NIMProvider.for_tier("COMPLEX", api_key),
             }
             router = ModelRouter(providers=providers)
-            rate_limiter = RateLimiter(rpm=30, burst=5)
+            rate_limiter = RateLimiter(rpm=35, burst=5)
             queue = LLMPriorityQueue()
             retry_policy = RetryPolicy()
 
@@ -243,7 +243,29 @@ class Orchestrator:
             if not scope_file_loaded:
                 if self._engagement_config and "scope" in self._engagement_config:
                     scope_data = self._engagement_config["scope"]
-                    allowed_targets = scope_data.get("allowed_targets") or scope_data.get("allowed_ips", [])
+                    allowed_targets = list(
+                        scope_data.get("allowed_targets") or scope_data.get("allowed_ips", [])
+                    )
+
+                    # Auto-populate hostnames from engagement targets so
+                    # Docker container names (dvwa, wordpress, …) pass scope.
+                    targets_section = self._engagement_config.get("targets", {})
+                    for target_name in targets_section:
+                        if target_name not in allowed_targets:
+                            allowed_targets.append(target_name)
+                        # Also add IP if the target has one
+                        tinfo = targets_section[target_name]
+                        if isinstance(tinfo, dict) and tinfo.get("ip"):
+                            ip = tinfo["ip"]
+                            if ip not in allowed_targets:
+                                allowed_targets.append(ip)
+
+                    self.logger.info(
+                        "scope_targets_resolved",
+                        networks=[t for t in allowed_targets if '/' in t or t[0].isdigit()],
+                        hostnames=[t for t in allowed_targets if not ('/' in t or t[0].isdigit())],
+                    )
+
                     scope_validator = ScopeValidator.from_config({
                         "allowed_targets": allowed_targets,
                         "allowed_ports": scope_data.get("allowed_ports"),
@@ -262,28 +284,120 @@ class Orchestrator:
             self.logger.warning(f"KaliExecutor init failed (agents will use fallback): {e}")
 
     def _configure_scope_path(self) -> None:
-        """Set scope_path in global settings so agents can load the scope validator."""
+        """Set scope_path in global settings so agents can load the scope validator.
+
+        If no scope.yaml exists on disk, generates one from the engagement
+        config (scope IPs + target hostnames) so that agents' own
+        ``_get_scope_validator()`` picks up the correct scope.
+        """
+        self.logger.info("DEBUG: Entering _configure_scope_path")
         try:
             from cyberred.core.config import get_settings
             settings = get_settings()
 
-            # If engagement config has a scope_path, use it
-            if self._engagement_config:
-                scope_path = self._engagement_config.get("scope_path", "")
-                if not scope_path:
-                    # Try default location next to config file
-                    config_path = self._engagement_config.get("engagement_config_path", "")
-                    if config_path:
-                        from pathlib import Path
-                        default_scope = Path(config_path).parent / "scope.yaml"
-                        if default_scope.exists():
-                            scope_path = str(default_scope)
+            if not self._engagement_config:
+                self.logger.warning("DEBUG: _configure_scope_path: No engagement config")
+                return
 
-                if scope_path:
-                    settings.engagement.scope_path = scope_path
-                    self.logger.info(f"Scope path set: {scope_path}")
+            scope_path = self._engagement_config.get("scope_path", "")
+            self.logger.info(f"DEBUG: initial scope_path from config: {scope_path}")
+
+            if not scope_path:
+                # Try default location next to config file
+                config_path = self._engagement_config.get("engagement_config_path", "")
+                if config_path:
+                    from pathlib import Path
+                    default_scope = Path(config_path).parent / "scope.yaml"
+                    if default_scope.exists():
+                        scope_path = str(default_scope)
+                    self.logger.info(f"DEBUG: Checked default scope at {default_scope}, exists: {default_scope.exists()}")
+
+            # If still no scope file, generate one from engagement config
+            if not scope_path:
+                self.logger.info("DEBUG: No scope path found, attempting to generate")
+                scope_path = self._generate_scope_file()
+                self.logger.info(f"DEBUG: _generate_scope_file returned: {scope_path}")
+
+            if scope_path:
+                settings.engagement.scope_path = scope_path
+                self.logger.info(f"Scope path set: {scope_path}")
+            else:
+                self.logger.warning("DEBUG: Failed to set scope path (empty)")
         except Exception as e:
             self.logger.warning(f"Failed to configure scope path: {e}")
+
+    def _generate_scope_file(self) -> str:
+        """Generate a scope.yaml from engagement config.
+
+        Merges scope.allowed_ips / allowed_targets with target names from
+        the ``targets`` section so that Docker container hostnames are
+        recognised as in-scope.
+
+        Returns:
+            Path to the generated scope.yaml, or empty string on failure.
+        """
+        self.logger.info("DEBUG: Entering _generate_scope_file")
+        try:
+            import yaml as _yaml
+            from pathlib import Path
+
+            if not self._engagement_config:
+                 self.logger.warning("DEBUG: _generate_scope_file: Config is None")
+                 return ""
+
+            scope_data = self._engagement_config.get("scope", {})
+            allowed = list(
+                scope_data.get("allowed_targets")
+                or scope_data.get("allowed_ips", [])
+            )
+            self.logger.info(f"DEBUG: Initial allowed targets: {allowed}")
+
+            # Add target hostnames (Docker container names)
+            targets_section = self._engagement_config.get("targets", {})
+            self.logger.info(f"DEBUG: Targets section keys: {list(targets_section.keys())}")
+            for target_name in targets_section:
+                if target_name not in allowed:
+                    allowed.append(target_name)
+                tinfo = targets_section[target_name]
+                if isinstance(tinfo, dict) and tinfo.get("ip"):
+                    ip = tinfo["ip"]
+                    if ip not in allowed:
+                        allowed.append(ip)
+            
+            self.logger.info(f"DEBUG: Final allowed targets: {allowed}")
+
+            if not allowed:
+                self.logger.warning("DEBUG: No allowed targets found, returning empty")
+                return ""
+
+            scope_doc = {
+                "scope": {
+                    "allowed_targets": allowed,
+                    "allow_private": scope_data.get("allow_private", True),
+                    "allow_loopback": scope_data.get("allow_loopback", False),
+                }
+            }
+            if scope_data.get("allowed_ports"):
+                scope_doc["scope"]["allowed_ports"] = scope_data["allowed_ports"]
+
+            # Write to engagement directory
+            engagement_id = self._engagement_id or "default"
+            eng_dir = Path.home() / ".cyber-red" / "engagements" / engagement_id
+            eng_dir.mkdir(parents=True, exist_ok=True)
+            scope_file = eng_dir / "scope.yaml"
+            scope_file.write_text(_yaml.dump(scope_doc, default_flow_style=False))
+
+            self.logger.info(
+                "scope_file_generated",
+                path=str(scope_file),
+                targets=allowed,
+            )
+            return str(scope_file)
+        except Exception as e:
+            self.logger.warning(f"Failed to generate scope file: {e}")
+            import traceback
+            self.logger.warning(f"DEBUG: Traceback: {traceback.format_exc()}")
+            return ""
 
     async def handle_nlp_command(self, data: dict):
         """
@@ -427,11 +541,16 @@ class Orchestrator:
         the right number and distribution of agents, spawns them, and
         launches their role-specific execution methods.
         """
+        self.logger.info(f"DEBUG: Entering _deploy_stigmergic_swarm. Config present: {bool(self._engagement_config)}")
         engagement_id = self._engagement_id or "default"
 
         # Initialize kali_execute() singleton now — self.pool has been
         # replaced by session_manager with the shared WorkerPool.
         self._init_kali_executor()
+
+        # Re-run scope configuration now that _engagement_config is populated
+        # (the call in __init__ runs when config is still None).
+        self._configure_scope_path()
 
         # Build scope from target(s)
         scope = self._build_scope_from_job(target, job_data)
@@ -759,7 +878,7 @@ class Orchestrator:
         # Create replacement agent with fresh UUID
         new_agent_id = str(uuid.uuid4())
         try:
-            new_agent = await self.router.create_agent(
+            new_agent = self.router.create_agent(
                 role=old_agent.role,
                 agent_id=new_agent_id,
                 engagement_id=engagement_id,

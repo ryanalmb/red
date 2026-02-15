@@ -47,13 +47,17 @@ log = structlog.get_logger()
 
 CHANNEL_PATTERNS = [
     re.compile(r"^findings:[a-f0-9]+:[a-z0-9_-]+$", re.IGNORECASE),  # findings:hash:type
-    re.compile(r"^agents:[a-zA-Z0-9_-]+:status$"),  # agents:id:status
+    re.compile(r"^agents?:[a-zA-Z0-9_-]+:(status|heartbeat)$"),  # agent(s):id:status or heartbeat
     re.compile(r"^control:[a-zA-Z0-9_-]+$"),  # control:*
     re.compile(r"^authorization:[a-zA-Z0-9_-]+$"),  # authorization:request_id
     re.compile(r"^auth:[a-zA-Z0-9_-]+:response$"),  # auth:request_id:response (Story 7.16)
-    re.compile(r"^strategies:[a-zA-Z0-9_-]+$"),  # strategies:engagement_id
+    re.compile(r"^strategies:[a-zA-Z0-9:_-]+$"),  # strategies:engagement_id (+ pivot subtopic)
     re.compile(r"^audit:stream$"),  # audit:stream (Story 3.4)
     re.compile(r"^c2:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$"),  # c2:heartbeat:* (Story 12.4)
+    re.compile(r"^swarm:[a-zA-Z0-9_-]+$"),  # swarm:log, swarm:status, swarm:terminal, swarm:brain
+    re.compile(r"^job:[a-zA-Z0-9_-]+$"),  # job:new
+    re.compile(r"^engagement:[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$"),  # engagement:id:state/phase
+    re.compile(r"^hitl:[a-zA-Z0-9_-]+$"),  # hitl:auth_response (human-in-the-loop)
 ]
 
 
@@ -220,6 +224,50 @@ class EventBus:
         subscription = await self._redis.subscribe(pattern, safe_callback)
 
         self._log.info("event_subscribed", pattern=pattern)
+
+        return subscription
+
+    async def psubscribe(
+        self,
+        pattern: str,
+        callback: Callable[[str, str], Awaitable[None]],
+    ) -> PubSubSubscription:
+        """Subscribe to Redis channels using glob-style pattern matching.
+
+        Unlike subscribe() which matches exact channel names, psubscribe
+        uses glob patterns (e.g., "findings:*", "findings:shard:*:sqli").
+
+        Args:
+            pattern: Glob pattern (e.g., "findings:shard:*:*").
+            callback: Async function(channel, message) called for each message.
+
+        Returns:
+            PubSubSubscription handle for unsubscribing.
+        """
+        from cyberred.storage.redis_client import PubSubSubscription
+
+        async def safe_callback(channel: str, message: str) -> None:
+            callback_start = time.perf_counter()
+            try:
+                await callback(channel, message)
+            except Exception as e:
+                self._log.error(
+                    "event_pcallback_error",
+                    pattern=pattern,
+                    channel=channel,
+                    error=str(e),
+                    exc_info=True,
+                )
+            finally:
+                elapsed_ms = (time.perf_counter() - callback_start) * 1000
+                self._log.debug(
+                    "event_pcallback_completed",
+                    channel=channel,
+                    duration_ms=elapsed_ms,
+                )
+
+        subscription = await self._redis.psubscribe(pattern, safe_callback)
+        self._log.info("event_psubscribed", pattern=pattern)
 
         return subscription
 

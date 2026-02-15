@@ -84,7 +84,7 @@ class WirelessAgent(StigmergicAgent):
             objective="Discover and test wireless networks for vulnerabilities",
             target_info={"interface": interface, "phase": "wireless", "strategy": self.current_strategy,
                          "monitor_enabled": self._monitor_enabled,
-                         "discovered_networks": self._discovered_networks, **target_info},
+                         "discovered_networks": list(self._discovered_networks), **target_info},
             available_tools=[],
             phase="wireless",
             constraints=self._get_constraints(),
@@ -125,7 +125,7 @@ class WirelessAgent(StigmergicAgent):
 
                 context = ToolSelectionContext(
                     objective=context.objective,
-                    target_info={**context.target_info, "discovered_networks": self._discovered_networks},
+                    target_info={**context.target_info, "discovered_networks": list(self._discovered_networks)},
                     available_tools=[],
                     phase=context.phase,
                     constraints=context.constraints,

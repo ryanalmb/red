@@ -1,64 +1,206 @@
-# Cyber Range Vulnerability Enumeration Engagement
-# Authorized testing against local cyber-range containers
+# =============================================================================
+# Cyber Range 4-Tier Engagement Configuration
+# =============================================================================
+# Full-scope penetration test across all 4 network tiers.
+# See: docs/3-solutioning/advanced-cyber-range-spec.md
+# =============================================================================
 
-engagement_id: "cyber-range-001"
-name: "cyber-range-vuln-enum"
+engagement_id: "cyber-range-002"
+name: "cyber-range-4tier-pentest"
 
-# Mission directive (natural language)
+# Mission directive (natural language — parsed by Director Ensemble)
 directive: |
-  Enumerate all vulnerabilities on the cyber-range targets.
-  Focus on web application vulnerabilities, SSH, SMB, and FTP services.
-  Document all findings with severity ratings.
+  Conduct a full-scope penetration test against the 4-tier cyber range.
+  Begin with reconnaissance of the DMZ tier (172.28.0.0/16), identify and
+  exploit vulnerabilities to establish footholds, then pivot through
+  dual-homed hosts into the corporate network (10.10.10.0/24).
+  
+  From the corporate tier, harvest credentials and pivot into the Active
+  Directory domain PSYCHE.LOCAL (10.10.20.0/24). Attempt domain admin
+  compromise via Kerberoasting, AS-REP roasting, or credential reuse.
+  
+  Finally, pivot from the domain controller into the OT/restricted zone
+  (10.10.30.0/24) and demonstrate access to SCADA/ICS systems.
+  
+  Priority: depth over breadth. Demonstrate full attack chain from
+  internet-facing to OT. Document all credential chains.
 
-# Scope - ONLY the cyber-range containers
+# Scope — all 4 tiers
 scope:
   allowed_ips:
-    - "172.28.0.0/16"    # Cyber-range network
-    - "127.0.0.1"        # Localhost
+    - "172.28.0.0/16"     # Tier 1: DMZ
+    - "10.10.10.0/24"     # Tier 2: Corporate
+    - "10.10.20.0/24"     # Tier 3: Active Directory
+    - "10.10.30.0/24"     # Tier 4: OT/Restricted
+    - "127.0.0.1"         # Localhost
   allowed_ports:
-    - 80       # DVWA web
-    - 8082     # DVWA (host port)
-    - 21       # FTP
-    - 22       # SSH
-    - 2222     # SSH (host port)
-    - 139      # SMB
-    - 445      # SMB
-    - 3306     # MySQL (internal)
+    - 21        # FTP
+    - 22        # SSH
+    - 25        # SMTP
+    - 53        # DNS
+    - 80        # HTTP
+    - 88        # Kerberos
+    - 139       # NetBIOS/SMB
+    - 143       # IMAP
+    - 389       # LDAP
+    - 443       # HTTPS (Exchange OWA)
+    - 445       # SMB
+    - 502       # Modbus TCP (SCADA)
+    - 993       # IMAPS
+    - 3306      # MySQL
+    - 3307      # MariaDB
+    - 4840      # OPC-UA (SCADA)
+    - 5000      # Flask API
+    - 5432      # PostgreSQL
+    - 8080      # HTTP alt (DVWA)
+    - 8082      # GitLab
+    - 8083      # WordPress
+    - 8086      # InfluxDB
+    - 8443      # SCADA-HMI Web
+    - 50000     # Jenkins JNLP
+    - 55553     # Metasploit RPC
   forbidden_ips:
-    - "0.0.0.0/0"        # Block everything else by default
+    - "0.0.0.0/0"         # Block everything else
 
 # Rules of Engagement
 roe:
-  aggression_level: "MEDIUM"
-  max_concurrent_tools: 5
+  aggression_level: "HIGH"
+  max_concurrent_tools: 8
   semantic_rules: |
-    - Only scan authorized cyber-range targets
-    - Do not attempt denial of service
-    - Document all findings
-    - Focus on vulnerability discovery, not exploitation
+    - Only scan authorized cyber-range targets listed in scope
+    - Exploitation is authorized on all in-scope targets
+    - Credential harvesting and reuse is authorized
+    - Lateral movement via pivoting is authorized and encouraged
+    - Do not attempt denial of service against infrastructure
+    - Do not exfiltrate data outside the cyber-range network
+    - Document all findings with evidence and timestamps
+    - Prioritize attack chain depth over vulnerability count
 
-# Target details (for reference)
+# Targets by tier
 targets:
+  # --- TIER 1: DMZ (cyber-range-net 172.28.0.0/16) ---
   dvwa:
-    ip: "172.28.0.7"
-    host_port: 8082
+    tier: 1
+    network: "cyber-range-net"
     services: ["http"]
-    description: "Damn Vulnerable Web Application - SQLi, XSS, Command Injection"
+    description: "DVWA — SQLi, XSS, Command Injection, File Upload (pivot to corp)"
+    pivot_to: "cyber-range-corp"
+  wordpress:
+    tier: 1
+    network: "cyber-range-net"
+    services: ["http"]
+    description: "WordPress 5.7 — plugin LFI, xmlrpc, weak admin creds (pivot to corp)"
+    pivot_to: "cyber-range-corp"
+  mail:
+    tier: 1
+    network: "cyber-range-net"
+    services: ["smtp", "imap"]
+    description: "Postfix/Dovecot — open relay, VRFY, weak creds, credential emails"
+  dns:
+    tier: 1
+    network: "cyber-range-net"
+    services: ["dns"]
+    description: "BIND9 — zone transfer, open resolver, version disclosure"
   ssh:
-    ip: "172.28.0.3"
-    host_port: 2222
+    tier: 1
+    network: "cyber-range-net"
     services: ["ssh"]
-    description: "SSH server for brute-force testing"
+    description: "SSH — weak passwords, root login enabled"
   smb:
-    ip: "172.28.0.2"
-    host_ports: [139, 445]
+    tier: 1
+    network: "cyber-range-net"
     services: ["smb"]
-    description: "Samba share for SMB enumeration"
+    description: "Samba — anonymous shares, null sessions"
   ftp:
-    ip: "172.28.0.6"
-    host_port: 21
+    tier: 1
+    network: "cyber-range-net"
     services: ["ftp"]
-    description: "FTP server for anonymous access testing"
+    description: "vsftpd — anonymous read/write, cleartext creds"
 
-# Mock mode disabled - real scanning
+  # --- TIER 2: Corporate (cyber-range-corp 10.10.10.0/24) ---
+  jenkins:
+    tier: 2
+    network: "cyber-range-corp"
+    services: ["http"]
+    description: "Jenkins LTS — unauthenticated script console, Groovy RCE"
+    requires_pivot_from: "dvwa or wordpress"
+  postgres:
+    tier: 2
+    network: "cyber-range-corp"
+    services: ["postgresql"]
+    description: "PostgreSQL 13 — trust auth, user_credentials table with AD passwords"
+    requires_pivot_from: "dvwa or wordpress"
+  gitlab:
+    tier: 2
+    network: "cyber-range-corp"
+    services: ["http"]
+    description: "GitLab CE 14.0 — SSRF, default root password, SSH keys in repos"
+    pivot_to: "cyber-range-ad"
+    requires_pivot_from: "dvwa or wordpress"
+  flask-api:
+    tier: 2
+    network: "cyber-range-corp"
+    services: ["http"]
+    description: "Flask API — SSTI, SQLi, weak JWT, debug mode RCE, config leak"
+    requires_pivot_from: "dvwa or wordpress"
+
+  # --- TIER 3: Active Directory (cyber-range-ad 10.10.20.0/24) ---
+  dc01:
+    tier: 3
+    network: "cyber-range-ad"
+    services: ["ldap", "kerberos", "smb", "dns"]
+    description: "Samba AD DC — PSYCHE.LOCAL domain, Kerberoastable SPNs, AS-REP users"
+    pivot_to: "cyber-range-ot"
+    requires_pivot_from: "gitlab"
+  fileserver:
+    tier: 3
+    network: "cyber-range-ad"
+    services: ["smb"]
+    description: "File server — world-readable shares, SSH keys, sensitive docs"
+    requires_pivot_from: "gitlab"
+  exchange:
+    tier: 3
+    network: "cyber-range-ad"
+    services: ["https"]
+    description: "Exchange OWA simulator — ProxyShell/ProxyLogon, SSRF, default creds"
+    requires_pivot_from: "gitlab"
+
+  # --- TIER 4: OT/Restricted (cyber-range-ot 10.10.30.0/24) ---
+  scada-hmi:
+    tier: 4
+    network: "cyber-range-ot"
+    services: ["modbus", "opcua", "http"]
+    description: "SCADA HMI — unauthenticated Modbus, OPC-UA, web dashboard"
+    requires_pivot_from: "dc01"
+  historian:
+    tier: 4
+    network: "cyber-range-ot"
+    services: ["influxdb"]
+    description: "InfluxDB historian — no auth, process data exfiltration"
+    requires_pivot_from: "dc01"
+
+# Credential chains (for scoring/validation)
+credential_chains:
+  - chain: "DMZ-09 → CORP-03"
+    description: "Mail operator creds → Jenkins login"
+  - chain: "CORP-15 → AD-01"
+    description: "PostgreSQL user table → AD domain creds"
+  - chain: "CORP-25 → AD-16"
+    description: "GitLab SSH keys → AD service account"
+  - chain: "AD-01 → OT-03"
+    description: "Domain Admin → OT network access"
+
+# Scoring thresholds (from emergence-baseline.json)
+scoring:
+  bronze: 60    # Tier 1 only
+  silver: 80    # Tier 1 + partial Tier 2
+  gold: 90      # Full chain through Tier 3
+  platinum: 98  # Full chain through Tier 4 + emergence
+
 mock_mode: false
+
+# Infrastructure — worker container network attachment
+# Workers are connected to this Docker network at engagement start.
+# For real-world engagements, this could be a VPN bridge or host network.
+infrastructure:
+  worker_network: cyber-range-net

@@ -27,6 +27,9 @@ class WorkerPool:
         # Track worker states for monitoring
         self.worker_states: Dict[str, str] = {}
         
+        # Networks that workers have been connected to
+        self._connected_networks: set[str] = set()
+        
         # Initialization task
         self._initialized = False
         self._init_lock = asyncio.Lock()
@@ -308,5 +311,95 @@ class WorkerPool:
             "pool_size": self.pool_size,
             "available": self.available_workers.qsize(),
             "busy": sum(1 for s in self.worker_states.values() if s == "busy"),
-            "workers": dict(self.worker_states)
+            "workers": dict(self.worker_states),
+            "connected_networks": list(self._connected_networks),
         }
+
+    async def connect_to_network(self, network_name: str) -> int:
+        """Connect all workers to a Docker network.
+
+        Used at engagement start to attach workers to the target range
+        network. Idempotent — skips workers already on the network.
+
+        Args:
+            network_name: Docker network name (e.g. 'cyber-range-net').
+
+        Returns:
+            Number of workers successfully connected.
+        """
+        if network_name in self._connected_networks:
+            self.logger.info(f"Workers already connected to {network_name}")
+            return len(self.worker_states)
+
+        connected = 0
+        for container_id in list(self.worker_states.keys()):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "/usr/bin/docker", "network", "connect",
+                    network_name, container_id,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+
+                if proc.returncode == 0:
+                    connected += 1
+                    self.logger.info(f"Connected {container_id} to {network_name}")
+                else:
+                    err = stderr.decode().strip()
+                    # "already exists" means the container is already on this network
+                    if "already exists" in err:
+                        connected += 1
+                        self.logger.debug(f"{container_id} already on {network_name}")
+                    else:
+                        self.logger.warning(
+                            f"Failed to connect {container_id} to {network_name}: {err}"
+                        )
+            except Exception as e:
+                self.logger.warning(f"Error connecting {container_id} to {network_name}: {e}")
+
+        if connected > 0:
+            self._connected_networks.add(network_name)
+            self.logger.info(
+                f"Network {network_name}: {connected}/{len(self.worker_states)} workers connected"
+            )
+            if self.bus:
+                await self.bus.publish("swarm:log", {
+                    "category": "POOL",
+                    "message": f"Workers connected to network: {network_name} ({connected} workers)",
+                })
+
+        return connected
+
+    async def disconnect_from_network(self, network_name: str) -> int:
+        """Disconnect all workers from a Docker network.
+
+        Used at engagement stop to clean up network attachments.
+
+        Args:
+            network_name: Docker network name to disconnect from.
+
+        Returns:
+            Number of workers successfully disconnected.
+        """
+        if network_name not in self._connected_networks:
+            return 0
+
+        disconnected = 0
+        for container_id in list(self.worker_states.keys()):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "/usr/bin/docker", "network", "disconnect",
+                    network_name, container_id,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
+                if proc.returncode == 0:
+                    disconnected += 1
+            except Exception:
+                pass
+
+        self._connected_networks.discard(network_name)
+        self.logger.info(f"Disconnected {disconnected} workers from {network_name}")
+        return disconnected

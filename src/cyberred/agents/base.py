@@ -194,6 +194,9 @@ class StigmergicAgent(Agent):
         self._sharded_bus = sharded_event_bus
         self._finding_cache: set[str] = set()  # Local dedupe cache
         self._swarm_findings: deque = deque(maxlen=50)  # Bounded buffer of findings from other agents
+
+        # Track subscriptions for cleanup on shutdown (prevents Redis connection leaks)
+        self._subscriptions: list = []
         
         # Director-Agent Feedback Loop (Story 7.17)
         self.__active_strategy: Optional["EmergentStrategy"] = None
@@ -244,29 +247,43 @@ class StigmergicAgent(Agent):
 
         Story 7.13: Uses ShardedEventBus for findings if available,
         falling back to non-sharded wildcard subscription.
+
+        All subscription handles are stored in ``self._subscriptions``
+        so they can be cleanly cancelled in ``shutdown()``, releasing
+        the underlying Redis pubsub connections.
         """
         # Subscribe to findings (sharded if available, per Story 7.13)
         if self._sharded_bus:
-            await self._sharded_bus.subscribe_findings(
+            shard_subs = await self._sharded_bus.subscribe_findings(
                 self._handle_sharded_finding,
                 finding_type="*",
             )
+            # subscribe_findings may return a list of subscriptions or None
+            if shard_subs:
+                if isinstance(shard_subs, list):
+                    self._subscriptions.extend(shard_subs)
+                else:
+                    self._subscriptions.append(shard_subs)
         else:
             # psubscribe for glob pattern — callback receives (channel, data)
-            await self.event_bus.psubscribe("findings:*", self._handle_message)
+            sub = await self.event_bus.psubscribe("findings:*", self._handle_message)
+            self._subscriptions.append(sub)
 
         # Exact channels — wrap callback to match (channel, data) signature
         # subscribe() passes callback(data), _handle_message expects (channel, data)
         strategy_ch = f"strategies:{self.engagement_id}"
-        await self.event_bus.subscribe(
+        sub = await self.event_bus.subscribe(
             strategy_ch,
             lambda data, _ch=strategy_ch: self._handle_message(_ch, data),
         )
+        self._subscriptions.append(sub)
+
         kill_ch = "control:kill"
-        await self.event_bus.subscribe(
+        sub = await self.event_bus.subscribe(
             kill_ch,
             lambda data, _ch=kill_ch: self._handle_message(_ch, data),
         )
+        self._subscriptions.append(sub)
 
     async def _handle_message(self, channel: str, message):
         """Internal callback for EventBus subscriptions.
@@ -865,7 +882,7 @@ class StigmergicAgent(Agent):
         return self._decision_context
 
     async def shutdown(self) -> None:
-        """Cleanup resources."""
+        """Cleanup resources and release Redis connections."""
         self._status = "shutdown"
         if self._throttle_monitor_task:
             self._throttle_monitor_task.cancel()
@@ -878,7 +895,12 @@ class StigmergicAgent(Agent):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._heartbeat_task
             self._heartbeat_task = None
-        # Unsubscribe if needed
+        # Cancel all pubsub subscriptions to release Redis connections
+        if self._subscriptions:
+            for sub in self._subscriptions:
+                with contextlib.suppress(Exception):
+                    await sub.cancel()
+            self._subscriptions.clear()
         self._log.info("agent_shutdown")
 
     async def _start_throttle_monitor(self):

@@ -320,11 +320,12 @@ class ShardAggregator:
         self._shard_counts: dict[int, int] = defaultdict(int)
         self._total_received = 0
         self._total_deduplicated = 0
+        self._shard_subscriptions: list = []
 
     async def start(self) -> None:
         """Start aggregator - subscribe to all shards."""
         self._running = True
-        await self._sharded_bus.subscribe_findings(
+        self._shard_subscriptions = await self._sharded_bus.subscribe_findings(
             self._handle_finding,
             finding_type="*",
         )
@@ -332,8 +333,15 @@ class ShardAggregator:
         self._log.info("aggregator_started")
 
     async def stop(self) -> None:
-        """Stop aggregator and flush remaining batch."""
+        """Stop aggregator, cancel shard subscriptions, and flush remaining batch."""
         self._running = False
+        # Cancel shard subscriptions to release Redis connections
+        for sub in self._shard_subscriptions:
+            try:
+                await sub.cancel()
+            except Exception:
+                pass
+        self._shard_subscriptions.clear()
         if self._flush_task:
             self._flush_task.cancel()
             try:
