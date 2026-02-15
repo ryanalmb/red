@@ -1122,6 +1122,43 @@ class NoModelsAvailableError(CyberRedError):
         )
 
 
+class AuthenticationError(CyberRedError):
+    """Authentication failed — invalid, expired, or revoked token.
+
+    Attributes:
+        reason: Description of why authentication failed.
+        token_id: Optional token ID (for revocation tracking).
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        token_id: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Initialize AuthenticationError.
+
+        Args:
+            reason: Description of why authentication failed.
+            token_id: Optional token ID for tracking.
+            message: Optional custom message.
+        """
+        self.reason = reason
+        self.token_id = token_id
+        if message is None:
+            message = f"Authentication failed: {reason}"
+        super().__init__(message)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return context for authentication error."""
+        return {"reason": self.reason, "token_id": self.token_id}
+
+    def __repr__(self) -> str:
+        """Return debug representation."""
+        return f"AuthenticationError(reason={self.reason!r}, token_id={self.token_id!r})"
+
+
 class DeletionError(CyberRedError):
     """Secure deletion operation failed.
 

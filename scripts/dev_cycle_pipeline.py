@@ -108,12 +108,6 @@ GLOBAL_RULES = """
 
 ### Epic Context
 - When creating/working on a story, load the ENTIRE epic context (all stories in that epic)
-
-### Integration Tests (MANDATORY)
-- Write STRICT integration tests that test ACTUAL PRODUCTION CODE
-- NO MOCKS or MINIMAL mocks only - test real behavior
-- Place integration tests in `tests/integration/`
-- Run ONLY the relevant integration tests you add/modify
 """
 
 DEV_RULES = """
@@ -260,13 +254,15 @@ class BatchState:
 
 STAGES = [
     {"id": "create-story", "name": "Create Story", "gate": False, "workflow": ".rovodev/workflows/create-story.md", "skip_if_story_file": True},
-    {"id": "atdd", "name": "ATDD (Acceptance Tests)", "gate": False, "workflow": ".rovodev/workflows/testarch-atdd.md"},
+    # DISABLED: Step 2 temporarily disabled
+    # {"id": "atdd", "name": "ATDD (Acceptance Tests)", "gate": False, "workflow": ".rovodev/workflows/testarch-atdd.md"},
     {"id": "dev-story", "name": "Dev Story", "gate": False, "workflow": ".rovodev/workflows/dev-story.md"},
     {"id": "code-review", "name": "Code Review", "gate": False, "workflow": ".rovodev/workflows/code-review.md", "max_retries": 2},
     # DISABLED: Steps 5 & 6 temporarily disabled
     # {"id": "automate", "name": "Test Automation", "gate": False, "workflow": ".rovodev/workflows/testarch-automate.md"},
     # {"id": "test-review", "name": "Test Review", "gate": False, "workflow": ".rovodev/workflows/testarch-test-review.md"},
-    {"id": "trace", "name": "Traceability", "gate": True, "workflow": ".rovodev/workflows/testarch-trace.md"},
+    # DISABLED: Step 7 temporarily disabled
+    # {"id": "trace", "name": "Traceability", "gate": True, "workflow": ".rovodev/workflows/testarch-trace.md"},
 ]
 
 

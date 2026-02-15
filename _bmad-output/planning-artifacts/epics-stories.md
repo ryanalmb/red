@@ -5113,6 +5113,11 @@ So that **only authorized systems can access the API (FR48)**.
 - JWT tokens with configurable TTL
 - Store token metadata in SQLite
 
+**Design Decisions (operator-approved):**
+- **Role-based model with 2 roles:** `operator` (full control) and `deputy` (scoped to authorized actions only)
+- JWT claims MUST include `role` field: `{"role": "operator"}` or `{"role": "deputy"}`
+- Deputy tokens can only access actions explicitly listed in deputy-authorized endpoints
+
 ---
 
 ### Story 14.3: Engagement CRUD Endpoints
@@ -5139,6 +5144,10 @@ So that **I can create, query, and control engagements (FR48)**.
 **Technical Notes:**
 - Located in `api/routes/engagements.py`
 - Pydantic schemas in `api/schemas.py`
+
+**Design Decisions (operator-approved):**
+- **Starting an engagement does NOT require deputy authorization** — operator token alone is sufficient for `POST /engagements/{id}/start`
+- Stopping an engagement IS a sensitive op requiring deputy auth if caller has deputy role
 
 ---
 
@@ -5185,6 +5194,11 @@ So that **I can receive findings and events as they happen (FR49)**.
 - Located in `api/routes/stream.py`
 - FastAPI WebSocket support
 - JSON message format matching C2 protocol
+
+**Design Decisions (operator-approved):**
+- **WebSocket authentication supports both methods:** `Authorization: Bearer <token>` header on upgrade request AND `?token=<jwt>` query parameter as fallback
+- Server MUST validate token from header first; if absent, fall back to query param
+- Invalid/missing token on either path → close connection with 4001 code
 
 ---
 
@@ -5253,6 +5267,12 @@ So that **authorization can be delegated via API (FR63)**.
 **Technical Notes:**
 - Located in `api/routes/auth.py`
 - Deputy escalation uses same logic as TUI
+
+**Design Decisions (operator-approved):**
+- **All sensitive operations require deputy authorization:** start/stop engagement, scope changes, kill switch override, tool execution
+- **Exception:** starting an engagement does NOT require deputy auth (operator-only decision)
+- Deputy role tokens are scoped — they can ONLY respond to authorization requests, not initiate sensitive ops directly
+- Authorization response endpoint: `POST /engagements/{id}/auth/{request_id}/respond` accepts `{"decision": "approve|deny", "reason": "..."}`
 
 ---
 

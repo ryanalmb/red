@@ -271,9 +271,9 @@ development_status:
   epic-13-retrospective: optional
 
   # Epic 14: External API & Governance
-  epic-14: backlog
-  14-1-fastapi-application-foundation: backlog
-  14-2-api-token-authentication: backlog
+  epic-14: in-progress
+  14-1-fastapi-application-foundation: ready-for-dev
+  14-2-api-token-authentication: ready-for-dev
   14-3-engagement-crud-endpoints: backlog
   14-4-findings-query-endpoint: backlog
   14-5-websocket-real-time-stream: backlog

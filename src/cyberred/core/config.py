@@ -303,6 +303,34 @@ class RAGConfig(BaseModel):
     update_schedule: str = "weekly"
 
 
+class APIConfig(BaseModel):
+    """API server configuration (Epic 14, Story 14.1 + 14.2).
+
+    Configures the FastAPI REST API server for external integrations (FR48).
+
+    Attributes:
+        enabled: Whether the API server is enabled. Default False.
+        host: Host address to bind to. Default 0.0.0.0.
+        port: Port to listen on. Default 8443.
+        tls_cert_path: Path to TLS certificate file.
+        tls_key_path: Path to TLS private key file.
+        cors_origins: List of allowed CORS origins. Empty = CORS disabled.
+        jwt_secret_key: Secret key for JWT signing. MUST be set for production.
+        jwt_algorithm: JWT signing algorithm. Default HS256.
+        token_ttl_hours: Default token expiration in hours. Default 24.
+    """
+
+    enabled: bool = False
+    host: str = "0.0.0.0"
+    port: PositiveInt = 8443
+    tls_cert_path: str = ""
+    tls_key_path: str = ""
+    cors_origins: List[str] = Field(default_factory=list)
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    token_ttl_hours: PositiveInt = 24
+
+
 # =============================================================================
 # Main Configuration Models
 # =============================================================================
@@ -320,6 +348,7 @@ class SystemConfig(BaseModel):
     intelligence: IntelligenceConfig = Field(default_factory=IntelligenceConfig)
     ntp: NTPConfig = Field(default_factory=NTPConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
+    api: APIConfig = Field(default_factory=APIConfig)
 
 
 class EngagementConfig(BaseModel):
@@ -397,6 +426,7 @@ class Settings(BaseSettings):
     ntp: NTPConfig = Field(default_factory=NTPConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    api: APIConfig = Field(default_factory=APIConfig)
 
     # Engagement config (loaded separately)
     engagement: EngagementConfig = Field(default_factory=EngagementConfig)
@@ -833,6 +863,9 @@ HOT_RELOAD_SAFE_PATHS: frozenset[str] = frozenset({
     "agents.throttle.threshold",
     "agents.throttle.check_interval",
     "agents.throttle.max_wait",
+    # API Server (Story 14.1/14.2) — CORS origins and token TTL are safe to hot-reload
+    "api.cors_origins",
+    "api.token_ttl_hours",
 })
 
 
