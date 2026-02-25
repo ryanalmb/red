@@ -36,6 +36,8 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import time
 from collections import defaultdict
@@ -138,20 +140,40 @@ FINDING_TYPE_CATEGORIES: Dict[str, FindingCategory] = {
     "dns_record": FindingCategory.RECON,
     "banner_grab": FindingCategory.RECON,
     "ssl_cert": FindingCategory.RECON,
+    "host_status": FindingCategory.RECON,
+    "os_detection": FindingCategory.RECON,
+    "open_port": FindingCategory.RECON,
+    "nse_script": FindingCategory.RECON,
+    "directory": FindingCategory.RECON,
+    "file": FindingCategory.RECON,
+    "recon": FindingCategory.RECON,
     "waf_detect": FindingCategory.RECON,
+    "waf": FindingCategory.RECON,
+    "web_tech": FindingCategory.RECON,
     
     # EXPLOIT findings
     "vulnerability": FindingCategory.EXPLOIT,
     "cve": FindingCategory.EXPLOIT,
     "sqli": FindingCategory.EXPLOIT,
+    "sqli_db": FindingCategory.EXPLOIT,
+    "sqli_table": FindingCategory.EXPLOIT,
+    "sqli_column": FindingCategory.EXPLOIT,
     "xss": FindingCategory.EXPLOIT,
     "rce": FindingCategory.EXPLOIT,
     "lfi": FindingCategory.EXPLOIT,
     "ssrf": FindingCategory.EXPLOIT,
     "auth_bypass": FindingCategory.EXPLOIT,
     "idor": FindingCategory.EXPLOIT,
+    "exploit": FindingCategory.EXPLOIT,
+    "web_vuln": FindingCategory.EXPLOIT,
     
     # POSTEX findings
+    "ad": FindingCategory.POSTEX,
+    "domainadmin": FindingCategory.POSTEX,
+    "forensics": FindingCategory.POSTEX,
+    "postex": FindingCategory.POSTEX,
+    "privesc_vector": FindingCategory.POSTEX,
+    "wireless": FindingCategory.POSTEX,
     "credential": FindingCategory.POSTEX,
     "shell": FindingCategory.POSTEX,
     "pivot": FindingCategory.POSTEX,
@@ -187,11 +209,24 @@ class AggregatedFinding:
     timestamp: float
     agent_id: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    outcome_status: str = "attempted"
     
     @property
     def dedup_key(self) -> str:
-        """Key for deduplication (target + type)."""
-        return f"{self.target}:{self.finding_type}"
+        """Key for deduplication (target + type + tool + evidence hash)."""
+        tool = str(self.metadata.get("tool", "")).strip().lower()
+        evidence = str(
+            self.metadata.get("raw_evidence")
+            or self.metadata.get("evidence")
+            or ""
+        ).strip()
+        if not tool and not evidence:
+            return f"{self.target}:{self.finding_type}"
+
+        evidence_hash = hashlib.sha1(evidence.encode("utf-8")).hexdigest()[:12] if evidence else "na"
+        if tool:
+            return f"{self.target}:{self.finding_type}:{tool}:{evidence_hash}"
+        return f"{self.target}:{self.finding_type}:{evidence_hash}"
 
 
 @dataclass
@@ -216,6 +251,7 @@ class AggregationSummary:
     window_start: float
     window_end: float
     findings: List[AggregatedFinding]
+    by_outcome: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -226,10 +262,16 @@ class AggregatorConfig:
         max_findings_per_cycle: Maximum findings to include (default 100).
         dedup_enabled: Whether to deduplicate findings (default True).
         include_info_severity: Whether to include INFO severity (default True).
+        rolling_memory_enabled: Keep carry-forward findings across cycles.
+        rolling_window_seconds: Retention window for carry-forward findings.
+        rolling_max_findings: Max carry-forward findings retained.
     """
     max_findings_per_cycle: int = 100
     dedup_enabled: bool = True
     include_info_severity: bool = True
+    rolling_memory_enabled: bool = True
+    rolling_window_seconds: int = 1800
+    rolling_max_findings: int = 300
 
 
 # =============================================================================
@@ -270,7 +312,9 @@ class FindingAggregator:
         self._config = config or AggregatorConfig()
         self._findings: Dict[str, AggregatedFinding] = {}  # dedup_key -> finding
         self._findings_list: List[AggregatedFinding] = []  # For non-dedup mode
+        self._rolling_findings: Dict[str, AggregatedFinding] = {}  # carry-forward memory
         self._raw_count = 0
+        self._outcome_totals: Dict[str, int] = defaultdict(int)
         self._window_start: float = time.time()
         self._window_end: float = time.time()
         self._engagement_id: Optional[str] = None
@@ -307,10 +351,19 @@ class FindingAggregator:
         """Stop collecting and cleanup subscriptions."""
         self._running = False
         
-        # Cleanup subscriptions (asyncio.Task objects from psubscribe)
+        # Cleanup subscriptions (supports cancel()/unsubscribe() handles)
         for task in self._subscriptions:
             try:
-                task.cancel()
+                cancel_fn = getattr(task, "cancel", None)
+                unsubscribe_fn = getattr(task, "unsubscribe", None)
+                if callable(cancel_fn):
+                    result = cancel_fn()
+                    if asyncio.iscoroutine(result):
+                        await result
+                elif callable(unsubscribe_fn):
+                    result = unsubscribe_fn()
+                    if asyncio.iscoroutine(result):
+                        await result
             except Exception as e:
                 self._log.warning(
                     "subscription_cancel_error",
@@ -347,6 +400,7 @@ class FindingAggregator:
         if not self._config.dedup_enabled:
             # No dedup - just append
             self._findings_list.append(finding)
+            self._remember_rolling(finding)
             return True
         
         dedup_key = finding.dedup_key
@@ -364,11 +418,65 @@ class FindingAggregator:
                     agent_id=existing.agent_id,
                     metadata=existing.metadata,
                 )
+            self._remember_rolling(finding)
             return False
         
         # New finding
         self._findings[dedup_key] = finding
+        self._remember_rolling(finding)
         return True
+
+    def _remember_rolling(self, finding: AggregatedFinding) -> None:
+        """Remember finding in rolling carry-forward memory."""
+        if not self._config.rolling_memory_enabled:
+            return
+
+        dedup_key = finding.dedup_key
+        existing = self._rolling_findings.get(dedup_key)
+        if existing is None:
+            self._rolling_findings[dedup_key] = finding
+        else:
+            replace = False
+            if finding.severity < existing.severity:
+                replace = True
+            elif finding.severity == existing.severity and finding.timestamp >= existing.timestamp:
+                replace = True
+            if replace:
+                self._rolling_findings[dedup_key] = finding
+        self._prune_rolling_memory()
+
+    def _prune_rolling_memory(self) -> None:
+        """Prune carry-forward memory by time window and max count."""
+        if not self._rolling_findings:
+            return
+
+        now_ts = time.time()
+        cutoff = now_ts - max(60, int(self._config.rolling_window_seconds))
+        stale_keys = [
+            key
+            for key, finding in self._rolling_findings.items()
+            if finding.timestamp < cutoff
+        ]
+        for key in stale_keys:
+            self._rolling_findings.pop(key, None)
+
+        limit = max(10, int(self._config.rolling_max_findings))
+        if len(self._rolling_findings) <= limit:
+            return
+
+        prioritized = sorted(
+            self._rolling_findings.values(),
+            key=lambda f: (f.severity.value, -f.timestamp),
+        )
+        self._rolling_findings = {finding.dedup_key: finding for finding in prioritized[:limit]}
+
+    def _get_rolling_findings(self) -> List[AggregatedFinding]:
+        """Get prioritized carry-forward findings."""
+        self._prune_rolling_memory()
+        return sorted(
+            self._rolling_findings.values(),
+            key=lambda f: (f.severity.value, -f.timestamp),
+        )
 
     def get_by_category(self, category: FindingCategory) -> List[AggregatedFinding]:
         """Get findings filtered by category.
@@ -407,10 +515,12 @@ class FindingAggregator:
         # Calculate counts
         by_severity: Dict[FindingSeverity, int] = defaultdict(int)
         by_category: Dict[FindingCategory, int] = defaultdict(int)
+        by_outcome: Dict[str, int] = defaultdict(int)
         
         for finding in prioritized:
             by_severity[finding.severity] += 1
             by_category[finding.category] += 1
+            by_outcome[(finding.outcome_status or "attempted").lower()] += 1
         
         return AggregationSummary(
             total_count=len(prioritized),
@@ -421,6 +531,7 @@ class FindingAggregator:
             window_start=self._window_start,
             window_end=self._window_end,
             findings=prioritized,
+            by_outcome=dict(by_outcome),
         )
 
     def format_for_director(self) -> str:
@@ -452,6 +563,14 @@ class FindingAggregator:
                 severity_parts.append(f"{sev.name.title()}: {count}")
         if severity_parts:
             lines.append(f"- {', '.join(severity_parts)}")
+
+        outcome_parts = []
+        for outcome_key in ("validated", "attempted", "failed"):
+            count = summary.by_outcome.get(outcome_key, 0)
+            if count > 0:
+                outcome_parts.append(f"{outcome_key.title()}: {count}")
+        if outcome_parts:
+            lines.append(f"- Outcomes: {', '.join(outcome_parts)}")
         
         # Category breakdown
         category_parts = []
@@ -528,8 +647,27 @@ class FindingAggregator:
                     lines.append(f"- {summary.total_count} findings collected for analysis")
         else:
             lines.append("**No findings in this cycle.**")
+
+        current_keys = {f.dedup_key for f in summary.findings}
+        carry_forward = [
+            finding
+            for finding in self._get_rolling_findings()
+            if finding.dedup_key not in current_keys
+        ]
+        if carry_forward:
+            lines.append("")
+            lines.append("**Carry-Forward Context (recent unresolved/high-value):**")
+            for i, finding in enumerate(carry_forward[:10], 1):
+                lines.append(
+                    f"{i}. [{finding.severity.name}] [{finding.category.name}] "
+                    f"{finding.finding_type} on {finding.target}"
+                )
         
         return "\n".join(lines)
+
+    def get_outcome_totals(self) -> Dict[str, int]:
+        """Return cumulative deduplicated outcome totals across engagement."""
+        return dict(self._outcome_totals)
 
     def reset_window(self) -> None:
         """Reset aggregation window for new cycle."""
@@ -571,10 +709,12 @@ class FindingAggregator:
         # Calculate counts
         by_severity: Dict[FindingSeverity, int] = defaultdict(int)
         by_category: Dict[FindingCategory, int] = defaultdict(int)
+        by_outcome: Dict[str, int] = defaultdict(int)
         
         for finding in prioritized:
             by_severity[finding.severity] += 1
             by_category[finding.category] += 1
+            by_outcome[(finding.outcome_status or "attempted").lower()] += 1
         
         summary = AggregationSummary(
             total_count=len(prioritized),
@@ -585,6 +725,7 @@ class FindingAggregator:
             window_start=self._window_start,
             window_end=self._window_end,
             findings=prioritized,
+            by_outcome=dict(by_outcome),
         )
 
         return summary
@@ -702,6 +843,9 @@ class FindingAggregator:
         target = inner.get("target", "")
         finding_type = inner.get("type", inner.get("finding_type", ""))
         severity_str = inner.get("severity", "info").upper()
+        outcome_status = str(inner.get("outcome_status", "attempted")).strip().lower() or "attempted"
+        if outcome_status not in {"validated", "attempted", "failed"}:
+            outcome_status = "attempted"
         agent_id = inner.get("agent_id", data.get("agent_id", "unknown"))
         raw_ts = inner.get("timestamp", None)
         if isinstance(raw_ts, str):
@@ -741,6 +885,7 @@ class FindingAggregator:
             category=category,
             timestamp=timestamp,
             agent_id=agent_id,
+            outcome_status=outcome_status,
             metadata={
                 k: v for k, v in inner.items()
                 if k not in {"target", "type", "finding_type", "severity", "agent_id", "timestamp"}
@@ -748,11 +893,14 @@ class FindingAggregator:
         )
         
         added = self.add_finding(finding)
+        if added:
+            self._outcome_totals[outcome_status] += 1
         
         self._log.debug(
             "finding_processed",
             target=target,
             finding_type=finding_type,
             severity=severity_str,
+            outcome_status=outcome_status,
             added=added,
         )

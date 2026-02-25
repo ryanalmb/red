@@ -20,7 +20,13 @@ def _ensure_mock_event_bus_async_methods(monkeypatch):
     """
     from cyberred.agents.base import StigmergicAgent
 
-    original = StigmergicAgent._setup_subscriptions
+    try:
+        original = StigmergicAgent._setup_subscriptions
+    except AttributeError:
+        # Some tests monkeypatch/mock the swarms dependency which can cause
+        # StigmergicAgent to be a spec'd Mock rather than the real class.
+        # In that case there's nothing to wrap.
+        return
 
     async def _patched_setup(self):
         bus = self.event_bus

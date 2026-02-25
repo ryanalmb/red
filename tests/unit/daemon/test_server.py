@@ -25,6 +25,12 @@ from cyberred.daemon.ipc import (
     MAX_MESSAGE_SIZE,
 )
 
+TEST_WAIVER_DATA = {
+    "waiver_hash": "a" * 64,
+    "waiver_signature": "Test Operator",
+    "waiver_timestamp": "2026-01-01T00:00:00Z",
+}
+
 
 # Tests will be run against the DaemonServer class once implemented
 
@@ -225,7 +231,7 @@ class TestDaemonServerCommands:
 
             request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-456",
             )
             writer.write(encode_message(request))
@@ -948,7 +954,7 @@ class TestDaemonServerAllCommands:
             # First create and start an engagement
             start_request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-start",
             )
             writer.write(encode_message(start_request))
@@ -1069,7 +1075,10 @@ class TestDaemonServerAllCommands:
         await server.start()
         try:
             # Manually create engagement without starting (stays in INITIALIZING)
-            engagement_id = server.session_manager.create_engagement(config_path)
+            engagement_id = server.session_manager.create_engagement(
+                config_path,
+                waiver_data=TEST_WAIVER_DATA,
+            )
 
             reader, writer = await asyncio.open_unix_connection(
                 str(temp_socket_path)
@@ -1118,7 +1127,7 @@ class TestDaemonServerAllCommands:
             # Start engagement
             start_request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-start",
             )
             writer.write(encode_message(start_request))
@@ -1218,7 +1227,7 @@ class TestDaemonServerAllCommands:
             # First create and start an engagement
             start_request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-start",
             )
             writer.write(encode_message(start_request))
@@ -1271,7 +1280,7 @@ class TestDaemonServerAllCommands:
             # Create and start an engagement
             start_request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-start",
             )
             writer.write(encode_message(start_request))
@@ -1333,7 +1342,7 @@ class TestDaemonServerAllCommands:
             # Create and start an engagement
             start_request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config_path)},
+                params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
                 request_id="test-start",
             )
             writer.write(encode_message(start_request))
@@ -1459,7 +1468,7 @@ class TestDaemonServerGracefulShutdown:
         # Start engagement first
         start_request = IPCRequest(
             command=IPCCommand.ENGAGEMENT_START,
-            params={"config_path": str(config_path)},
+            params={"config_path": str(config_path), "waiver_data": TEST_WAIVER_DATA},
             request_id="test-start",
         )
         writer.write(encode_message(start_request))
@@ -1503,7 +1512,7 @@ class TestDaemonServerGracefulShutdown:
         for config in [config1, config2]:
             request = IPCRequest(
                 command=IPCCommand.ENGAGEMENT_START,
-                params={"config_path": str(config)},
+                params={"config_path": str(config), "waiver_data": TEST_WAIVER_DATA},
                 request_id=f"start-{config.stem}",
             )
             writer.write(encode_message(request))
@@ -1797,4 +1806,3 @@ class TestDaemonServerCoverage:
             
             
             
-

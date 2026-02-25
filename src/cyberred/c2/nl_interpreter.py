@@ -222,7 +222,7 @@ class DropBoxDeploymentInterpreter:
                 prompt=f"Parse this deployment request:\n\n{nl_input}",
                 model="auto",
                 temperature=0.3,  # Lower temperature for more consistent parsing
-                max_tokens=256,
+                max_tokens=5000,
                 system_prompt=NL_INTERPRETER_SYSTEM_PROMPT,
             )
             

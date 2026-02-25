@@ -29,6 +29,11 @@ def nmap_parser(
     """
     findings: List[Finding] = []
     
+    # Guard: empty or whitespace-only output means the tool failed to run
+    if not stdout or not stdout.strip():
+        log.warning("nmap_empty_output", target=target)
+        return findings  # Return empty list — tier2/tier3 will handle
+
     # Auto-detect format and parse
     if _is_grepable_format(stdout):
         return _parse_grepable(stdout, agent_id, target)
@@ -41,7 +46,7 @@ def nmap_parser(
         import xml.etree.ElementTree as ET
         root = ET.fromstring(stdout)
     except ET.ParseError:
-        log.warning("nmap_xml_parse_failed", target=target)
+        log.warning("nmap_xml_parse_failed", target=target, output_length=len(stdout))
         raise  # Let OutputProcessor fall through to tier2 for unknown formats
     
     # Parse each host

@@ -186,6 +186,21 @@ class LLMPriorityQueue:
         )
         
         return priority_request
+
+    async def requeue(self, priority_request: PriorityRequest) -> None:
+        """Return a dequeued request to the queue (used for backpressure control)."""
+        await self._queue.put(priority_request)
+        with self._lock:
+            if priority_request.priority == RequestPriority.DIRECTOR:
+                self._director_pending += 1
+            else:
+                self._agent_pending += 1
+        log.info(
+            "request_requeued",
+            priority=priority_request.priority.name,
+            sequence=priority_request.sequence,
+            queue_depth=self.total_queue_depth,
+        )
     
     @property
     def director_queue_depth(self) -> int:

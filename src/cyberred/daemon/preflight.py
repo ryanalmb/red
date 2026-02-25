@@ -34,10 +34,97 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 
 from cyberred.core.exceptions import PreFlightCheckError, PreFlightWarningError
+from cyberred.llm.env import resolve_llm_api_base, resolve_llm_api_key
+from cyberred.llm.nim import NIMProvider
 
 
 # Minimum hours remaining for certificate validity
 CERT_MIN_HOURS_REMAINING = 24
+
+# Resource admission defaults (engagement/host budgeting).
+DEFAULT_RESOURCE_POLICY: dict[str, float] = {
+    "memory_reserve_mb": 4096.0,
+    "director_memory_mb": 512.0,
+    "worker_memory_mb": 256.0,
+    "headroom_mb": 1024.0,
+    # Defaults align with architecture sizing: 10K agents ≈ 10GB => ~1MB per agent.
+    "agent_memory_kb": 1024.0,
+    "max_mem_utilization_pct": 92.0,
+    "max_cpu_utilization_pct": 95.0,
+    "max_iowait_pct": 45.0,
+    "max_load_per_cpu": 4.0,
+    "agents_per_cpu_core": 100.0,
+    "agents_per_worker": 80.0,
+    "tools_per_worker_ratio": 1.0,
+    "worker_min_available_ratio": 0.2,
+    "worker_min_available": 1.0,
+    "min_worker_reserve": 1.0,
+    "global_memory_utilization_cap_pct": 90.0,
+    "director_cycle_timeout_s": 1200.0,
+    "director_trigger_timeout_s": 1320.0,
+}
+
+
+def _safe_float(value: Any, default: float) -> float:
+    """Best-effort float parsing with default fallback."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int) -> int:
+    """Best-effort int parsing with default fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_resource_policy(config: dict[str, Any]) -> dict[str, float]:
+    """Resolve resource policy from engagement config with defaults."""
+    policy = dict(DEFAULT_RESOURCE_POLICY)
+    configured = config.get("resource_policy", {})
+    if isinstance(configured, dict):
+        for key in policy:
+            if key in configured:
+                policy[key] = _safe_float(configured.get(key), policy[key])
+    return policy
+
+
+def _resolve_expected_workers(config: dict[str, Any]) -> int:
+    """Resolve expected worker pool size from config."""
+    infrastructure = config.get("infrastructure", {})
+    expected_workers = (
+        config.get("worker_pool_size")
+        or (infrastructure.get("worker_pool_size") if isinstance(infrastructure, dict) else None)
+        or os.getenv("CYBERRED_WORKER_POOL_SIZE")
+        or 15
+    )
+    return max(1, _safe_int(expected_workers, 15))
+
+
+def _resolve_target_agents(config: dict[str, Any]) -> int:
+    """Resolve target agent count for admission checks."""
+    policy = config.get("resource_policy", {})
+    explicit = None
+    if isinstance(policy, dict):
+        explicit = policy.get("target_agents")
+    if explicit is None:
+        explicit = config.get("target_agents")
+    if explicit is None:
+        explicit = config.get("max_agents")
+    if explicit is not None:
+        return max(1, _safe_int(explicit, 100))
+
+    # Heuristic fallback from scope/target size.
+    scope = config.get("scope", {}) if isinstance(config.get("scope"), dict) else {}
+    targets = config.get("targets", {}) if isinstance(config.get("targets"), dict) else {}
+    networks = scope.get("allowed_ips", [])
+    network_count = len(networks) if isinstance(networks, list) else 0
+    target_count = len(targets)
+    inferred = max(10, (network_count * 10) + (target_count * 5))
+    return inferred
 
 
 class CheckStatus(StrEnum):
@@ -336,6 +423,445 @@ class RedisCheck(PreFlightCheck):
             return CheckResult(self.name, CheckStatus.FAIL, self.priority, f"Redis Sentinel check failed: {e}")
 
 
+class WorkerPoolCheck(PreFlightCheck):
+    """Check Docker worker pool availability for engagement execution."""
+
+    @property
+    def name(self) -> str:
+        return "WORKER_POOL_CHECK"
+
+    @property
+    def priority(self) -> CheckPriority:
+        return CheckPriority.P0
+
+    async def execute(self, config: dict[str, Any]) -> CheckResult:
+        infrastructure = config.get("infrastructure", {})
+        policy = _resolve_resource_policy(config)
+        worker_prefix = (
+            config.get("worker_container_prefix")
+            or infrastructure.get("worker_container_prefix")
+            or "red-kali-worker"
+        )
+        expected_workers = (
+            config.get("worker_pool_size")
+            or infrastructure.get("worker_pool_size")
+            or 15
+        )
+        try:
+            expected_workers = max(1, int(expected_workers))
+        except (TypeError, ValueError):
+            expected_workers = 15
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/usr/bin/docker",
+                "ps",
+                "--format",
+                "{{.Names}}\t{{.Image}}\t{{.Status}}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+        except FileNotFoundError:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                "Docker CLI not found at /usr/bin/docker",
+            )
+        except Exception as e:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"Docker worker check failed: {e}",
+            )
+
+        if proc.returncode != 0:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"Docker worker check failed: {stderr.decode().strip() or 'docker ps returned non-zero'}",
+            )
+
+        prefix_workers: list[str] = []
+        image_workers: list[str] = []
+        for line in stdout.decode().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            container_name, container_image, status = parts[0], parts[1], parts[2]
+            if not status.lower().startswith("up"):
+                continue
+            if container_name.startswith(f"{worker_prefix}-"):
+                prefix_workers.append(container_name)
+            if "red-kali-worker" in container_image:
+                image_workers.append(container_name)
+
+        discovered_workers = sorted(set(prefix_workers) | set(image_workers))
+        if not discovered_workers:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"No running worker containers found (prefix={worker_prefix})",
+                {
+                    "expected_workers": expected_workers,
+                    "discovered_workers": 0,
+                },
+            )
+
+        responsive_workers: list[str] = []
+        unreachable_workers: list[str] = []
+        probe_targets = discovered_workers[: max(expected_workers, 3)]
+        for container_name in probe_targets:
+            probe = await asyncio.create_subprocess_exec(
+                "/usr/bin/docker",
+                "exec",
+                container_name,
+                "true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, probe_err = await probe.communicate()
+            if probe.returncode == 0:
+                responsive_workers.append(container_name)
+            else:
+                error_text = probe_err.decode().strip()
+                if error_text:
+                    unreachable_workers.append(f"{container_name}: {error_text}")
+                else:
+                    unreachable_workers.append(container_name)
+
+        if not responsive_workers:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                "Worker containers discovered but none are responsive to docker exec",
+                {
+                    "discovered_workers": discovered_workers,
+                    "probed_workers": probe_targets,
+                    "unreachable_workers": unreachable_workers,
+                },
+            )
+
+        available_workers = len(responsive_workers)
+        available_ratio = available_workers / max(1, expected_workers)
+        min_available = max(
+            1,
+            _safe_int(
+                policy.get("worker_min_available"),
+                min(3, expected_workers),
+            ),
+        )
+        min_ratio = max(
+            0.0,
+            min(
+                1.0,
+                _safe_float(
+                    policy.get("worker_min_available_ratio"),
+                    0.2,
+                ),
+            ),
+        )
+        if available_workers < min_available or available_ratio < min_ratio:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                (
+                    "Worker pool below minimum availability "
+                    f"({available_workers}/{expected_workers}, ratio={available_ratio:.2f}; "
+                    f"required min={min_available}, min_ratio={min_ratio:.2f})"
+                ),
+                {
+                    "expected_workers": expected_workers,
+                    "available_workers": available_workers,
+                    "available_ratio": available_ratio,
+                    "min_available": min_available,
+                    "min_ratio": min_ratio,
+                    "discovered_workers": discovered_workers,
+                    "probed_workers": probe_targets,
+                    "responsive_workers": responsive_workers,
+                    "unreachable_workers": unreachable_workers,
+                },
+            )
+
+        return CheckResult(
+            self.name,
+            CheckStatus.PASS,
+            self.priority,
+            (
+                "Worker pool ready: "
+                f"{len(responsive_workers)} responsive container(s), "
+                f"availability ratio={available_ratio:.2f}"
+            ),
+            {
+                "expected_workers": expected_workers,
+                "available_workers": available_workers,
+                "available_ratio": available_ratio,
+                "discovered_workers": discovered_workers,
+                "probed_workers": probe_targets,
+                "responsive_workers": responsive_workers,
+                "unreachable_workers": unreachable_workers,
+            },
+        )
+
+
+class ResourceAdmissionCheck(PreFlightCheck):
+    """Capacity-aware engagement admission check.
+
+    Hard-gates engagement start when host resources cannot safely support the
+    requested engagement scope/agent count.
+    """
+
+    def __init__(
+        self,
+        memory_fn: Optional[Callable[[], Any]] = None,
+        cpu_percent_fn: Optional[Callable[..., float]] = None,
+        cpu_times_percent_fn: Optional[Callable[..., Any]] = None,
+        cpu_count_fn: Optional[Callable[[], int]] = None,
+        loadavg_fn: Optional[Callable[[], tuple[float, float, float]]] = None,
+    ) -> None:
+        self._virtual_memory = memory_fn or psutil.virtual_memory
+        self._cpu_percent = cpu_percent_fn or psutil.cpu_percent
+        self._cpu_times_percent = cpu_times_percent_fn or psutil.cpu_times_percent
+        self._cpu_count = cpu_count_fn or psutil.cpu_count
+        self._loadavg = loadavg_fn or os.getloadavg
+
+    @property
+    def name(self) -> str:
+        return "RESOURCE_ADMISSION_CHECK"
+
+    @property
+    def priority(self) -> CheckPriority:
+        return CheckPriority.P0
+
+    async def execute(self, config: dict[str, Any]) -> CheckResult:
+        policy = _resolve_resource_policy(config)
+        expected_workers = _resolve_expected_workers(config)
+        target_agents = _resolve_target_agents(config)
+        requested_parallel_tools = max(
+            1,
+            _safe_int(config.get("roe", {}).get("max_concurrent_tools"), 8),
+        )
+
+        reserve_mb = max(0.0, _safe_float(policy.get("memory_reserve_mb"), 4096.0))
+        director_overhead_mb = max(0.0, _safe_float(policy.get("director_memory_mb"), 512.0))
+        headroom_mb = max(0.0, _safe_float(policy.get("headroom_mb"), 1024.0))
+        agent_memory_mb = max(0.001, _safe_float(policy.get("agent_memory_kb"), 1.0) / 1024.0)
+
+        try:
+            memory = await asyncio.to_thread(self._virtual_memory)
+            available_mb = memory.available / (1024 * 1024)
+            total_mb = memory.total / (1024 * 1024)
+            mem_used_pct = float(getattr(memory, "percent", 0.0))
+
+            def _cpu_percent_call() -> float:
+                try:
+                    return float(self._cpu_percent(interval=0.2))
+                except TypeError:
+                    return float(self._cpu_percent())
+
+            def _cpu_times_call() -> Any:
+                try:
+                    return self._cpu_times_percent(interval=0.2)
+                except TypeError:
+                    return self._cpu_times_percent()
+
+            cpu_utilization_pct = await asyncio.to_thread(_cpu_percent_call)
+            cpu_times = await asyncio.to_thread(_cpu_times_call)
+            io_wait_pct = float(getattr(cpu_times, "iowait", 0.0))
+            cpu_count = max(1, _safe_int(await asyncio.to_thread(self._cpu_count), 1))
+            try:
+                load1, _, _ = await asyncio.to_thread(self._loadavg)
+            except (AttributeError, OSError):
+                load1 = 0.0
+            load_per_cpu = float(load1) / cpu_count
+        except Exception as e:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"Resource admission probe failed: {e}",
+            )
+
+        max_mem_pct = _safe_float(policy.get("max_mem_utilization_pct"), 92.0)
+        max_cpu_pct = _safe_float(policy.get("max_cpu_utilization_pct"), 95.0)
+        max_iowait_pct = _safe_float(policy.get("max_iowait_pct"), 45.0)
+        max_load_per_cpu = _safe_float(policy.get("max_load_per_cpu"), 4.0)
+
+        usable_for_agents_mb = max(
+            0.0,
+            available_mb - reserve_mb - director_overhead_mb - headroom_mb,
+        )
+        memory_agent_cap = max(1, int(usable_for_agents_mb / agent_memory_mb))
+        cpu_agent_cap = max(
+            1,
+            int(cpu_count * _safe_float(policy.get("agents_per_cpu_core"), 100.0)),
+        )
+        worker_agent_cap = max(
+            1,
+            int(expected_workers * _safe_float(policy.get("agents_per_worker"), 80.0)),
+        )
+        hardware_agent_cap = max(1, min(memory_agent_cap, cpu_agent_cap, worker_agent_cap))
+        max_agents_allowed_now = max(1, min(target_agents, hardware_agent_cap))
+
+        reserved_memory_mb = (
+            director_overhead_mb
+            + headroom_mb
+            + (agent_memory_mb * max_agents_allowed_now)
+        )
+        required_memory_mb = reserve_mb + reserved_memory_mb
+
+        critical_mem_pct = max(max_mem_pct + 3.0, 95.0)
+        critical_cpu_pct = max(max_cpu_pct + 2.0, 98.0)
+        critical_iowait_pct = max(max_iowait_pct + 20.0, 70.0)
+        critical_load_per_cpu = max(max_load_per_cpu * 1.5, 6.0)
+
+        failures: list[str] = []
+        warnings: list[str] = []
+
+        if available_mb < required_memory_mb:
+            failures.append(
+                f"available_mb={available_mb:.1f}<required_mb={required_memory_mb:.1f}"
+            )
+        if mem_used_pct >= critical_mem_pct:
+            failures.append(
+                f"mem_used_pct={mem_used_pct:.1f}>=critical_mem_pct={critical_mem_pct:.1f}"
+            )
+        elif mem_used_pct >= max_mem_pct:
+            warnings.append(
+                f"mem_used_pct={mem_used_pct:.1f}>=max_mem_pct={max_mem_pct:.1f}"
+            )
+
+        if cpu_utilization_pct >= critical_cpu_pct:
+            failures.append(
+                f"cpu_pct={cpu_utilization_pct:.1f}>=critical_cpu_pct={critical_cpu_pct:.1f}"
+            )
+        elif cpu_utilization_pct >= max_cpu_pct:
+            warnings.append(
+                f"cpu_pct={cpu_utilization_pct:.1f}>=max_cpu_pct={max_cpu_pct:.1f}"
+            )
+
+        if io_wait_pct >= critical_iowait_pct:
+            failures.append(
+                f"iowait_pct={io_wait_pct:.1f}>=critical_iowait_pct={critical_iowait_pct:.1f}"
+            )
+        elif io_wait_pct >= max_iowait_pct:
+            warnings.append(
+                f"iowait_pct={io_wait_pct:.1f}>=max_iowait_pct={max_iowait_pct:.1f}"
+            )
+
+        if load_per_cpu >= critical_load_per_cpu:
+            failures.append(
+                f"load_per_cpu={load_per_cpu:.2f}>=critical_load_per_cpu={critical_load_per_cpu:.2f}"
+            )
+        elif load_per_cpu >= max_load_per_cpu:
+            warnings.append(
+                f"load_per_cpu={load_per_cpu:.2f}>=max_load_per_cpu={max_load_per_cpu:.2f}"
+            )
+
+        tools_per_worker_ratio = max(
+            0.1,
+            _safe_float(policy.get("tools_per_worker_ratio"), 1.0),
+        )
+        max_parallel_tools_now = max(
+            1,
+            min(
+                requested_parallel_tools,
+                int(max(1, expected_workers * tools_per_worker_ratio)),
+            ),
+        )
+        min_worker_reserve = max(
+            0,
+            _safe_int(policy.get("min_worker_reserve"), 1),
+        )
+        min_worker_reserve = min(min_worker_reserve, max(0, expected_workers - 1))
+
+        director_policy = config.get("director_policy", {})
+        if not isinstance(director_policy, dict):
+            director_policy = {}
+        director_cycle_timeout_s = max(
+            120.0,
+            _safe_float(
+                director_policy.get("cycle_timeout_s"),
+                _safe_float(policy.get("director_cycle_timeout_s"), 1200.0),
+            ),
+        )
+        director_trigger_timeout_s = max(
+            director_cycle_timeout_s + 60.0,
+            _safe_float(
+                director_policy.get("trigger_timeout_s"),
+                _safe_float(policy.get("director_trigger_timeout_s"), 1320.0),
+            ),
+        )
+
+        resource_contract = {
+            "target_agents": target_agents,
+            "expected_workers": expected_workers,
+            "requested_parallel_tools": requested_parallel_tools,
+            "max_agents_allowed_now": max_agents_allowed_now,
+            "max_parallel_tools_now": max_parallel_tools_now,
+            "min_worker_reserve": min_worker_reserve,
+            "hardware_agent_cap": hardware_agent_cap,
+            "required_memory_mb": required_memory_mb,
+            "required_free_memory_mb": reserve_mb,
+            "reserved_memory_mb": reserved_memory_mb,
+            "global_memory_utilization_cap_pct": _safe_float(
+                policy.get("global_memory_utilization_cap_pct"),
+                90.0,
+            ),
+            "policy": policy,
+            "director_budget_profile": {
+                "cycle_timeout_s": director_cycle_timeout_s,
+                "trigger_timeout_s": director_trigger_timeout_s,
+            },
+        }
+
+        details = {
+            "resource_contract": resource_contract,
+            "available_memory_mb": available_mb,
+            "total_memory_mb": total_mb,
+            "memory_used_pct": mem_used_pct,
+            "required_memory_mb": required_memory_mb,
+            "reserved_memory_mb": reserved_memory_mb,
+            "required_free_memory_mb": reserve_mb,
+            "cpu_utilization_pct": cpu_utilization_pct,
+            "iowait_pct": io_wait_pct,
+            "load_per_cpu": load_per_cpu,
+            "cpu_count": cpu_count,
+            "policy": policy,
+            "failures": failures,
+            "warnings": warnings,
+        }
+
+        if failures:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                "Resource admission blocked: " + "; ".join(failures),
+                details,
+            )
+
+        return CheckResult(
+            self.name,
+            CheckStatus.WARN if warnings else CheckStatus.PASS,
+            self.priority,
+            (
+                f"{'Resource admission warning: ' if warnings else 'Resource admission pass: '}"
+                f"agents_cap={max_agents_allowed_now}/{target_agents}, "
+                f"tools_cap={max_parallel_tools_now}/{requested_parallel_tools}"
+            ),
+            details,
+        )
+
+
 class LLMCheck(PreFlightCheck):
     """Check LLM provider availability with actual API ping.
     
@@ -345,9 +871,13 @@ class LLMCheck(PreFlightCheck):
     
     def __init__(
         self,
-        http_client_factory: Optional[Callable[[], httpx.AsyncClient]] = None
+        http_client_factory: Optional[Callable[[], httpx.AsyncClient]] = None,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 1.0,
     ) -> None:
-        self._http_client_factory = http_client_factory or (lambda: httpx.AsyncClient(timeout=10.0))
+        self._http_client_factory = http_client_factory or (lambda: httpx.AsyncClient(timeout=20.0))
+        self._max_attempts = max(1, max_attempts)
+        self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     @property
     def name(self) -> str:
@@ -358,50 +888,193 @@ class LLMCheck(PreFlightCheck):
         return CheckPriority.P0
 
     async def execute(self, config: dict[str, Any]) -> CheckResult:
-        # Check for NVIDIA NIM first (project default), then OpenAI
-        # Supports pydantic-settings style env vars (CYBERRED_LLM__NIM_API_KEY)
-        api_key = (
-            config.get("nvidia_api_key") or
-            os.environ.get("NVIDIA_API_KEY") or
-            os.environ.get("NVIDIA_NIM_API_KEY") or
-            os.environ.get("CYBERRED_LLM__NIM_API_KEY") or
-            config.get("openai_api_key") or
-            os.environ.get("OPENAI_API_KEY")
-        )
-
+        api_key = resolve_llm_api_key(config)
         if not api_key:
             return CheckResult(self.name, CheckStatus.FAIL, self.priority, "LLM API Key missing (NVIDIA_API_KEY or OPENAI_API_KEY)")
 
-        # Determine API base - prefer NVIDIA NIM
-        api_base = (
-            config.get("nvidia_base_url") or
-            os.environ.get("NVIDIA_BASE_URL") or
-            config.get("openai_api_base") or
-            "https://integrate.api.nvidia.com/v1"
-        )
+        api_base = resolve_llm_api_base(config)
         return await self._ping_api(api_key, api_base)
 
     async def _ping_api(self, api_key: str, api_base: str) -> CheckResult:
-        """Attempt to verify LLM API is reachable with a lightweight models list call."""
+        """Verify LLM API with models list and a minimal completion probe."""
+        last_failure: CheckResult | None = None
+
+        for attempt in range(1, self._max_attempts + 1):
+            result = await self._ping_api_once(api_key, api_base)
+            if result.status == CheckStatus.PASS:
+                return result
+
+            last_failure = result
+            if not self._is_retryable_failure(result) or attempt >= self._max_attempts:
+                return result
+
+            await asyncio.sleep(self._retry_backoff_seconds * attempt)
+
+        return last_failure or CheckResult(
+            self.name,
+            CheckStatus.FAIL,
+            self.priority,
+            "LLM API ping failed without additional details",
+        )
+
+    async def _ping_api_once(self, api_key: str, api_base: str) -> CheckResult:
+        """Single LLM API probe attempt."""
         try:
             async with self._http_client_factory() as client:
-                response = await client.get(
+                models_response = await client.get(
                     f"{api_base}/models",
                     headers={"Authorization": f"Bearer {api_key}"}
                 )
-                
-                if response.status_code == 200:
-                    return CheckResult(self.name, CheckStatus.PASS, self.priority, "LLM API reachable and responding")
-                elif response.status_code == 401:
+
+                if models_response.status_code == 401:
                     return CheckResult(self.name, CheckStatus.FAIL, self.priority, "LLM API key invalid (401 Unauthorized)")
-                else:
+                if models_response.status_code != 200:
                     return CheckResult(
                         self.name, CheckStatus.FAIL, self.priority,
-                        f"LLM API returned status {response.status_code}",
-                        {"status_code": response.status_code}
+                        f"LLM API returned status {models_response.status_code}",
+                        {"status_code": models_response.status_code}
                     )
+
+                try:
+                    models_payload = models_response.json()
+                except ValueError:
+                    return CheckResult(
+                        self.name,
+                        CheckStatus.FAIL,
+                        self.priority,
+                        "LLM API /models returned invalid JSON",
+                    )
+
+                probe_models = self._select_probe_models(models_payload)
+                if not probe_models:
+                    return CheckResult(
+                        self.name,
+                        CheckStatus.FAIL,
+                        self.priority,
+                        "LLM API reachable but no probeable model was returned",
+                    )
+
+                probe_failures: list[dict[str, Any]] = []
+                for model_id in probe_models[:3]:
+                    completion_response = await client.post(
+                        f"{api_base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json={
+                            "model": model_id,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 1,
+                            "temperature": 0,
+                        },
+                    )
+
+                    if completion_response.status_code == 200:
+                        return CheckResult(
+                            self.name,
+                            CheckStatus.PASS,
+                            self.priority,
+                            f"LLM API reachable and completion probe passed ({model_id})",
+                        )
+
+                    if completion_response.status_code == 401:
+                        return CheckResult(
+                            self.name,
+                            CheckStatus.FAIL,
+                            self.priority,
+                            "LLM API key invalid during completion probe (401 Unauthorized)",
+                        )
+
+                    probe_failures.append(
+                        {"model": model_id, "status_code": completion_response.status_code}
+                    )
+
+                failure_summary = ", ".join(
+                    f"{entry['model']}:{entry['status_code']}" for entry in probe_failures
+                )
+                return CheckResult(
+                    self.name,
+                    CheckStatus.FAIL,
+                    self.priority,
+                    f"LLM completion probe failed for models [{failure_summary}]",
+                    {"probe_failures": probe_failures},
+                )
+        except httpx.TimeoutException as e:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"LLM API ping timed out ({type(e).__name__})",
+                {"error_type": type(e).__name__, "error": str(e)},
+            )
+        except httpx.HTTPError as e:
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"LLM API HTTP error ({type(e).__name__})",
+                {"error_type": type(e).__name__, "error": str(e)},
+            )
         except Exception as e:
-            return CheckResult(self.name, CheckStatus.FAIL, self.priority, f"LLM API ping failed: {e}")
+            return CheckResult(
+                self.name,
+                CheckStatus.FAIL,
+                self.priority,
+                f"LLM API ping failed ({type(e).__name__})",
+                {"error_type": type(e).__name__, "error": str(e)},
+            )
+
+    def _is_retryable_failure(self, result: CheckResult) -> bool:
+        """Return True if check failure is likely transient and can be retried."""
+        if result.status != CheckStatus.FAIL:
+            return False
+
+        status_code = result.details.get("status_code")
+        if isinstance(status_code, int) and (status_code in (408, 429) or status_code >= 500):
+            return True
+
+        for failure in result.details.get("probe_failures", []):
+            code = failure.get("status_code")
+            if isinstance(code, int) and (code in (408, 429) or code >= 500):
+                return True
+
+        error_type = result.details.get("error_type", "")
+        return error_type in {"ReadTimeout", "ConnectTimeout", "PoolTimeout", "TimeoutException", "ConnectError", "NetworkError"}
+
+    def _select_probe_models(self, models_payload: Any) -> list[str]:
+        """Select ordered probe model list, preferring active tier models."""
+        model_ids: list[str] = []
+        if isinstance(models_payload, dict):
+            data = models_payload.get("data")
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        model_id = item.get("id")
+                        if isinstance(model_id, str) and model_id.strip():
+                            model_ids.append(model_id.strip())
+        elif isinstance(models_payload, list):
+            for item in models_payload:
+                if isinstance(item, dict):
+                    model_id = item.get("id")
+                    if isinstance(model_id, str) and model_id.strip():
+                        model_ids.append(model_id.strip())
+                elif isinstance(item, str) and item.strip():
+                    model_ids.append(item.strip())
+
+        if not model_ids:
+            return []
+
+        preferred = [
+            NIMProvider.MODELS["FAST"],
+            NIMProvider.MODELS["STANDARD"],
+            NIMProvider.MODELS["COMPLEX"],
+        ]
+        ordered: list[str] = []
+        for model_id in preferred:
+            if model_id in model_ids and model_id not in ordered:
+                ordered.append(model_id)
+        for model_id in model_ids:
+            if model_id not in ordered:
+                ordered.append(model_id)
+        return ordered
 
 
 class CertCheck(PreFlightCheck):
@@ -497,6 +1170,8 @@ class PreFlightRunner:
             
             checks = [
                 RedisCheck(),
+                WorkerPoolCheck(),
+                ResourceAdmissionCheck(),
                 LLMCheck(),
                 ScopeCheck(),
                 DiskCheck(),
@@ -530,13 +1205,16 @@ class PreFlightRunner:
             PreFlightCheckError: If any P0 check fails.
             PreFlightWarningError: If any P1 check fails/warns and ignore_warnings is False.
         """
-        # DEV MODE: Skip all checks when CYBERRED_DEV_MODE=1
-        if os.environ.get("CYBERRED_DEV_MODE") == "1":
+        # Dev bypass is double-gated to avoid accidental production bypass.
+        if (
+            os.environ.get("CYBERRED_DEV_MODE") == "1"
+            and os.environ.get("CYBERRED_ALLOW_PREFLIGHT_BYPASS") == "1"
+        ):
             import structlog
             log = structlog.get_logger()
             log.warning(
                 "preflight_checks_bypassed",
-                reason="CYBERRED_DEV_MODE=1",
+                reason="CYBERRED_DEV_MODE=1 + CYBERRED_ALLOW_PREFLIGHT_BYPASS=1",
                 skipped_checks=[r.name for r in results if r.status == CheckStatus.FAIL],
             )
             return

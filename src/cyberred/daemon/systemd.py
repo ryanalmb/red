@@ -49,6 +49,8 @@ ExecStop={exec_path} daemon stop
 Restart=on-failure
 RestartSec=5
 User={user}
+EnvironmentFile=-%h/.cyber-red/.env
+EnvironmentFile=-/etc/cyber-red/daemon.env
 Environment="PYTHONUNBUFFERED=1"
 StandardOutput=journal
 StandardError=journal

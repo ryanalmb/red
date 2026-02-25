@@ -124,6 +124,9 @@ class ReplanTriggerConfig:
         critical_finding_enabled: Whether critical finding trigger is enabled.
         phase_transition_enabled: Whether phase transition trigger is enabled.
         objective_met_enabled: Whether objective met trigger is enabled.
+        trigger_callback_timeout_s: Max time to wait for on_trigger callback.
+        audit_timeout_s: Max time to wait for audit event publication.
+        timer_heartbeat_interval_s: Interval for timer liveness heartbeat logs.
     """
     timer_interval_s: float = 300.0  # 5 minutes
     debounce_window_s: float = 10.0
@@ -132,6 +135,9 @@ class ReplanTriggerConfig:
     critical_finding_enabled: bool = True
     phase_transition_enabled: bool = True
     objective_met_enabled: bool = True
+    trigger_callback_timeout_s: float = 180.0
+    audit_timeout_s: float = 2.0
+    timer_heartbeat_interval_s: float = 60.0
 
 
 # =============================================================================
@@ -182,6 +188,8 @@ class ReplanTriggerManager:
         self._paused = False
         self._log = log.bind(component="replan_triggers")
         self._suppressed_count = 0
+        self._background_tasks: set[asyncio.Task] = set()
+        self._last_timer_heartbeat: float = 0.0
 
     # =========================================================================
     # Lifecycle Methods
@@ -199,6 +207,7 @@ class ReplanTriggerManager:
         self._last_trigger_time = 0.0
         self._last_timer_fire = time.time()
         self._suppressed_count = 0
+        self._last_timer_heartbeat = time.time()
         
         self._log.info(
             "replan_trigger_manager_started",
@@ -230,13 +239,23 @@ class ReplanTriggerManager:
         # Unsubscribe from all channels
         for subscription in self._subscriptions:
             try:
-                await subscription.unsubscribe()
+                cancel_fn = getattr(subscription, "cancel", None)
+                unsubscribe_fn = getattr(subscription, "unsubscribe", None)
+                if callable(cancel_fn):
+                    await cancel_fn()
+                elif callable(unsubscribe_fn):
+                    await unsubscribe_fn()
             except Exception as e:
                 self._log.warning(
                     "subscription_unsubscribe_error",
                     error=str(e),
                 )
         self._subscriptions.clear()
+        if self._background_tasks:
+            for task in list(self._background_tasks):
+                task.cancel()
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
         
         self._log.info(
             "replan_trigger_manager_stopped",
@@ -341,14 +360,18 @@ class ReplanTriggerManager:
             inner = finding
 
         severity = inner.get("severity", "").lower()
+        outcome_status = str(inner.get("outcome_status", "")).strip().lower()
         
         if severity != "critical":
+            return
+        if outcome_status != "validated":
             return
         
         self._log.info(
             "critical_finding_detected",
             finding_id=inner.get("id", inner.get("finding_id")),
             severity=severity,
+            outcome_status=outcome_status,
         )
 
         trigger = ReplanTrigger(
@@ -357,6 +380,7 @@ class ReplanTriggerManager:
             metadata={
                 "finding_id": inner.get("id", inner.get("finding_id")),
                 "severity": severity,
+                "outcome_status": outcome_status,
                 "target": inner.get("target"),
                 "cve_id": inner.get("cve_id"),
                 "technique": inner.get("technique"),
@@ -526,9 +550,19 @@ class ReplanTriggerManager:
             engagement_id=trigger.engagement_id,
         )
         
-        # Invoke callback
+        # Invoke callback with timeout so a stuck Director cycle cannot
+        # permanently block the trigger manager timer loop.
         try:
-            await self._on_trigger(trigger)
+            await asyncio.wait_for(
+                self._on_trigger(trigger),
+                timeout=self._config.trigger_callback_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            self._log.error(
+                "trigger_callback_timeout",
+                trigger_type=trigger.trigger_type.value,
+                timeout_s=self._config.trigger_callback_timeout_s,
+            )
         except Exception as e:
             self._log.error(
                 "trigger_callback_error",
@@ -537,20 +571,8 @@ class ReplanTriggerManager:
                 exc_info=True,
             )
         
-        # Log to audit trail
-        try:
-            await self._event_bus.audit({
-                "type": "replan_trigger",
-                "trigger_type": trigger.trigger_type.value,
-                "engagement_id": trigger.engagement_id,
-                "metadata": trigger.metadata,
-                "timestamp": trigger.timestamp,
-            })
-        except Exception as e:
-            self._log.warning(
-                "audit_log_error",
-                error=str(e),
-            )
+        # Fire-and-forget audit publication so timer cadence is never blocked.
+        self._spawn_background_task(self._publish_audit_event(trigger))
 
     async def _timer_loop(self) -> None:
         """Periodic timer loop (Task 2).
@@ -567,6 +589,18 @@ class ReplanTriggerManager:
             while self._running:
                 # Wait for interval
                 await asyncio.sleep(self._config.timer_interval_s)
+                current_time = time.time()
+                if (
+                    current_time - self._last_timer_heartbeat
+                    >= self._config.timer_heartbeat_interval_s
+                ):
+                    self._last_timer_heartbeat = current_time
+                    self._log.info(
+                        "timer_loop_heartbeat",
+                        engagement_id=self._engagement_id,
+                        interval_s=self._config.timer_interval_s,
+                        paused=self._paused,
+                    )
                 
                 if not self._running:
                     break
@@ -607,42 +641,79 @@ class ReplanTriggerManager:
                 exc_info=True,
             )
 
+    async def _publish_audit_event(self, trigger: ReplanTrigger) -> None:
+        """Publish trigger audit event with a strict timeout budget."""
+        try:
+            await asyncio.wait_for(
+                self._event_bus.audit({
+                    "type": "replan_trigger",
+                    "trigger_type": trigger.trigger_type.value,
+                    "engagement_id": trigger.engagement_id,
+                    "metadata": trigger.metadata,
+                    "timestamp": trigger.timestamp,
+                }),
+                timeout=self._config.audit_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            self._log.warning(
+                "audit_log_timeout",
+                trigger_type=trigger.trigger_type.value,
+                timeout_s=self._config.audit_timeout_s,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._log.warning(
+                "audit_log_error",
+                trigger_type=trigger.trigger_type.value,
+                error=str(e),
+            )
+
+    def _spawn_background_task(self, coro: Awaitable[None]) -> None:
+        """Track and auto-cleanup fire-and-forget tasks."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def _setup_subscriptions(self) -> None:
         """Set up EventBus subscriptions for findings, phases, and objectives."""
         eid = self._engagement_id
 
         # Critical finding detection — psubscribe for wildcard pattern
         try:
-            await self._event_bus.psubscribe(
+            sub = await self._event_bus.psubscribe(
                 "findings:*",
                 lambda channel, data: asyncio.ensure_future(
                     self._handle_finding(channel, data)
                 ),
             )
+            self._subscriptions.append(sub)
         except Exception as e:
             self._log.warning("replan_findings_subscribe_failed", error=str(e))
 
         # Phase transitions — exact channel
         try:
             phase_ch = f"engagement:{eid}:phase"
-            await self._event_bus.subscribe(
+            sub = await self._event_bus.subscribe(
                 phase_ch,
                 lambda data, _ch=phase_ch: asyncio.ensure_future(
                     self._handle_phase_change(_ch, data)
                 ),
             )
+            self._subscriptions.append(sub)
         except Exception as e:
             self._log.warning("replan_phase_subscribe_failed", error=str(e))
 
         # Objective completions — exact channel
         try:
             obj_ch = f"objectives:{eid}"
-            await self._event_bus.subscribe(
+            sub = await self._event_bus.subscribe(
                 obj_ch,
                 lambda data, _ch=obj_ch: asyncio.ensure_future(
                     self._handle_objective(_ch, data)
                 ),
             )
+            self._subscriptions.append(sub)
         except Exception as e:
             self._log.warning("replan_objective_subscribe_failed", error=str(e))
 

@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import shlex
+import signal
 import time
 from pathlib import Path
 from typing import Optional, Literal
@@ -10,6 +11,16 @@ from cyberred.core.exceptions import ContainerPoolExhausted
 from cyberred.protocols.container import ContainerProtocol
 
 logger = logging.getLogger(__name__)
+_TIMEOUT_EXIT_CODES = {124, 137}
+_SCANNER_TIMEOUT_GUARD_TOOLS = (
+    "nmap",
+    "masscan",
+    "rustscan",
+    "naabu",
+    "zmap",
+    "zgrab",
+    "zgrab2",
+)
 
 class ContainerContext:
     def __init__(self, pool: 'ContainerPool', timeout: Optional[float] = None):
@@ -447,6 +458,7 @@ class _WorkerBridgeContext:
         self._bridge = bridge
         self._timeout = timeout or 60.0
         self._container_id: Optional[str] = None
+        self._container: Optional['_WorkerBridgeContainer'] = None
 
     async def __aenter__(self) -> '_WorkerBridgeContainer':
         self._container_id = await self._bridge.worker_pool.acquire_worker(
@@ -454,11 +466,24 @@ class _WorkerBridgeContext:
         )
         if not self._container_id:
             raise ContainerPoolExhausted("No workers available (timeout)")
-        return _WorkerBridgeContainer(self._bridge, self._container_id)
+        self._container = _WorkerBridgeContainer(self._bridge, self._container_id)
+        return self._container
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._container_id:
-            self._bridge.worker_pool.release_worker(self._container_id)
+            recycle = bool(self._container and self._container.needs_recycle)
+            if recycle:
+                reason = (
+                    self._container.recycle_reason
+                    if self._container and self._container.recycle_reason
+                    else "timeout_cleanup_failed"
+                )
+                await self._bridge.worker_pool.recycle_worker(
+                    self._container_id,
+                    reason=reason,
+                )
+            else:
+                self._bridge.worker_pool.release_worker(self._container_id)
 
 
 class _WorkerBridgeContainer:
@@ -471,30 +496,208 @@ class _WorkerBridgeContainer:
     def __init__(self, bridge: WorkerPoolBridge, container_id: str):
         self._bridge = bridge
         self._container_id = container_id
+        self._needs_recycle = False
+        self._recycle_reason: str | None = None
 
-    async def execute(self, code: str, timeout: int = 30) -> ToolResult:
+    @property
+    def needs_recycle(self) -> bool:
+        return self._needs_recycle
+
+    @property
+    def recycle_reason(self) -> str | None:
+        return self._recycle_reason
+
+    def _mark_recycle(self, reason: str) -> None:
+        self._needs_recycle = True
+        if not self._recycle_reason:
+            self._recycle_reason = reason
+
+    def _detect_scanner_crash(
+        self,
+        command: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> str | None:
+        lowered_command = command.lower()
+        if not any(tool in lowered_command for tool in _SCANNER_TIMEOUT_GUARD_TOOLS):
+            return None
+
+        combined = f"{stdout}\n{stderr}".lower()
+        if "nmap" in lowered_command and (
+            exit_code == 139 or "segmentation fault" in combined
+        ):
+            return "nmap_segfault"
+
+        crash_markers = (
+            "segmentation fault",
+            "core dumped",
+            "double free",
+            "stack smashing",
+            "fatal signal",
+        )
+        if any(marker in combined for marker in crash_markers):
+            return "scanner_crash"
+
+        if exit_code in {134, 135, 136, 139}:
+            return "scanner_crash_exit"
+        return None
+
+    async def _terminate_exec_process(
+        self,
+        proc: asyncio.subprocess.Process,
+        command: str,
+    ) -> None:
+        """Best-effort terminate of timed-out docker exec process tree."""
+        if proc.returncode is not None:
+            return
+        process_group_id: int | None = None
         try:
-            cmd = shlex.split(code)
-        except ValueError:
-            cmd = code.split()
+            if proc.pid:
+                process_group_id = os.getpgid(proc.pid)
+        except Exception:
+            process_group_id = None
+        try:
+            if process_group_id is not None:
+                os.killpg(process_group_id, signal.SIGTERM)
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            logger.warning("bridge_exec_terminate_failed: cmd=%s error=%s", command[:50], str(e))
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=2.0)
+            return
+        except Exception:
+            pass
+        try:
+            if process_group_id is not None:
+                os.killpg(process_group_id, signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            logger.warning("bridge_exec_kill_failed: cmd=%s error=%s", command[:50], str(e))
+            return
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        except Exception:
+            pass
 
-        args = ["/usr/bin/docker", "exec", self._container_id] + cmd
+    async def _cleanup_timed_out_processes(self, command: str) -> bool:
+        lowered = command.lower()
+        matched = [tool for tool in _SCANNER_TIMEOUT_GUARD_TOOLS if tool in lowered]
 
-        start_time = time.perf_counter()
+        if matched:
+            unique_tools = tuple(dict.fromkeys(matched))
+        else:
+            unique_tools = _SCANNER_TIMEOUT_GUARD_TOOLS
+        tool_args = " ".join(shlex.quote(tool) for tool in unique_tools)
+        cleanup_script = (
+            f"for tool in {tool_args}; do "
+            "pkill -TERM -f \"(^|/)$tool(\\s|$)\" >/dev/null 2>&1 || true; "
+            "done; "
+            "sleep 1; "
+            f"for tool in {tool_args}; do "
+            "pkill -KILL -f \"(^|/)$tool(\\s|$)\" >/dev/null 2>&1 || true; "
+            "done; "
+            "exit 0"
+        )
+        args = [
+            "/usr/bin/docker",
+            "exec",
+            self._container_id,
+            "sh",
+            "-lc",
+            cleanup_script,
+        ]
+        proc: Optional[asyncio.subprocess.Process] = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            if proc.returncode == 0:
+                return True
+            logger.warning(
+                "timeout_cleanup_failed_nonzero: container=%s cmd=%s rc=%s",
+                self._container_id,
+                command[:80],
+                proc.returncode,
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                "timeout_cleanup_exception: container=%s cmd=%s error=%s",
+                self._container_id,
+                command[:80],
+                str(e),
+            )
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            return False
+
+    async def execute(self, code: str, timeout: int = 30) -> ToolResult:
+        timeout_budget = max(1, int(float(timeout)))
+        timeout_grace = max(
+            1,
+            int(os.getenv("CYBERRED_CONTAINER_TIMEOUT_GRACE_S", "15")),
+        )
+        outer_timeout = timeout_budget + timeout_grace + 5
+        quoted_code = shlex.quote(code)
+        wrapped = (
+            "if command -v bash >/dev/null 2>&1; then "
+            f"exec timeout -k {timeout_grace}s {timeout_budget}s "
+            f"bash -o pipefail -lc {quoted_code}; "
+            "else "
+            f"exec timeout -k {timeout_grace}s {timeout_budget}s "
+            f"sh -lc {quoted_code}; "
+            "fi"
+        )
+        args = [
+            "/usr/bin/docker",
+            "exec",
+            self._container_id,
+            "sh",
+            "-lc",
+            wrapped,
+        ]
+
+        start_time = time.perf_counter()
+        proc: Optional[asyncio.subprocess.Process] = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
+                proc.communicate(), timeout=outer_timeout
             )
+        except asyncio.CancelledError:
+            if proc is not None:
+                await self._terminate_exec_process(proc, code)
+            cleanup_ok = await self._cleanup_timed_out_processes(code)
+            self._mark_recycle("cancelled_cleanup_failed" if not cleanup_ok else "cancelled_cleanup")
+            raise
         except asyncio.TimeoutError:
+            if proc is not None:
+                await self._terminate_exec_process(proc, code)
+            cleanup_ok = await self._cleanup_timed_out_processes(code)
+            self._mark_recycle("timeout_cleanup_failed" if not cleanup_ok else "timeout_recycle")
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             logger.warning("bridge_execute_timeout: cmd=%s timeout=%s", code[:50], timeout)
             return ToolResult(
-                success=False, stdout="", stderr=f"Execution timed out after {timeout}s",
+                success=False, stdout="", stderr=f"Execution timed out after {timeout_budget}s",
                 exit_code=-1, duration_ms=duration_ms, error_type="TIMEOUT",
             )
         except Exception as e:
@@ -502,6 +705,7 @@ class _WorkerBridgeContainer:
             error_type = "EXECUTION_EXCEPTION"
             if "NotFound" in type(e).__name__ or "not found" in str(e).lower():
                 error_type = "CONTAINER_CRASHED"
+                self._mark_recycle("container_not_found")
             logger.warning("bridge_exec_exception: cmd=%s error=%s", code[:50], str(e))
             return ToolResult(
                 success=False, stdout="", stderr=str(e),
@@ -512,13 +716,51 @@ class _WorkerBridgeContainer:
         stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
 
+        if proc.returncode in _TIMEOUT_EXIT_CODES:
+            cleanup_ok = await self._cleanup_timed_out_processes(code)
+            self._mark_recycle("timeout_cleanup_failed" if not cleanup_ok else "timeout_recycle")
+            logger.warning(
+                "bridge_execute_timeout_exit: cmd=%s timeout=%ss rc=%s",
+                code[:50],
+                timeout_budget,
+                proc.returncode,
+            )
+            return ToolResult(
+                success=False,
+                stdout=stdout_str,
+                stderr=stderr_str or f"Execution timed out after {timeout_budget}s",
+                exit_code=proc.returncode,
+                duration_ms=duration_ms,
+                error_type="TIMEOUT",
+            )
+
+        crash_reason = self._detect_scanner_crash(
+            command=code,
+            stdout=stdout_str,
+            stderr=stderr_str,
+            exit_code=proc.returncode,
+        )
+        if crash_reason:
+            self._mark_recycle(crash_reason)
+            logger.warning(
+                "bridge_execute_scanner_crash: container=%s reason=%s rc=%s cmd=%s",
+                self._container_id,
+                crash_reason,
+                proc.returncode,
+                code[:80],
+            )
+
         return ToolResult(
             success=proc.returncode == 0,
             stdout=stdout_str,
             stderr=stderr_str,
             exit_code=proc.returncode,
             duration_ms=duration_ms,
-            error_type="NON_ZERO_EXIT" if proc.returncode != 0 else None,
+            error_type=(
+                "CONTAINER_CRASHED"
+                if crash_reason
+                else ("NON_ZERO_EXIT" if proc.returncode != 0 else None)
+            ),
         )
 
     async def execute_pipeline(self, segments: list[str], timeout: int = 30) -> ToolResult:
@@ -532,8 +774,7 @@ class _WorkerBridgeContainer:
                 safe_parts.append(seg)
 
         shell_cmd = " | ".join(safe_parts)
-        full_cmd = f"sh -c {shlex.quote(shell_cmd)}"
-        return await self.execute(full_cmd, timeout=timeout)
+        return await self.execute(shell_cmd, timeout=timeout)
 
     def is_healthy(self) -> bool:
         return self._container_id is not None

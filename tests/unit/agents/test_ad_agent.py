@@ -12,7 +12,9 @@ Following TDD red-green-refactor cycle. These tests validate:
 """
 
 import asyncio
+import json
 import uuid
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1332,8 +1334,8 @@ class TestADAgentCoverageGaps:
         from cyberred.core.models import AgentAction
 
         ad_agent._domain_info = {"domain_name": "corp.local"}
-        ad_agent._discovered_users = ["admin", "user1"]
-        ad_agent._discovered_spns = [{"spn": "MSSQLSvc/db01"}]
+        ad_agent._discovered_users = deque(["admin", "user1"], maxlen=500)
+        ad_agent._discovered_spns = deque([{"spn": "MSSQLSvc/db01"}], maxlen=500)
         ad_agent.current_strategy = "stealth"
 
         actions = [
@@ -1355,7 +1357,10 @@ class TestADAgentCoverageGaps:
         assert context.target_info["domain_controller"] == "dc01.corp.local"
         assert context.target_info["domain_info"] == {"domain_name": "corp.local"}
         assert context.target_info["discovered_users"] == ["admin", "user1"]
+        assert isinstance(context.target_info["discovered_users"], list)
+        assert isinstance(context.target_info["discovered_spns"], list)
         assert context.target_info["extra"] == "data"
+        json.dumps(context.target_info)  # Must remain JSON-serializable for LLM prompt context
         assert len(context.previous_results) == 1
         assert context.previous_results[0]["action"] == "ad:ldapsearch"
         assert "ldapsearch" in context.available_tools

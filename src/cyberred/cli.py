@@ -585,7 +585,9 @@ def daemon_install(
 ) -> None:
     """Install Cyber-Red as a systemd service (requires root)."""
     import os
+    import re
     import subprocess
+    from cyberred.llm.env import resolve_llm_api_key_with_source
     from cyberred.daemon.systemd import (
         generate_service_file,
         write_service_file,
@@ -629,6 +631,39 @@ def daemon_install(
     except subprocess.CalledProcessError as e:
         typer.echo(f"Error configuring storage directory: {e}", err=True)
         raise typer.Exit(code=1)
+
+    service_env_path = Path("/etc/cyber-red/daemon.env")
+    service_env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not service_env_path.exists():
+        service_env_path.write_text("# Cyber-Red daemon environment\n", encoding="utf-8")
+        os.chmod(service_env_path, 0o600)
+
+    env_text = service_env_path.read_text(encoding="utf-8")
+    key_pattern = re.compile(
+        r"^\s*(NVIDIA_API_KEY|NVIDIA_NIM_API_KEY|CYBERRED_LLM__NIM_API_KEY|OPENAI_API_KEY)\s*=",
+        re.MULTILINE,
+    )
+    has_service_key = bool(key_pattern.search(env_text))
+
+    if not has_service_key:
+        api_key, key_source = resolve_llm_api_key_with_source()
+        if not api_key:
+            typer.echo(
+                "Error: No LLM API key found for daemon startup. "
+                "Set one of NVIDIA_API_KEY, NVIDIA_NIM_API_KEY, "
+                "CYBERRED_LLM__NIM_API_KEY, or OPENAI_API_KEY before install.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        source_var = "NVIDIA_API_KEY"
+        if key_source and key_source.startswith("env:"):
+            source_var = key_source.split(":", 1)[1]
+
+        with service_env_path.open("a", encoding="utf-8") as env_file:
+            env_file.write(f"{source_var}={api_key}\n")
+        os.chmod(service_env_path, 0o600)
+        typer.echo(f"Persisted {source_var} to {service_env_path}")
 
     # Generate and write service file
     try:
@@ -755,4 +790,3 @@ def daemon_logs(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
-

@@ -153,7 +153,7 @@ class CouncilOfExperts:
             prompt=prompt,
             model=DEFAULT_CRITIC_MODEL,
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=5000,
         )
         response = await gateway.director_complete(request)
         return response.content
@@ -187,7 +187,7 @@ class CouncilOfExperts:
                 prompt=prompt,
                 model=DEFAULT_DISPATCHER_MODEL,
                 temperature=0.1,
-                max_tokens=150,
+                max_tokens=5000,
             )
             llm_response = await gateway.director_complete(llm_request)
             content = llm_response.content
@@ -223,4 +223,3 @@ class CouncilOfExperts:
                     "text": f"❌ {error_msg}"
                 })
             return {"error": error_msg}
-

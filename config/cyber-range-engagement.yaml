@@ -61,6 +61,9 @@ scope:
     - 55553     # Metasploit RPC
   forbidden_ips:
     - "0.0.0.0/0"         # Block everything else
+  egress_allowlist:
+    - "raw.githubusercontent.com"
+    - "github.com"
 
 # Rules of Engagement
 roe:
@@ -203,4 +206,5 @@ mock_mode: false
 # Workers are connected to this Docker network at engagement start.
 # For real-world engagements, this could be a VPN bridge or host network.
 infrastructure:
+  worker_pool_size: 15
   worker_network: cyber-range-net

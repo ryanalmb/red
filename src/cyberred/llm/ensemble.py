@@ -10,7 +10,7 @@ for multi-perspective strategic analysis during penetration testing operations.
 Per architecture:
 - Director uses separate synthesis models, NOT from agent model pool
 - Models: DeepSeek V3.2 (strategist), Kimi K2 (analyst), MiniMax M2 (creative)
-- 100s per-model timeout, 180s aggregate timeout for entire ensemble
+- Long-running, deadline-aware timeouts for thinking-model responses
 - Pattern inspired by kyegomez/swarms MixtureOfAgents (parallel query, synthesis)
 - Custom implementation (not using swarms library) for LLMGateway integration
 
@@ -47,6 +47,7 @@ Functions:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -349,13 +350,12 @@ class DirectorModel:
     system_prompt: str
 
 
-# Default model configurations per architecture
-# Architecture specifies: 100s per-model timeout, 180s aggregate timeout
+# Default model configurations tuned for long-context reasoning models.
 DIRECTOR_MODELS: Dict[DirectorRole, DirectorModel] = {
     DirectorRole.STRATEGIST: DirectorModel(
         model_id="deepseek-ai/deepseek-v3.2",
         role=DirectorRole.STRATEGIST,
-        timeout=100.0,  # Per architecture: 100s per-model timeout
+        timeout=300.0,
         system_prompt="""You are a strategic planning expert for penetration testing operations.
 
 Your role is to analyze engagement state and provide strategic guidance.
@@ -387,7 +387,7 @@ Focus on strategic value, operational efficiency, and proven attack frameworks."
     DirectorRole.ANALYST: DirectorModel(
         model_id="moonshotai/kimi-k2-instruct",
         role=DirectorRole.ANALYST,
-        timeout=100.0,  # Per architecture: 100s per-model timeout
+        timeout=300.0,
         system_prompt="""You are a deep reasoning analyst for penetration testing attack surface analysis.
 
 Your role is to thoroughly analyze findings and identify overlooked opportunities.
@@ -424,7 +424,7 @@ Focus on thorough analysis, identifying gaps in current coverage, and uncovering
     DirectorRole.CREATIVE: DirectorModel(
         model_id="minimaxai/minimax-m2",
         role=DirectorRole.CREATIVE,
-        timeout=100.0,  # Per architecture: 100s per-model timeout
+        timeout=300.0,
         system_prompt="""You are a creative approaches expert for penetration testing evasion and novel attack techniques.
 
 Your role is to think laterally and propose unconventional approaches when standard methods fail or defenses are encountered.
@@ -721,8 +721,8 @@ class DirectorEnsemble:
         aggregate_timeout: Maximum time for entire ensemble query.
     """
 
-    # Per architecture: 180s aggregate timeout for entire ensemble
-    DEFAULT_AGGREGATE_TIMEOUT = 180.0
+    # End-to-end timeout for a single Director ensemble cycle.
+    DEFAULT_AGGREGATE_TIMEOUT = 420.0
 
     def __init__(
         self,
@@ -737,6 +737,18 @@ class DirectorEnsemble:
         """
         self._models = models or DIRECTOR_MODELS.copy()
         self._aggregate_timeout = aggregate_timeout
+        failure_threshold = max(
+            1,
+            int(os.getenv("CYBERRED_DIRECTOR_CB_FAILURE_THRESHOLD", "3")),
+        )
+        exclusion_seconds = max(
+            1.0,
+            float(os.getenv("CYBERRED_DIRECTOR_CB_EXCLUSION_SECONDS", "180")),
+        )
+        self._circuit_breaker = CircuitBreaker(
+            failure_threshold=failure_threshold,
+            exclusion_seconds=exclusion_seconds,
+        )
         
         # Validate all roles are configured
         for role in DirectorRole:
@@ -747,6 +759,8 @@ class DirectorEnsemble:
             "director_ensemble_initialized",
             models=[m.model_id for m in self._models.values()],
             aggregate_timeout=aggregate_timeout,
+            cb_failure_threshold=failure_threshold,
+            cb_exclusion_seconds=exclusion_seconds,
         )
 
     @property
@@ -769,6 +783,27 @@ class DirectorEnsemble:
             The model configuration for that role.
         """
         return self._models[role]
+
+    def reset_role_circuit_breaker(self, role: DirectorRole) -> None:
+        """Reset circuit-breaker state for a Director role."""
+        self._circuit_breaker.reset(role)
+
+    def get_availability_snapshot(self) -> Dict[str, Any]:
+        """Return circuit-breaker availability state for all Director roles."""
+        status: Dict[str, Any] = {}
+        for role in DirectorRole:
+            role_status = self._circuit_breaker.get_status(role)
+            status[role.value] = {
+                "state": role_status.state.value,
+                "failure_count": role_status.failure_count,
+                "excluded_until": role_status.excluded_until,
+            }
+        available_roles = self._circuit_breaker.get_available_roles()
+        return {
+            "available_roles": [role.value for role in available_roles],
+            "available_count": len(available_roles),
+            "roles": status,
+        }
 
     async def query_model(
         self,
@@ -794,19 +829,54 @@ class DirectorEnsemble:
                 model=model.model_id,
                 system_prompt=model.system_prompt,
                 temperature=0.7,
-                max_tokens=2048,
+                max_tokens=5000,
+                timeout_budget_s=model.timeout,
             )
             
             # Route through gateway with Director priority
             gateway = get_gateway()
             
-            # Apply per-model timeout
-            response: LLMResponse = await asyncio.wait_for(
-                gateway.director_complete(request),
-                timeout=model.timeout,
-            )
+            # Gateway owns timeout budget enforcement.
+            response: LLMResponse = await gateway.director_complete(request)
             
             latency_ms = int((time.monotonic() - start_time) * 1000)
+
+            finish_reason = (response.finish_reason or "").strip().lower()
+            if response.model == "error" or finish_reason.startswith("error:"):
+                error_msg = response.finish_reason or "Gateway returned structured error response"
+                log.warning(
+                    "director_model_query_failed",
+                    role=role.value,
+                    model=model.model_id,
+                    error=error_msg,
+                    latency_ms=latency_ms,
+                )
+                return ModelResponse(
+                    role=role,
+                    model_id=model.model_id,
+                    content="",
+                    latency_ms=latency_ms,
+                    success=False,
+                    error=error_msg,
+                )
+
+            if not response.content.strip():
+                error_msg = "Gateway returned empty content"
+                log.warning(
+                    "director_model_query_empty",
+                    role=role.value,
+                    model=model.model_id,
+                    latency_ms=latency_ms,
+                )
+                return ModelResponse(
+                    role=role,
+                    model_id=model.model_id,
+                    content="",
+                    latency_ms=latency_ms,
+                    success=False,
+                    error=error_msg,
+                    token_usage=response.usage,
+                )
             
             log.debug(
                 "director_model_query_success",
@@ -824,26 +894,6 @@ class DirectorEnsemble:
                 token_usage=response.usage,
             )
             
-        except asyncio.TimeoutError:
-            latency_ms = int((time.monotonic() - start_time) * 1000)
-            error_msg = f"Timeout after {model.timeout}s"
-            
-            log.warning(
-                "director_model_query_timeout",
-                role=role.value,
-                model=model.model_id,
-                timeout=model.timeout,
-            )
-            
-            return ModelResponse(
-                role=role,
-                model_id=model.model_id,
-                content="",
-                latency_ms=latency_ms,
-                success=False,
-                error=error_msg,
-            )
-        
         except asyncio.CancelledError:
             # Re-raise CancelledError to allow proper task cancellation
             # This ensures clean shutdown when parent task is cancelled
@@ -859,12 +909,18 @@ class DirectorEnsemble:
         except (LLMTimeoutError, LLMProviderUnavailable) as e:
             latency_ms = int((time.monotonic() - start_time) * 1000)
             error_msg = str(e)
+            event_name = (
+                "director_model_query_timeout"
+                if isinstance(e, LLMTimeoutError)
+                else "director_model_query_failed"
+            )
             
             log.warning(
-                "director_model_query_failed",
+                event_name,
                 role=role.value,
                 model=model.model_id,
                 error=error_msg,
+                timeout=model.timeout if isinstance(e, LLMTimeoutError) else None,
             )
             
             return ModelResponse(
@@ -918,12 +974,44 @@ class DirectorEnsemble:
             engagement_id=context.engagement_id,
             phase=context.phase,
         )
-        
-        # Create tasks for all models
-        tasks = [
-            self.query_model(role, context)
-            for role in DirectorRole
-        ]
+
+        available_roles = self._circuit_breaker.get_available_roles()
+        excluded_roles = [role for role in DirectorRole if role not in available_roles]
+        if excluded_roles:
+            log.warning(
+                "director_ensemble_degraded",
+                engagement_id=context.engagement_id,
+                available=[role.value for role in available_roles],
+                excluded=[role.value for role in excluded_roles],
+            )
+
+        if not available_roles:
+            now_latency_ms = int((time.monotonic() - start_time) * 1000)
+            responses = {
+                role: ModelResponse(
+                    role=role,
+                    model_id=self._models[role].model_id,
+                    content="",
+                    latency_ms=now_latency_ms,
+                    success=False,
+                    error="Model excluded by circuit breaker",
+                )
+                for role in DirectorRole
+            }
+            log.warning(
+                "director_ensemble_no_available_models",
+                engagement_id=context.engagement_id,
+            )
+            return DirectorQueryResult(
+                context=context,
+                responses=responses,
+                total_latency_ms=now_latency_ms,
+                successful_count=0,
+                failed_count=len(DirectorRole),
+            )
+
+        # Create tasks only for currently-available roles.
+        tasks = [self.query_model(role, context) for role in available_roles]
         
         # Execute in parallel with aggregate timeout
         try:
@@ -937,7 +1025,7 @@ class DirectorEnsemble:
                 "director_ensemble_aggregate_timeout",
                 timeout=self._aggregate_timeout,
             )
-            # Return empty results for all models
+            # Return empty results for queried models.
             results = [
                 ModelResponse(
                     role=role,
@@ -947,8 +1035,26 @@ class DirectorEnsemble:
                     success=False,
                     error=f"Aggregate timeout after {self._aggregate_timeout}s",
                 )
-                for role in DirectorRole
+                for role in available_roles
             ]
+
+        for response in results:
+            if response.success:
+                self._circuit_breaker.record_success(response.role)
+            else:
+                self._circuit_breaker.record_failure(response.role)
+
+        for role in excluded_roles:
+            results.append(
+                ModelResponse(
+                    role=role,
+                    model_id=self._models[role].model_id,
+                    content="",
+                    latency_ms=int((time.monotonic() - start_time) * 1000),
+                    success=False,
+                    error="Model excluded by circuit breaker",
+                )
+            )
         
         # Build response mapping
         responses: Dict[DirectorRole, ModelResponse] = {
@@ -2657,6 +2763,38 @@ def extract_novel_approaches(response: str) -> List[NovelApproach]:
         List of NovelApproach objects extracted from the response.
     """
     approaches: List[NovelApproach] = []
+
+    innovation_aliases = {
+        "technique": "technique",
+        "techniques": "technique",
+        "tactic": "technique",
+        "tactics": "technique",
+        "method": "technique",
+        "methods": "technique",
+        "vector": "vector",
+        "vectors": "vector",
+        "path": "vector",
+        "pathway": "vector",
+        "avenue": "vector",
+        "social": "social",
+        "socialengineering": "social",
+        "human": "social",
+        "physical": "physical",
+        "hardware": "physical",
+        "hybrid": "hybrid",
+        "mixed": "hybrid",
+        "multivector": "hybrid",
+        "multistage": "hybrid",
+    }
+    risk_aliases = {
+        "CRITICAL": "CRITICAL",
+        "HIGH": "HIGH",
+        "MEDIUM": "MEDIUM",
+        "LOW": "LOW",
+        "SEVERE": "CRITICAL",
+        "MODERATE": "MEDIUM",
+        "INFO": "LOW",
+    }
     
     # Find Novel Approaches section
     pattern = re.compile(r'###\s*Novel Approaches(.+?)(?=###|$)', re.DOTALL | re.IGNORECASE)
@@ -2674,18 +2812,19 @@ def extract_novel_approaches(response: str) -> List[NovelApproach]:
     )
     
     for row_match in row_pattern.finditer(section_content):
-        approach_id, description, innovation_type, risk_level, impact = row_match.groups()
-        
-        # Normalize values
-        innovation_type = innovation_type.strip().lower()
-        risk_level = risk_level.strip().upper()
+        approach_id, description, raw_innovation_type, raw_risk_level, impact = row_match.groups()
+
+        innovation_key = re.sub(r"[^a-z0-9]+", "", raw_innovation_type.strip().lower())
+        innovation_type = innovation_aliases.get(innovation_key)
+        risk_key = re.sub(r"[^A-Z0-9]+", "", raw_risk_level.strip().upper())
+        risk_level = risk_aliases.get(risk_key)
         
         # Validate innovation_type
         if innovation_type not in ("technique", "vector", "social", "physical", "hybrid"):
             log.warning(
                 "invalid_novel_approach_innovation_type",
                 approach_id=approach_id,
-                innovation_type=innovation_type,
+                innovation_type=raw_innovation_type.strip().lower(),
             )
             continue
         
@@ -2694,7 +2833,7 @@ def extract_novel_approaches(response: str) -> List[NovelApproach]:
             log.warning(
                 "invalid_novel_approach_risk_level",
                 approach_id=approach_id,
-                risk_level=risk_level,
+                risk_level=raw_risk_level.strip().upper(),
             )
             continue
         

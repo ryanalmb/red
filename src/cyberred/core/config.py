@@ -369,12 +369,14 @@ class EngagementConfig(BaseModel):
 class ThrottleConfig(BaseModel):
     """Agent throttling configuration.
     
-    The threshold parameter supports two modes:
-    - If threshold < 1.0: Interpreted as a percentage of max_agents (e.g., 0.8 = 80%)
-    - If threshold >= 1.0: Interpreted as a raw queue depth count (e.g., 10 = 10 pending requests)
+    Modes:
+    - queue_depth: threshold is interpreted against gateway queue pressure
+    - legacy_max_agents: threshold uses engagement.max_agents percentage behavior
     """
 
-    threshold: float = Field(default=0.8, ge=0.0)  # No upper bound - allows raw counts >= 1.0
+    mode: str = Field(default="queue_depth", pattern="^(queue_depth|legacy_max_agents)$")
+    threshold: float = Field(default=10.0, ge=0.0)
+    queue_capacity_hint: PositiveInt = 20
     check_interval: float = Field(default=5.0, gt=0.0)
     max_wait: PositiveInt = 300
 
@@ -860,7 +862,9 @@ HOT_RELOAD_SAFE_PATHS: frozenset[str] = frozenset({
     # RAG (Story 6.12)
     "rag.update_schedule",
     # Agents Throttling (Story 7.2)
+    "agents.throttle.mode",
     "agents.throttle.threshold",
+    "agents.throttle.queue_capacity_hint",
     "agents.throttle.check_interval",
     "agents.throttle.max_wait",
     # API Server (Story 14.1/14.2) — CORS origins and token TTL are safe to hot-reload
@@ -946,4 +950,3 @@ def is_safe_config_change(
             unsafe_paths.append(path)
     
     return len(unsafe_paths) == 0, unsafe_paths
-

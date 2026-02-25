@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from cyberred.agents.base import StigmergicAgent
     from cyberred.core.events import EventBus
     from cyberred.llm.gateway import LLMGateway
+    from cyberred.orchestration.emergence.tracker import DecisionContextTracker
     from cyberred.tools.manifest import ManifestLoader
 
 # Valid swarm types from swarms library
@@ -384,6 +385,7 @@ class SwarmRouterWrapper:
         intel_aggregator: Optional[Any] = None,
         rag_escalator: Optional[Any] = None,
         sharded_event_bus: Optional[Any] = None,
+        context_tracker: Optional["DecisionContextTracker"] = None,
         **kwargs: Any,
     ) -> "StigmergicAgent":
         """Create an agent instance for the specified role.
@@ -397,6 +399,7 @@ class SwarmRouterWrapper:
             intel_aggregator: Optional intelligence aggregator for CVE/threat intel.
             rag_escalator: Optional RAG escalator for methodology retrieval on failure.
             sharded_event_bus: Optional ShardedEventBus for sharded findings (Story 7.13).
+            context_tracker: Optional DecisionContextTracker for cross-agent decision context.
             **kwargs: Additional kwargs passed to agent constructor.
 
         Returns:
@@ -425,6 +428,7 @@ class SwarmRouterWrapper:
             intel_aggregator=intel_aggregator,
             rag_escalator=rag_escalator,
             sharded_event_bus=sharded_event_bus,
+            context_tracker=context_tracker,
             **kwargs,
         )
 
@@ -448,6 +452,7 @@ class SwarmRouterWrapper:
         intel_aggregator: Optional[Any] = None,
         rag_escalator: Optional[Any] = None,
         sharded_event_bus: Optional[Any] = None,
+        context_tracker: Optional["DecisionContextTracker"] = None,
     ) -> list["StigmergicAgent"]:
         """Spawn a swarm of agents with configurable role distribution.
 
@@ -510,6 +515,7 @@ class SwarmRouterWrapper:
                     intel_aggregator=intel_aggregator,
                     rag_escalator=rag_escalator,
                     sharded_event_bus=sharded_event_bus,
+                    context_tracker=context_tracker,
                 )
                 agents.append(agent)
 
@@ -530,6 +536,7 @@ class SwarmRouterWrapper:
         distribution: dict[AgentRole, float] | None = None,
         llm_gateway: Optional["LLMGateway"] = None,
         manifest_loader: Optional["ManifestLoader"] = None,
+        context_tracker: Optional["DecisionContextTracker"] = None,
     ) -> list["StigmergicAgent"]:
         """Async version of spawn_swarm that publishes to audit bus.
 
@@ -548,6 +555,7 @@ class SwarmRouterWrapper:
             count, engagement_id, event_bus, distribution,
             llm_gateway=llm_gateway,
             manifest_loader=manifest_loader,
+            context_tracker=context_tracker,
         )
 
         # Publish to audit bus if configured

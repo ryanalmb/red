@@ -5,7 +5,7 @@ from cyberred.core.models import ToolResult
 from cyberred.tools.container_pool import ContainerPool
 from cyberred.tools.scope import ScopeValidator
 from cyberred.core.exceptions import ScopeViolationError
-from cyberred.tools.kali_executor import KaliExecutor
+from cyberred.tools.kali_executor import KaliExecutor, DEFAULT_TIMEOUT_SECONDS
 
 @pytest.fixture
 def mock_container():
@@ -49,7 +49,7 @@ async def test_execute_success(mock_pool, mock_scope_validator, mock_container):
     assert result.stdout == "hello"
     mock_scope_validator.validate.assert_called_with(command="echo hello") # Task 4
     mock_pool.acquire.assert_called_once()
-    mock_container.execute.assert_called_with("echo hello", timeout=300)
+    mock_container.execute.assert_called_with("echo hello", timeout=DEFAULT_TIMEOUT_SECONDS)
 
 @pytest.mark.asyncio
 async def test_execute_timeout(mock_pool, mock_scope_validator, mock_container):

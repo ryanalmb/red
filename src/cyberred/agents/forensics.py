@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from collections import deque
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
@@ -96,6 +98,7 @@ class ForensicsAgent(StigmergicAgent):
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(tool_context)
@@ -104,9 +107,16 @@ class ForensicsAgent(StigmergicAgent):
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result)
-                    findings.append(finding)
-                    await self.on_finding(finding)
-                    result_finding_id = finding.id
+                    if finding:
+                        findings.append(finding)
+                        await self.on_finding(finding)
+                        result_finding_id = finding.id
+                        iteration_findings += 1
+                    else:
+                        decision_context.append(f"tool_failed:{tool_name}")
+                        alt = await self._handle_forensics_failure(tool_name)
+                        if alt:
+                            decision_context.append(f"rag_escalation:{tool_name}:{alt}")
 
                     # Create chain-of-custody record for collected artifact
                     custody_record = self._create_custody_record(
@@ -152,6 +162,22 @@ class ForensicsAgent(StigmergicAgent):
                 )
                 break
 
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_forensics_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Forensics no-yield streak triggered escalation",
+                    role="forensics",
+                    tool=tool_name,
+                    target=target,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+
             # Always record action for audit trail (NFR37) - both success and failure
             actions.append(
                 AgentAction(
@@ -169,10 +195,15 @@ class ForensicsAgent(StigmergicAgent):
 
     async def _query_intelligence(self, os_type: str = "", artifact_type: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for persistence mechanisms and artifact locations."""
-        if not self._intel_aggregator or not os_type:
+        if not self._intel_aggregator:
             return []
+        query_os = (os_type or self._current_os_type or "host").strip()
+        query_artifact = (artifact_type or self._current_target or "").strip()
         try:
-            return await asyncio.wait_for(self._intel_aggregator.query(os_type, artifact_type), timeout=self.INTELLIGENCE_TIMEOUT)
+            return await asyncio.wait_for(
+                self._intel_aggregator.query(query_os, query_artifact),
+                timeout=self.INTELLIGENCE_TIMEOUT,
+            )
         except Exception:
             return []
 
@@ -211,7 +242,7 @@ class ForensicsAgent(StigmergicAgent):
                 **context,
             },
             available_tools=available_tools,
-            previous_results=[{"action": a.action_type, "id": a.id} for a in actions],
+            previous_results=self.get_recent_tool_results(limit=30),
         )
 
     def _get_available_tools(self, context: dict[str, Any]) -> list[str]:
@@ -226,29 +257,36 @@ class ForensicsAgent(StigmergicAgent):
 
     def _get_constraints(self) -> list[str]:
         """Get constraints based on current strategy."""
+        constraints: list[str] = []
         if self.current_strategy == "stealth":
-            return [
+            constraints.extend([
                 "Preserve evidence integrity at all costs",
                 "Use read-only operations when possible",
                 "Document all access with timestamps",
                 "Minimize system impact",
-            ]
+            ])
         elif self.current_strategy == "aggressive":
-            return [
+            constraints.extend([
                 "Full evidence collection permitted",
                 "Deep analysis allowed",
                 "Live memory acquisition enabled",
-            ]
+            ])
         # Standard strategy: balanced approach with baseline forensic discipline
-        return [
-            "Document all evidence collection operations",
-            "Compute hashes for all extracted artifacts",
-            "Maintain chain-of-custody records",
-        ]
+        if self.current_strategy == "standard":
+            constraints.extend([
+                "Document all evidence collection operations",
+                "Compute hashes for all extracted artifacts",
+                "Maintain chain-of-custody records",
+            ])
+        if self._no_finding_streak >= 2:
+            constraints.append("pivot artifact sources and analysis techniques from recent no-yield runs")
+        if self._no_finding_streak >= self._no_finding_streak_threshold:
+            constraints.append("choose materially different forensic collection scope and tooling")
+        return constraints
 
     MAX_EVIDENCE_SIZE: int = 500  # Truncate large outputs with indicator
 
-    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding:
+    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding | None:
         """Create a Finding from tool execution result."""
         evidence = ""
         if result.stdout:
@@ -256,12 +294,32 @@ class ForensicsAgent(StigmergicAgent):
                 evidence = result.stdout[:self.MAX_EVIDENCE_SIZE] + f"... [TRUNCATED: {len(result.stdout)} bytes total]"
             else:
                 evidence = result.stdout
+        execution = self._execution_metadata(result, selection.command)
+        evidence_payload: dict[str, Any] = {
+            "raw_evidence": evidence,
+            "command": selection.command,
+            "execution": execution,
+            "specialty": self.specialty,
+        }
+        assessment = assess_finding_payload(
+            {
+                "type": "forensics",
+                "severity": "medium",
+                "target": target,
+                "tool": selection.tool_name,
+                "evidence": evidence_payload,
+                "execution": execution,
+            }
+        )
+        evidence_payload["validation"] = assessment
+        if assessment["outcome_status"] == "failed":
+            return None
         return Finding(
             id=str(uuid.uuid4()),
             type="forensics",
-            severity="medium",
+            severity=assessment["severity"],
             target=target,
-            evidence=evidence,
+            evidence=json.dumps(evidence_payload),
             agent_id=self.agent_id,
             timestamp=self._get_timestamp(),
             tool=selection.tool_name,
@@ -320,24 +378,24 @@ class ForensicsAgent(StigmergicAgent):
         message = {
             "id": finding.id,
             "type": finding.type,
+            "target": finding.target,
             "severity": finding.severity,
             "evidence": finding.evidence,
+            "tool": finding.tool,
         }
         try:
             await self._publish_to_swarm(target_hash, "forensics", message)
         except Exception:
-            channel = f"findings:{target_hash}:forensics"
-            self._finding_buffer.append({"channel": channel, "message": {"id": finding.id}})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="forensics",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
         """Flush buffered findings on reconnect."""
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def stop(self) -> None:
         """Stop the agent gracefully."""

@@ -2,14 +2,30 @@
 # See: docs/3-solutioning/advanced-cyber-range-spec.md
 scope:
   allowed_targets:
-    # Tier 1: DMZ
+    # Tier 1: DMZ — networks and container hostnames
     - "172.28.0.0/16"
+    - dvwa
+    - wordpress
+    - mail
+    - dns
+    - ssh
+    - smb
+    - ftp
     # Tier 2: Corporate (via pivot)
     - "10.10.10.0/24"
+    - jenkins
+    - postgres
+    - gitlab
+    - flask-api
     # Tier 3: Active Directory (via pivot)
     - "10.10.20.0/24"
+    - dc01
+    - fileserver
+    - exchange
     # Tier 4: OT/Restricted (via pivot)
     - "10.10.30.0/24"
+    - scada-hmi
+    - historian
     - "127.0.0.1"
   allowed_ports:
     # Tier 1: DMZ services

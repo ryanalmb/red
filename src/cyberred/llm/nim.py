@@ -132,9 +132,10 @@ class NIMProvider(LLMProvider):
         start_time = time.monotonic()
         payload = self._build_request_payload(request)
         headers = self._get_headers()
+        timeout_seconds = self._resolve_request_timeout(request)
         
         try:
-            with httpx.Client(timeout=self.DEFAULT_TIMEOUT) as client:
+            with httpx.Client(timeout=timeout_seconds) as client:
                 response = client.post(
                     f"{self._base_url}/chat/completions",
                     json=payload,
@@ -149,7 +150,7 @@ class NIMProvider(LLMProvider):
             self._record_failure()
             raise LLMTimeoutError(
                 provider="NIM",
-                timeout_seconds=self.DEFAULT_TIMEOUT
+                timeout_seconds=timeout_seconds
             )
         except (httpx.ConnectError, httpx.NetworkError):
             self._record_failure()
@@ -172,9 +173,10 @@ class NIMProvider(LLMProvider):
         start_time = time.monotonic()
         payload = self._build_request_payload(request)
         headers = self._get_headers()
+        timeout_seconds = self._resolve_request_timeout(request)
         
         try:
-            async with httpx.AsyncClient(timeout=self.DEFAULT_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
                     f"{self._base_url}/chat/completions",
                     json=payload,
@@ -189,7 +191,7 @@ class NIMProvider(LLMProvider):
             self._record_failure()
             raise LLMTimeoutError(
                 provider="NIM",
-                timeout_seconds=self.DEFAULT_TIMEOUT
+                timeout_seconds=timeout_seconds
             )
         except (httpx.ConnectError, httpx.NetworkError):
             self._record_failure()
@@ -271,6 +273,14 @@ class NIMProvider(LLMProvider):
             payload["stop"] = request.stop_sequences
             
         return payload
+
+    def _resolve_request_timeout(self, request: LLMRequest) -> float:
+        """Resolve effective HTTP timeout for this request attempt."""
+        if request.provider_timeout_s is not None:
+            return max(1.0, float(request.provider_timeout_s))
+        if request.timeout_budget_s is not None:
+            return max(1.0, float(request.timeout_budget_s))
+        return self.DEFAULT_TIMEOUT
 
     def _handle_response_error(self, response: httpx.Response) -> None:
         """Handle HTTP error responses."""

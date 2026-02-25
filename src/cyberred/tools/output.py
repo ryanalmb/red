@@ -10,6 +10,7 @@ from typing import List, Callable, Dict, Optional, TYPE_CHECKING
 from pathlib import Path
 if TYPE_CHECKING:
     from cyberred.tools.parser_watcher import ParserWatcher
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import Finding
 from cyberred.llm import get_gateway, TaskComplexity, LLMGatewayNotInitializedError, LLMRequest
 from cyberred.tools.parsers.base import ParserFn
@@ -132,6 +133,35 @@ class OutputProcessor:
     def get_registered_parsers(self) -> List[str]:
         """Return list of tools with registered parsers."""
         return list(self._parsers.keys())
+
+    def _apply_finding_policy(
+        self,
+        findings: List[Finding],
+        *,
+        tool: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        error_type: Optional[str] = None,
+    ) -> List[Finding]:
+        for finding in findings:
+            assessment = assess_finding_payload(
+                {
+                    "type": finding.type,
+                    "severity": finding.severity,
+                    "tool": finding.tool or tool,
+                    "target": finding.target,
+                    "evidence": finding.evidence,
+                    "execution": {
+                        "stdout": stdout[:2000],
+                        "stderr": stderr[:1000],
+                        "exit_code": exit_code,
+                        "error_type": error_type,
+                    },
+                }
+            )
+            finding.severity = assessment["severity"]
+        return findings
     
     def process(self, stdout: str, stderr: str, tool: str, exit_code: int, agent_id: str, target: str, error_type: Optional[str] = None) -> ProcessedOutput:
         """Process tool output.
@@ -166,6 +196,14 @@ class OutputProcessor:
                     findings = parser(stdout, stderr, exit_code, agent_id, target, error_type=error_type)
                 else:
                     findings = parser(stdout, stderr, exit_code, agent_id, target)
+                findings = self._apply_finding_policy(
+                    findings,
+                    tool=tool_lower,
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=exit_code,
+                    error_type=error_type,
+                )
                 return ProcessedOutput(
                     findings=findings,
                     summary=f"Parsed {len(findings)} findings from {tool}",
@@ -174,8 +212,13 @@ class OutputProcessor:
                 )
             except Exception:
                 log.exception("parser_failed", tool=tool_lower)
-                pass
-        
+                log.warning(
+                    "parser_fallback_to_tier2",
+                    tool=tool_lower,
+                    exit_code=exit_code,
+                    error_type=error_type,
+                )
+
         # Tier 2: Try LLM summarization
         try:
             return self._tier2_llm_summarize(stdout, stderr, tool, stdout[:self._max_raw_length], exit_code, agent_id, target, error_type)
@@ -191,6 +234,14 @@ class OutputProcessor:
                 
         # Tier 3 (Raw Truncated)
         log.info("using_tier3_raw", tool=tool_lower)
+        log.warning(
+            "output_tier3_fallback",
+            tool=tool_lower,
+            exit_code=exit_code,
+            error_type=error_type,
+            stdout_len=len(stdout or ""),
+            stderr_len=len(stderr or ""),
+        )
         summary = f"Raw tool output (truncated to {self._max_raw_length} chars)"
         return ProcessedOutput(
             summary=summary,
@@ -219,6 +270,14 @@ class OutputProcessor:
                     findings = parser(stdout, stderr, exit_code, agent_id, target, error_type=error_type)
                 else:
                     findings = parser(stdout, stderr, exit_code, agent_id, target)
+                findings = self._apply_finding_policy(
+                    findings,
+                    tool=tool_lower,
+                    stdout=stdout,
+                    stderr=stderr,
+                    exit_code=exit_code,
+                    error_type=error_type,
+                )
                 return ProcessedOutput(
                     findings=findings,
                     summary=f"Parsed {len(findings)} findings from {tool}",
@@ -227,6 +286,12 @@ class OutputProcessor:
                 )
             except Exception:
                 log.exception("parser_failed", tool=tool_lower)
+                log.warning(
+                    "parser_fallback_to_tier2",
+                    tool=tool_lower,
+                    exit_code=exit_code,
+                    error_type=error_type,
+                )
 
         # Tier 2: async LLM summarization
         try:
@@ -246,6 +311,14 @@ class OutputProcessor:
 
         # Tier 3 (Raw Truncated)
         log.info("using_tier3_raw", tool=tool_lower)
+        log.warning(
+            "output_tier3_fallback",
+            tool=tool_lower,
+            exit_code=exit_code,
+            error_type=error_type,
+            stdout_len=len(stdout or ""),
+            stderr_len=len(stderr or ""),
+        )
         return ProcessedOutput(
             summary=f"Raw tool output (truncated to {self._max_raw_length} chars)",
             raw_truncated=stdout[:self._max_raw_length],
@@ -268,9 +341,15 @@ class OutputProcessor:
             tool=tool, exit_code=exit_code, error_context=error_context,
             stdout=stdout[:4000], stderr=stderr[:1000]
         )
-        request = LLMRequest(prompt=prompt, model="auto", max_tokens=2048, temperature=0.0)
+        request = LLMRequest(
+            prompt=prompt,
+            model="auto",
+            max_tokens=5000,
+            temperature=0.0,
+            timeout_budget_s=float(self._llm_timeout),
+        )
 
-        response = await asyncio.wait_for(gateway.complete(request), timeout=self._llm_timeout)
+        response = await gateway.complete(request)
         response_json = _strip_markdown_json(response.content)
 
         data = json.loads(response_json)
@@ -285,6 +364,14 @@ class OutputProcessor:
             ))
 
         result = ProcessedOutput(findings=findings, summary=data.get("summary", ""), raw_truncated=raw_truncated, tier=2)
+        result.findings = self._apply_finding_policy(
+            result.findings,
+            tool=tool.lower(),
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            error_type=error_type,
+        )
         if self._cache_enabled:
             self._llm_cache[cache_key] = result
         return result
@@ -328,14 +415,15 @@ class OutputProcessor:
         request = LLMRequest(
             prompt=prompt,
             model="auto",
-            max_tokens=2048,
-            temperature=0.0
+            max_tokens=5000,
+            temperature=0.0,
+            timeout_budget_s=float(self._llm_timeout),
         )
 
         async def call_gateway():
              return await gateway.complete(request)
 
-        response = asyncio.run(asyncio.wait_for(call_gateway(), timeout=self._llm_timeout))
+        response = asyncio.run(call_gateway())
         response_json = _strip_markdown_json(response.content)
         
         data = json.loads(response_json)
@@ -363,6 +451,14 @@ class OutputProcessor:
             summary=summary,
             raw_truncated=raw_truncated,
             tier=2
+        )
+        result.findings = self._apply_finding_policy(
+            result.findings,
+            tool=tool.lower(),
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            error_type=error_type,
         )
         
         # Store in cache if enabled

@@ -9,7 +9,8 @@ def test_retry_policy_creation():
     policy = RetryPolicy()
     assert policy.max_retries == 3
     assert policy.backoff_delays == (1.0, 2.0, 4.0)
-    assert policy.request_timeout == 100.0
+    assert policy.request_timeout == 300.0
+    assert policy.total_request_timeout == 900.0
     assert policy.cb_failure_threshold == 3
     assert policy.cb_exclusion_duration == 60.0
     
@@ -20,6 +21,10 @@ def test_retry_policy_creation():
     # Validation - request_timeout
     with pytest.raises(ValueError, match="request_timeout must be > 0"):
         RetryPolicy(request_timeout=0)
+
+    # Validation - total_request_timeout
+    with pytest.raises(ValueError, match="total_request_timeout must be > 0"):
+        RetryPolicy(total_request_timeout=0)
         
     # Validation - cb_failure_threshold
     with pytest.raises(ValueError, match="cb_failure_threshold must be >= 1"):

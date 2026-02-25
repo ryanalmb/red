@@ -12,6 +12,7 @@ import structlog
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
 from cyberred.core.events import EventBus
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.hashing import compute_hmac_signature
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
@@ -105,6 +106,7 @@ class WirelessAgent(StigmergicAgent):
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(context)
@@ -114,9 +116,15 @@ class WirelessAgent(StigmergicAgent):
 
                 if result.success and result.stdout:
                     finding = self._create_finding(interface, selection, result, intel)
-                    all_findings.append(finding)
-                    await self.on_finding(finding)
-                    result_finding_id = finding.id
+                    if finding:
+                        all_findings.append(finding)
+                        await self.on_finding(finding)
+                        result_finding_id = finding.id
+                        iteration_findings += 1
+                    else:
+                        alt = await self._handle_wireless_failure(selection.tool_name)
+                        if alt:
+                            decision_context.append(f"rag_escalation:{selection.tool_name}:{alt}")
                     await self._check_handshake_capture(result, selection)
                 elif not result.success:
                     alt = await self._handle_wireless_failure(selection.tool_name)
@@ -134,6 +142,23 @@ class WirelessAgent(StigmergicAgent):
             except Exception as e:
                 self._log.error("wireless_iteration_error", error=str(e))
 
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_wireless_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Wireless no-yield streak triggered escalation",
+                    role="wireless",
+                    tool=tool_name,
+                    target=interface,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+            context = self._add_novelty_constraints(context, streak)
+
             all_actions.append(AgentAction(
                 id=action_id,
                 agent_id=str(self.agent_id),
@@ -148,11 +173,13 @@ class WirelessAgent(StigmergicAgent):
 
     async def _query_intelligence(self, protocol: str = "", encryption: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for wireless protocol vulnerabilities."""
-        if not self._intel_aggregator or not protocol:
+        if not self._intel_aggregator:
             return []
+        query_protocol = (protocol or self._current_protocol or "802.11").strip()
+        query_encryption = (encryption or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(protocol, encryption),
+                self._intel_aggregator.query(query_protocol, query_encryption),
                 timeout=INTELLIGENCE_TIMEOUT
             )
         except Exception:
@@ -164,18 +191,37 @@ class WirelessAgent(StigmergicAgent):
             return None
         return sorted(results, key=lambda r: r.priority)[0]
 
-    def _create_finding(self, interface: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding:
+    def _create_finding(self, interface: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding | None:
         import json
+        execution = self._execution_metadata(result, selection.command)
+        evidence_payload: dict[str, Any] = {
+            "raw_evidence": result.stdout[:2000] if result.stdout else "",
+            "cve_id": intel.cve_id if intel else None,
+            "command": selection.command,
+            "execution": execution,
+            "protocol": self._current_protocol,
+        }
+        assessment = assess_finding_payload(
+            {
+                "type": "wireless",
+                "severity": "medium",
+                "target": interface,
+                "tool": selection.tool_name,
+                "evidence": evidence_payload,
+                "execution": execution,
+            }
+        )
+        evidence_payload["validation"] = assessment
+        if assessment["outcome_status"] == "failed":
+            return None
+
         finding_data = {
             "id": str(uuid.uuid4()), "target": interface, "type": "wireless",
-            "tool": selection.tool_name, "severity": "medium",
+            "tool": selection.tool_name, "severity": assessment["severity"],
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(self.agent_id),
             "topic": f"findings:{self._hash_target(interface)}:wireless",
-            "evidence": json.dumps({
-                "stdout": result.stdout[:2000] if result.stdout else "",
-                "cve_id": intel.cve_id if intel else None
-            }),
+            "evidence": json.dumps(evidence_payload),
         }
         finding_data["signature"] = compute_hmac_signature(
             {k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key
@@ -283,17 +329,15 @@ class WirelessAgent(StigmergicAgent):
         try:
             await self._publish_to_swarm(target_hash, "wireless", message)
         except Exception:
-            channel = f"findings:{target_hash}:wireless"
-            self._finding_buffer.append({"channel": channel, "message": message})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="wireless",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
         await super().on_signal(channel, data)

@@ -134,7 +134,7 @@ class HydraAdapter(BaseToolAdapter):
         for cred in parsed_data.get("credentials", []):
             findings.append({
                 "type": "credential",
-                "severity": "critical",
+                "severity": "high",
                 "name": f"Valid Credentials Found ({cred.get('service', 'unknown')})",
                 "description": f"Username: {cred.get('username')}, Password: {cred.get('password')}",
                 "host": cred.get("host"),

@@ -11,7 +11,8 @@ class RetryPolicy:
     """
     max_retries: int = 3
     backoff_delays: Tuple[float, ...] = (1.0, 2.0, 4.0)
-    request_timeout: float = 100.0
+    request_timeout: float = 300.0
+    total_request_timeout: float = 900.0
     cb_failure_threshold: int = 3
     cb_exclusion_duration: float = 60.0
     
@@ -21,6 +22,8 @@ class RetryPolicy:
             raise ValueError("max_retries must be >= 0")
         if self.request_timeout <= 0:
             raise ValueError("request_timeout must be > 0")
+        if self.total_request_timeout <= 0:
+            raise ValueError("total_request_timeout must be > 0")
         if self.cb_failure_threshold < 1:
             raise ValueError("cb_failure_threshold must be >= 1")
         if self.cb_exclusion_duration <= 0:

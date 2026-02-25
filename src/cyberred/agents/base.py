@@ -7,7 +7,9 @@ and LLM-driven tool selection (Story 7.1.v2).
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import os
 import time
 import uuid
 from collections import deque
@@ -23,6 +25,7 @@ from cyberred.core.config import get_settings
 from cyberred.core.events import EventBus
 from cyberred.core.sharding import ShardedEventBus
 from cyberred.core.exceptions import ThrottleTimeoutError, ToolSelectionError
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import AgentAction, ToolSelection, ToolSelectionContext
 
 if TYPE_CHECKING:
@@ -53,12 +56,16 @@ ATTCK_TECHNIQUE_TOOL_MAP: dict[str, list[str]] = {
     "T1595": ["recon", "scanning"],  # Active Scanning
     "T1592": ["recon", "enumeration"],  # Gather Victim Host Information
     "T1589": ["osint", "recon"],  # Gather Victim Identity Information
+    "T1590": ["recon", "osint", "enumeration"],  # Gather Victim Network Information
+    "T1593": ["osint", "recon"],  # Search Open Technical Databases
+    "T1596": ["osint", "recon", "enumeration"],  # Search Open Websites/Domains
     # Discovery
     "T1046": ["recon", "discovery"],  # Network Service Discovery (nmap, masscan)
     "T1018": ["recon", "enumeration"],  # Remote System Discovery (nbtscan, enum4linux)
     "T1082": ["postex", "enumeration"],  # System Information Discovery (linpeas, winpeas)
     "T1016": ["postex", "enumeration"],  # System Network Configuration Discovery
-    # Credential Access
+    "T1087": ["postex", "enumeration", "credential"],  # Account Discovery (net user, enum4linux)
+    "T1069": ["postex", "enumeration"],  # Permission Groups Discovery
     "T1078": ["credential", "auth"],  # Valid Accounts (hydra, medusa)
     "T1110": ["credential", "brute"],  # Brute Force
     "T1003": ["credential", "postex"],  # OS Credential Dumping (mimikatz, secretsdump)
@@ -119,6 +126,7 @@ class StigmergicAgent(Agent):
     - Coordinating via the EventBus
     - LLM-driven tool selection from 1,556+ Kali tools (Story 7.1.v2)
     """
+    _unknown_technique_warned: set[tuple[str, tuple[str, ...]]] = set()
 
     def __init__(
         self,
@@ -189,11 +197,74 @@ class StigmergicAgent(Agent):
         self._llm_gateway = llm_gateway
         self._manifest = manifest_loader
         self._tool_help_cache: dict[str, str] = {}
+        self._recent_tool_results: deque[dict[str, Any]] = deque(maxlen=80)
+        self._command_fingerprints: deque[str] = deque(maxlen=400)
+        self._command_fingerprint_set: set[str] = set()
+        self._command_retry_state: dict[str, dict[str, Any]] = {}
+        self._selection_context_token = ""
+        try:
+            self._command_retry_base_cooldown_s = max(
+                10,
+                int(os.getenv("CYBERRED_COMMAND_RETRY_COOLDOWN_S", "120")),
+            )
+        except ValueError:
+            self._command_retry_base_cooldown_s = 120
+        try:
+            self._command_retry_max_attempts = max(
+                1,
+                int(os.getenv("CYBERRED_COMMAND_RETRY_MAX_ATTEMPTS", "3")),
+            )
+        except ValueError:
+            self._command_retry_max_attempts = 3
+        self._no_finding_streak = 0
+        try:
+            self._no_finding_streak_threshold = max(
+                2,
+                int(os.getenv("CYBERRED_AGENT_NO_FINDING_STREAK", "3")),
+            )
+        except ValueError:
+            self._no_finding_streak_threshold = 3
 
         # Sharded event bus for findings (Story 7.13)
         self._sharded_bus = sharded_event_bus
         self._finding_cache: set[str] = set()  # Local dedupe cache
-        self._swarm_findings: deque = deque(maxlen=50)  # Bounded buffer of findings from other agents
+        try:
+            self._swarm_findings_maxlen = max(
+                50,
+                int(os.getenv("CYBERRED_SWARM_FINDINGS_MAXLEN", "200")),
+            )
+        except ValueError:
+            self._swarm_findings_maxlen = 200
+        self._swarm_findings: deque = deque(maxlen=self._swarm_findings_maxlen)
+        self._swarm_finding_details: dict[str, dict[str, Any]] = {}
+        try:
+            self._swarm_prompt_findings_limit = max(
+                10,
+                int(os.getenv("CYBERRED_SWARM_PROMPT_FINDINGS", "30")),
+            )
+        except ValueError:
+            self._swarm_prompt_findings_limit = 30
+        try:
+            self._swarm_auto_expand_count = max(
+                1,
+                int(os.getenv("CYBERRED_SWARM_AUTO_EXPAND_COUNT", "8")),
+            )
+        except ValueError:
+            self._swarm_auto_expand_count = 8
+        try:
+            self._swarm_signal_chars = max(
+                120,
+                int(os.getenv("CYBERRED_SWARM_SIGNAL_CHARS", "280")),
+            )
+        except ValueError:
+            self._swarm_signal_chars = 280
+        try:
+            self._swarm_expand_signal_chars = max(
+                self._swarm_signal_chars,
+                int(os.getenv("CYBERRED_SWARM_EXPAND_SIGNAL_CHARS", "700")),
+            )
+        except ValueError:
+            self._swarm_expand_signal_chars = 700
 
         # Track subscriptions for cleanup on shutdown (prevents Redis connection leaks)
         self._subscriptions: list = []
@@ -230,8 +301,367 @@ class StigmergicAgent(Agent):
         if execute_fn is None:
             from cyberred.tools.kali_executor import kali_execute as execute_fn
         result = await execute_fn(command, timeout=timeout)
+        self._record_command_execution(command, tool_name, result)
         await self._publish_terminal(command, result.stdout or result.stderr or "", tool_name)
         return result
+
+    def _execution_metadata(self, result: Any, command: str | None = None) -> dict[str, Any]:
+        """Build normalized execution metadata for finding evidence payloads."""
+        exit_code_raw = getattr(result, "exit_code", None)
+        if isinstance(exit_code_raw, bool):
+            exit_code: int | None = int(exit_code_raw)
+        elif isinstance(exit_code_raw, int):
+            exit_code = exit_code_raw
+        elif isinstance(exit_code_raw, str) and exit_code_raw.strip().lstrip("-").isdigit():
+            try:
+                exit_code = int(exit_code_raw.strip())
+            except ValueError:
+                exit_code = None
+        else:
+            exit_code = None
+
+        error_type_raw = getattr(result, "error_type", None)
+        error_type = (
+            error_type_raw.strip()
+            if isinstance(error_type_raw, str) and error_type_raw.strip()
+            else None
+        )
+
+        duration_raw = getattr(result, "duration_ms", None)
+        duration_ms = duration_raw if isinstance(duration_raw, (int, float)) else None
+
+        return {
+            "command": str(command or ""),
+            "stdout": str(getattr(result, "stdout", "") or "")[:4000],
+            "stderr": str(getattr(result, "stderr", "") or "")[:2000],
+            "exit_code": exit_code,
+            "error_type": error_type,
+            "success": bool(getattr(result, "success", False)),
+            "duration_ms": duration_ms,
+        }
+
+    def _normalize_command(self, command: str) -> str:
+        return " ".join((command or "").split()).strip()
+
+    def _selection_target_hint(self, target_info: dict[str, Any]) -> str:
+        if not isinstance(target_info, dict):
+            return str(getattr(self, "_current_target", "") or "")
+        for key in ("target", "domain_controller", "interface", "url", "host"):
+            value = target_info.get(key)
+            if value:
+                return str(value)
+        return str(getattr(self, "_current_target", "") or "")
+
+    def _build_command_fingerprints(
+        self,
+        tool_name: str,
+        command: str,
+        *,
+        phase: str = "",
+        target: str = "",
+    ) -> tuple[str, str]:
+        normalized = self._normalize_command(command)
+        base = hashlib.sha1(f"{tool_name}|{normalized}".encode("utf-8")).hexdigest()
+        scoped = hashlib.sha1(
+            f"{tool_name}|{normalized}|{phase}|{target}".encode("utf-8")
+        ).hexdigest()
+        return base, scoped
+
+    def _refresh_command_fingerprint_set(self) -> None:
+        self._command_fingerprint_set = set(self._command_fingerprints)
+
+    def _build_context_token(
+        self,
+        context: ToolSelectionContext | None = None,
+        *,
+        phase: str = "",
+        target: str = "",
+    ) -> str:
+        """Build compact context token for retry gating."""
+        if context is not None:
+            phase = context.phase or phase
+            target = self._selection_target_hint(context.target_info) or target
+            constraints = sorted(str(item) for item in (context.constraints or []) if item)
+        else:
+            constraints = []
+
+        strategy_id = ""
+        if self._active_strategy is not None:
+            strategy_id = str(
+                getattr(self._active_strategy, "id", "")
+                or getattr(self._active_strategy, "strategy_id", "")
+                or ""
+            )
+
+        recent_swarm = [
+            (
+                str(item.get("type", "")),
+                str(item.get("target", "")),
+                str(item.get("tool", "")),
+            )
+            for item in list(self._swarm_findings)[-8:]
+            if isinstance(item, dict)
+        ]
+
+        payload = {
+            "phase": str(phase or ""),
+            "target": str(target or ""),
+            "strategy": strategy_id,
+            "constraints": constraints,
+            "recent_swarm": recent_swarm,
+        }
+        return hashlib.sha1(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _is_retry_blocked(self, fingerprint: str, context_token: str) -> bool:
+        state = self._command_retry_state.get(fingerprint)
+        if not isinstance(state, dict):
+            return False
+
+        status = str(state.get("status") or "").strip().lower()
+        attempts = int(state.get("attempts") or 0)
+        last_context = str(state.get("context_token") or "")
+        last_attempt_ts = float(state.get("last_attempt_ts") or 0.0)
+        now = time.time()
+
+        if status == "success":
+            return True
+
+        if context_token and last_context and context_token != last_context:
+            return False
+
+        if attempts >= self._command_retry_max_attempts:
+            return True
+
+        backoff_multiplier = max(1, 2 ** max(0, attempts - 1))
+        cooldown_s = min(
+            float(self._command_retry_base_cooldown_s * backoff_multiplier),
+            1800.0,
+        )
+        if (now - last_attempt_ts) < cooldown_s:
+            return True
+        return False
+
+    def _is_recent_command(
+        self,
+        tool_name: str,
+        command: str,
+        *,
+        phase: str = "",
+        target: str = "",
+        context_token: str = "",
+    ) -> bool:
+        base_fp, scoped_fp = self._build_command_fingerprints(
+            tool_name,
+            command,
+            phase=phase,
+            target=target,
+        )
+        if (base_fp not in self._command_fingerprint_set) and (
+            scoped_fp not in self._command_fingerprint_set
+        ):
+            return False
+        if self._is_retry_blocked(scoped_fp, context_token):
+            return True
+        if self._is_retry_blocked(base_fp, context_token):
+            return True
+        return False
+
+    def _record_command_execution(self, command: str, tool_name: str, result: Any) -> None:
+        target = str(getattr(self, "_current_target", "") or "")
+        phase = self.role.value if hasattr(self, "role") and self.role else "unknown"
+        base_fp, scoped_fp = self._build_command_fingerprints(
+            tool_name,
+            command,
+            phase=phase,
+            target=target,
+        )
+        self._command_fingerprints.append(base_fp)
+        self._command_fingerprints.append(scoped_fp)
+        self._refresh_command_fingerprint_set()
+
+        success = bool(getattr(result, "success", False))
+        status = "success" if success else "failed"
+        context_token = str(
+            self._selection_context_token
+            or self._build_context_token(phase=phase, target=target)
+        )
+        now_ts = time.time()
+        for fingerprint in (base_fp, scoped_fp):
+            previous = self._command_retry_state.get(fingerprint) or {}
+            previous_context = str(previous.get("context_token") or "")
+            previous_attempts = int(previous.get("attempts") or 0)
+            attempts = 1 if context_token != previous_context else previous_attempts + 1
+            self._command_retry_state[fingerprint] = {
+                "status": status,
+                "attempts": attempts,
+                "last_attempt_ts": now_ts,
+                "context_token": context_token,
+            }
+        if len(self._command_retry_state) > 3000:
+            oldest = sorted(
+                self._command_retry_state.items(),
+                key=lambda item: float(item[1].get("last_attempt_ts") or 0.0),
+            )[:1000]
+            for key, _ in oldest:
+                self._command_retry_state.pop(key, None)
+
+        exit_code_raw = getattr(result, "exit_code", None)
+        if isinstance(exit_code_raw, bool):
+            exit_code: int | None = int(exit_code_raw)
+        elif isinstance(exit_code_raw, int):
+            exit_code = exit_code_raw
+        elif isinstance(exit_code_raw, str) and exit_code_raw.strip().lstrip("-").isdigit():
+            try:
+                exit_code = int(exit_code_raw.strip())
+            except ValueError:
+                exit_code = None
+        else:
+            exit_code = None
+
+        result_summary: dict[str, Any] = {
+            "tool": tool_name,
+            "command": self._normalize_command(command)[:400],
+            "success": success,
+            "exit_code": exit_code,
+            "target": target,
+            "phase": phase,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        stdout = getattr(result, "stdout", "")
+        stderr = getattr(result, "stderr", "")
+        if stdout:
+            result_summary["stdout_preview"] = str(stdout)[:200]
+        if stderr:
+            result_summary["stderr_preview"] = str(stderr)[:200]
+        self._recent_tool_results.append(result_summary)
+
+    def get_recent_tool_results(self, limit: int = 30) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        return list(self._recent_tool_results)[-limit:]
+
+    def _record_iteration_findings(self, findings_count: int) -> int:
+        """Track consecutive no-yield iterations and return current streak."""
+        if findings_count > 0:
+            self._no_finding_streak = 0
+            return 0
+        self._no_finding_streak += 1
+        return self._no_finding_streak
+
+    def _add_novelty_constraints(
+        self,
+        context: ToolSelectionContext,
+        streak: int,
+    ) -> ToolSelectionContext:
+        """Inject progressively stronger novelty constraints after no-yield streaks."""
+        if streak < 2:
+            return context
+
+        new_constraints = list(context.constraints)
+        if streak >= 2:
+            novelty_constraint = (
+                "pivot to a different tool family or target facet than recent attempts"
+            )
+            if novelty_constraint not in new_constraints:
+                new_constraints.append(novelty_constraint)
+        if streak >= self._no_finding_streak_threshold:
+            hard_novelty_constraint = (
+                "avoid commands similar to prior no-yield runs; choose materially different technique"
+            )
+            if hard_novelty_constraint not in new_constraints:
+                new_constraints.append(hard_novelty_constraint)
+        return ToolSelectionContext(
+            objective=context.objective,
+            target_info=context.target_info,
+            available_tools=context.available_tools,
+            phase=context.phase,
+            constraints=new_constraints,
+            previous_results=context.previous_results,
+        )
+
+    async def _publish_swarm_log(
+        self,
+        category: str,
+        message: str,
+        **metadata: Any,
+    ) -> None:
+        """Best-effort observability publish."""
+        if not self.event_bus:
+            return
+        payload: dict[str, Any] = {"category": category, "message": message}
+        payload.update(metadata)
+        try:
+            await self.event_bus.publish("swarm:log", payload)
+        except Exception as e:
+            self._log.debug("swarm_log_publish_failed", error=str(e), category=category)
+
+    def _buffer_finding_retry(
+        self,
+        buffer_ref: list[dict[str, Any]],
+        *,
+        target_hash: str,
+        finding_type: str,
+        message: dict[str, Any],
+    ) -> None:
+        """Store finding payload for retry while preserving sharding metadata."""
+        buffer_ref.append(
+            {
+                "target_hash": target_hash,
+                "finding_type": finding_type,
+                "message": dict(message or {}),
+                "channel": f"findings:{target_hash}:{finding_type}",
+            }
+        )
+
+    async def _flush_buffered_findings(
+        self,
+        buffer_ref: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Flush buffered findings through sharded publish path when possible."""
+        remaining: list[dict[str, Any]] = []
+        for item in buffer_ref:
+            message = item.get("message")
+            if not isinstance(message, dict):
+                continue
+
+            target_hash = str(item.get("target_hash") or "").strip()
+            finding_type = str(item.get("finding_type") or "").strip()
+            channel = str(item.get("channel") or "").strip()
+
+            try:
+                if target_hash and finding_type:
+                    await self._publish_to_swarm(target_hash, finding_type, message)
+                elif channel:
+                    await self.event_bus.publish(channel, message)
+                else:
+                    continue
+            except Exception:
+                remaining.append(item)
+        return remaining
+
+    def export_runtime_hydration(self) -> dict[str, Any]:
+        retry_state_items = sorted(
+            self._command_retry_state.items(),
+            key=lambda item: float(item[1].get("last_attempt_ts") or 0.0),
+        )[-500:]
+        detail_items = sorted(
+            self._swarm_finding_details.items(),
+            key=lambda item: str(item[1].get("timestamp") or ""),
+        )[-300:]
+        return {
+            "decision_context": list(self._decision_context)[-200:],
+            "swarm_findings": list(self._swarm_findings)[-self._swarm_findings_maxlen:],
+            "swarm_finding_details": {
+                key: value for key, value in detail_items if isinstance(value, dict)
+            },
+            "previous_results": self.get_recent_tool_results(limit=60),
+            "command_fingerprints": list(self._command_fingerprints)[-300:],
+            "command_retry_state": {
+                key: value for key, value in retry_state_items if isinstance(value, dict)
+            },
+        }
 
     async def spawn(self):
         """Initialize async components and subscriptions."""
@@ -282,6 +712,13 @@ class StigmergicAgent(Agent):
         sub = await self.event_bus.subscribe(
             kill_ch,
             lambda data, _ch=kill_ch: self._handle_message(_ch, data),
+        )
+        self._subscriptions.append(sub)
+
+        telemetry_ch = "swarm:findings_telemetry"
+        sub = await self.event_bus.subscribe(
+            telemetry_ch,
+            lambda data, _ch=telemetry_ch: self._handle_message(_ch, data),
         )
         self._subscriptions.append(sub)
 
@@ -348,6 +785,79 @@ class StigmergicAgent(Agent):
         # Delegate to on_signal directly since message is already parsed
         await self.on_signal(channel, message)
 
+    def _is_primary_finding(self, finding_data: dict[str, Any]) -> bool:
+        """Return True when finding should propagate on primary stigmergy lane."""
+        outcome = str(finding_data.get("outcome_status") or "").strip().lower()
+        quality = str(finding_data.get("evidence_quality") or "").strip().lower()
+        return outcome == "validated" and quality != "low"
+
+    async def _publish_finding_telemetry(
+        self,
+        *,
+        target_hash: str,
+        finding_type: str,
+        finding_data: dict[str, Any],
+    ) -> None:
+        """Publish attempted/failed findings to telemetry lane."""
+        if not self.event_bus:
+            return
+        payload = {
+            "agent_id": self.agent_id,
+            "engagement_id": self.engagement_id,
+            "target_hash": target_hash,
+            "finding_type": finding_type,
+            "outcome_status": finding_data.get("outcome_status", "attempted"),
+            "evidence_quality": finding_data.get("evidence_quality", "low"),
+            "validation_reason": finding_data.get("validation_reason", ""),
+            "validation_confidence": finding_data.get("validation_confidence", 0.0),
+            "data": finding_data,
+            "timestamp": finding_data.get("timestamp", datetime.now(UTC).isoformat()),
+        }
+        try:
+            await self.event_bus.publish("swarm:findings_telemetry", payload)
+            self._log.info(
+                "finding_telemetry_published",
+                finding_type=finding_type,
+                outcome_status=payload["outcome_status"],
+            )
+        except Exception as e:
+            self._log.warning(
+                "finding_telemetry_publish_failed",
+                finding_type=finding_type,
+                error=str(e),
+            )
+
+    async def _publish_normalized_finding(
+        self,
+        *,
+        target_hash: str,
+        finding_type: str,
+        finding_data: dict[str, Any],
+    ) -> None:
+        await self._maybe_publish_objective_event(finding_type, finding_data)
+
+        if not self._is_primary_finding(finding_data):
+            await self._publish_finding_telemetry(
+                target_hash=target_hash,
+                finding_type=finding_type,
+                finding_data=finding_data,
+            )
+            return
+
+        message = {
+            "agent_id": self.agent_id,
+            "engagement_id": self.engagement_id,
+            "data": finding_data,
+        }
+
+        if self._sharded_bus:
+            await self._sharded_bus.publish_finding(target_hash, finding_type, message)
+            self._log.info("finding_published_sharded", finding_type=finding_type)
+        else:
+            channel = f"findings:{target_hash}:{finding_type}"
+            await self.event_bus.publish(channel, message)
+            self._log.info("finding_published", channel=channel, finding_type=finding_type)
+
     async def on_finding(self, target_hash: str, finding_type: str, content: dict[str, Any]):
         """Publish a finding to the swarm.
         
@@ -359,17 +869,23 @@ class StigmergicAgent(Agent):
             finding_type: Type of finding (e.g., 'sqli', 'open_port').
             content: The finding data.
         """
-        message = {"agent_id": self.agent_id, "engagement_id": self.engagement_id, "data": content}
-        
-        if self._sharded_bus:
-            # Story 7.13: Sharded publishing
-            await self._sharded_bus.publish_finding(target_hash, finding_type, message)
-            self._log.info("finding_published_sharded", finding_type=finding_type)
-        else:
-            # Fallback to non-sharded (backward compatibility)
-            channel = f"findings:{target_hash}:{finding_type}"
-            await self.event_bus.publish(channel, message)
-            self._log.info("finding_published", channel=channel, finding_type=finding_type)
+        payload = dict(content or {})
+        if not (payload.get("target") or payload.get("domain") or payload.get("host")):
+            payload["target"] = target_hash
+        normalized = self._normalize_finding_message(finding_type, payload)
+        if normalized is None:
+            self._log.warning(
+                "finding_dropped_missing_required_fields",
+                finding_type=finding_type,
+                target_hash=target_hash,
+            )
+            return
+
+        await self._publish_normalized_finding(
+            target_hash=target_hash,
+            finding_type=finding_type,
+            finding_data=normalized,
+        )
 
     async def _publish_to_swarm(self, target_hash: str, finding_type: str, message: dict[str, Any]) -> None:
         """Publish finding through sharded bus or fallback to direct publish.
@@ -382,14 +898,319 @@ class StigmergicAgent(Agent):
             finding_type: Type of finding (e.g., 'exploit', 'open_port').
             message: The finding message payload.
         """
-        if self._sharded_bus:
-            wrapped = {"agent_id": self.agent_id, "engagement_id": self.engagement_id, "data": message}
-            await self._sharded_bus.publish_finding(target_hash, finding_type, wrapped)
-            self._log.info("finding_published_sharded", finding_type=finding_type)
+        payload = dict(message or {})
+        if not (payload.get("target") or payload.get("domain") or payload.get("host")):
+            payload["target"] = target_hash
+        normalized = self._normalize_finding_message(finding_type, payload)
+        if normalized is None:
+            self._log.warning(
+                "finding_dropped_missing_required_fields",
+                finding_type=finding_type,
+                target_hash=target_hash,
+            )
+            return
+
+        await self._publish_normalized_finding(
+            target_hash=target_hash,
+            finding_type=finding_type,
+            finding_data=normalized,
+        )
+
+    def _normalize_finding_message(
+        self,
+        finding_type: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Normalize finding payload into a consistent schema."""
+        raw = dict(payload or {})
+        normalized = dict(raw)
+
+        normalized["id"] = str(normalized.get("id") or normalized.get("finding_id") or str(uuid.uuid4()))
+        normalized["type"] = str(
+            normalized.get("type")
+            or normalized.get("finding_type")
+            or finding_type
+        ).strip().lower()
+        normalized["finding_type"] = normalized["type"]
+
+        target = normalized.get("target") or normalized.get("domain") or normalized.get("host")
+        if not target:
+            return None
+        normalized["target"] = str(target)
+
+        severity = str(normalized.get("severity") or "info").strip().lower()
+        if severity not in {"critical", "high", "medium", "low", "info"}:
+            severity = "info"
+        normalized["severity"] = severity
+
+        assessment = assess_finding_payload(normalized)
+        normalized["severity"] = assessment["severity"]
+        normalized["outcome_status"] = assessment["outcome_status"]
+        normalized["evidence_quality"] = assessment["evidence_quality"]
+        normalized["validation_reason"] = assessment["validation_reason"]
+        normalized["validation_confidence"] = assessment["validation_confidence"]
+
+        if "tool" not in normalized and normalized.get("tool_name"):
+            normalized["tool"] = normalized.get("tool_name")
+
+        normalized["agent_id"] = str(normalized.get("agent_id") or self.agent_id)
+        normalized["engagement_id"] = str(normalized.get("engagement_id") or self.engagement_id)
+        normalized["timestamp"] = str(normalized.get("timestamp") or datetime.now(UTC).isoformat())
+        return normalized
+
+    async def _maybe_publish_objective_event(
+        self,
+        finding_type: str,
+        finding_data: dict[str, Any],
+    ) -> None:
+        """Emit objective completion events from high-value findings."""
+        if str(finding_data.get("outcome_status") or "").strip().lower() != "validated":
+            return
+
+        resolved_type = str(
+            finding_data.get("objective_type")
+            or finding_data.get("type")
+            or finding_data.get("finding_type")
+            or finding_type
+        ).strip().lower()
+
+        objective_type: str | None = None
+        if resolved_type in {"credential", "credentials", "password", "hash", "kerberos", "domainadmin"}:
+            objective_type = "credential_harvested"
+        elif resolved_type in {"shell", "session", "reverse_shell", "meterpreter"}:
+            objective_type = "shell_obtained"
+        elif resolved_type in {"data_access", "data_accessed", "exfil", "exfiltration", "sensitive_data"}:
+            objective_type = "data_accessed"
+
+        if not objective_type:
+            return
+
+        payload = {
+            "objective_type": objective_type,
+            "target": finding_data.get("target"),
+            "details": {
+                "finding_id": finding_data.get("id"),
+                "finding_type": finding_data.get("type") or finding_type,
+                "severity": finding_data.get("severity"),
+                "tool": finding_data.get("tool"),
+                "agent_id": self.agent_id,
+            },
+            "timestamp": time.time(),
+        }
+        try:
+            await self.event_bus.publish(f"objectives:{self.engagement_id}", payload)
+        except Exception as e:
+            self._log.debug("objective_event_publish_failed", error=str(e), objective_type=objective_type)
+
+    def _safe_json_obj(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("{") and text.endswith("}"):
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    return {}
+                if isinstance(parsed, dict):
+                    return parsed
+        return {}
+
+    def _build_swarm_finding_views(
+        self,
+        finding_data: dict[str, Any],
+        *,
+        lane: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        evidence_obj = self._safe_json_obj(finding_data.get("evidence"))
+        execution = evidence_obj.get("execution") if isinstance(evidence_obj.get("execution"), dict) else {}
+
+        finding_id = str(
+            finding_data.get("id")
+            or finding_data.get("finding_id")
+            or str(uuid.uuid4())
+        )
+        command = str(
+            finding_data.get("command")
+            or evidence_obj.get("command")
+            or execution.get("command")
+            or ""
+        )
+        exit_code = execution.get("exit_code")
+        error_type = execution.get("error_type")
+        raw_signal = (
+            evidence_obj.get("raw_evidence")
+            or evidence_obj.get("summary")
+            or execution.get("stderr")
+            or execution.get("stdout")
+            or finding_data.get("evidence")
+            or ""
+        )
+        signal_text = str(raw_signal or "").replace("\n", " ").strip()
+
+        digest = {
+            "finding_id": finding_id,
+            "type": str(finding_data.get("type") or "unknown"),
+            "target": str(finding_data.get("target") or ""),
+            "tool": str(finding_data.get("tool") or ""),
+            "severity": str(finding_data.get("severity") or ""),
+            "outcome_status": str(finding_data.get("outcome_status") or "attempted"),
+            "evidence_quality": str(finding_data.get("evidence_quality") or ""),
+            "validation_reason": str(finding_data.get("validation_reason") or ""),
+            "command": command[:220],
+            "exit_code": exit_code,
+            "error_type": error_type,
+            "lane": lane,
+            "evidence": signal_text[: self._swarm_signal_chars],
+        }
+
+        details = {
+            **digest,
+            "command_full": command[:800],
+            "evidence_expanded": signal_text[: self._swarm_expand_signal_chars],
+            "stderr_preview": str(execution.get("stderr") or "")[:600],
+            "stdout_preview": str(execution.get("stdout") or "")[:600],
+            "timestamp": str(finding_data.get("timestamp") or datetime.now(UTC).isoformat()),
+        }
+        return digest, details
+
+    def _store_swarm_finding(
+        self,
+        finding_data: dict[str, Any],
+        *,
+        lane: str,
+    ) -> None:
+        digest, details = self._build_swarm_finding_views(finding_data, lane=lane)
+        self._swarm_findings.append(digest)
+        finding_id = str(digest.get("finding_id") or "")
+        if finding_id:
+            self._swarm_finding_details[finding_id] = details
+            if len(self._swarm_finding_details) > 2000:
+                for old_key in list(self._swarm_finding_details.keys())[:600]:
+                    self._swarm_finding_details.pop(old_key, None)
+
+    def _rank_swarm_finding_for_prompt(
+        self,
+        finding: dict[str, Any],
+        *,
+        position: int,
+        target_hint: str,
+        objective: str,
+    ) -> float:
+        severity_rank = {
+            "critical": 5.0,
+            "high": 4.0,
+            "medium": 3.0,
+            "low": 2.0,
+            "info": 1.0,
+        }
+        score = float(position) / 1000.0
+        score += severity_rank.get(str(finding.get("severity") or "").lower(), 0.0)
+
+        status = str(finding.get("outcome_status") or "").lower()
+        if status == "validated":
+            score += 4.0
+        elif status == "attempted":
+            score += 2.0
         else:
-            channel = f"findings:{target_hash}:{finding_type}"
-            await self.event_bus.publish(channel, message)
-            self._log.info("finding_published", channel=channel, finding_type=finding_type)
+            score += 1.0
+
+        lane = str(finding.get("lane") or "primary")
+        if lane == "telemetry":
+            score -= 0.8
+
+        finding_target = str(finding.get("target") or "").lower()
+        if target_hint and finding_target and (
+            target_hint in finding_target or finding_target in target_hint
+        ):
+            score += 4.0
+
+        finding_type = str(finding.get("type") or "").lower()
+        if finding_type and objective and finding_type in objective:
+            score += 2.0
+        return score
+
+    def _select_swarm_findings_for_prompt(
+        self,
+        context: ToolSelectionContext,
+    ) -> list[dict[str, Any]]:
+        if not self._swarm_findings:
+            return []
+
+        target_hint = self._selection_target_hint(context.target_info).strip().lower()
+        objective = str(context.objective or "").strip().lower()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for idx, finding in enumerate(list(self._swarm_findings)):
+            if not isinstance(finding, dict):
+                continue
+            score = self._rank_swarm_finding_for_prompt(
+                finding,
+                position=idx + 1,
+                target_hint=target_hint,
+                objective=objective,
+            )
+            scored.append((score, finding))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        selected: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for _, finding in scored:
+            finding_id = str(finding.get("finding_id") or "")
+            if finding_id and finding_id in seen_ids:
+                continue
+            if finding_id:
+                seen_ids.add(finding_id)
+            selected.append(finding)
+            if len(selected) >= self._swarm_prompt_findings_limit:
+                break
+        return selected
+
+    def _format_swarm_finding_for_prompt(
+        self,
+        finding: dict[str, Any],
+        *,
+        expanded: bool,
+    ) -> str:
+        finding_id = str(finding.get("finding_id") or "")
+        details = self._swarm_finding_details.get(finding_id, {})
+        signal = (
+            str(details.get("evidence_expanded") or "")
+            if expanded
+            else str(finding.get("evidence") or "")
+        )
+        if not signal:
+            signal = str(details.get("stderr_preview") or details.get("stdout_preview") or "")
+        signal = signal.replace("\n", " ").strip()
+        if expanded:
+            signal = signal[: self._swarm_expand_signal_chars]
+        else:
+            signal = signal[: self._swarm_signal_chars]
+
+        command = str(
+            details.get("command_full")
+            or finding.get("command")
+            or ""
+        ).replace("\n", " ").strip()[:220]
+        exit_code = details.get("exit_code", finding.get("exit_code"))
+        error_type = str(details.get("error_type", finding.get("error_type")) or "").strip()
+
+        parts = [
+            f"[{finding.get('severity', '')}/{finding.get('outcome_status', '')}]",
+            f"{finding.get('type', 'unknown')}",
+            f"target={finding.get('target', '')}",
+            f"tool={finding.get('tool', '')}",
+        ]
+        if command:
+            parts.append(f"cmd={command}")
+        if exit_code is not None:
+            parts.append(f"exit={exit_code}")
+        if error_type:
+            parts.append(f"error={error_type}")
+        if finding.get("lane") == "telemetry":
+            parts.append("lane=telemetry")
+        if signal:
+            parts.append(f"signal={signal}")
+        return " | ".join(str(part) for part in parts if part)
 
     async def on_signal(self, channel: str, data: dict[str, Any]):
         """Handle incoming stigmergic signal.
@@ -409,21 +1230,24 @@ class StigmergicAgent(Agent):
 
         # Stigmergic finding consumption — store findings from other agents
         # so the LLM can adapt tool selection based on swarm awareness
-        if channel.startswith("findings:"):
-            source_agent = data.get("agent_id", "")
-            if source_agent and source_agent != self.agent_id:
-                finding_data = data.get("data", {})
-                self._swarm_findings.append({
-                    "type": finding_data.get("type", "unknown"),
-                    "target": finding_data.get("target", ""),
-                    "tool": finding_data.get("tool", ""),
-                    "severity": finding_data.get("severity", ""),
-                    "evidence": str(finding_data.get("evidence", ""))[:200],
-                })
+        if channel.startswith("findings:") or channel == "swarm:findings_telemetry":
+            finding_data = data.get("data", data)
+            if not isinstance(finding_data, dict):
+                finding_data = {}
+            source_agent = str(
+                data.get("agent_id")
+                or finding_data.get("agent_id")
+                or ""
+            )
+            if source_agent and source_agent != self.agent_id and finding_data:
+                lane = "telemetry" if channel == "swarm:findings_telemetry" else "primary"
+                self._store_swarm_finding(finding_data, lane=lane)
                 self._log.debug(
                     "swarm_finding_received",
                     source=source_agent,
                     finding_type=finding_data.get("type"),
+                    lane=lane,
+                    outcome_status=finding_data.get("outcome_status"),
                 )
             # Still track signal_id for NFR37 decision context below
 
@@ -450,6 +1274,8 @@ class StigmergicAgent(Agent):
         """Infer signal type from channel name."""
         if channel.startswith("findings:"):
             return "finding"
+        elif channel == "swarm:findings_telemetry":
+            return "finding"
         elif channel.startswith("strategies:"):
             return "strategy"
         elif channel.startswith("intel:"):
@@ -465,7 +1291,12 @@ class StigmergicAgent(Agent):
 
     # === Director-Agent Feedback Loop Methods (Story 7.17) ===
 
-    def hydrate_context(self, findings: list[dict], strategy: dict | None = None) -> None:
+    def hydrate_context(
+        self,
+        findings: list[dict],
+        strategy: dict | None = None,
+        runtime_state: dict[str, Any] | None = None,
+    ) -> None:
         """Bulk-load swarm findings and strategy into agent (for respawn hydration).
 
         Populates _swarm_findings so the tool selection prompt includes
@@ -479,10 +1310,76 @@ class StigmergicAgent(Agent):
             self._swarm_findings.append(f)
         if strategy is not None:
             self.__active_strategy = strategy
+        runtime_findings_count = 0
+        runtime_finding_detail_count = 0
+        runtime_results_count = 0
+        runtime_fp_count = 0
+        runtime_retry_state_count = 0
+        if runtime_state:
+            runtime_findings = runtime_state.get("swarm_findings") or []
+            for item in runtime_findings:
+                if isinstance(item, dict):
+                    self._swarm_findings.append(item)
+                    runtime_findings_count += 1
+
+            runtime_finding_details = runtime_state.get("swarm_finding_details") or {}
+            if isinstance(runtime_finding_details, dict):
+                for finding_id, details in runtime_finding_details.items():
+                    if not isinstance(finding_id, str) or not finding_id or not isinstance(details, dict):
+                        continue
+                    self._swarm_finding_details[finding_id] = dict(details)
+                    runtime_finding_detail_count += 1
+
+            previous_results = runtime_state.get("previous_results") or []
+            for item in previous_results:
+                if isinstance(item, dict):
+                    self._recent_tool_results.append(item)
+                    runtime_results_count += 1
+
+            command_fingerprints = runtime_state.get("command_fingerprints") or []
+            for item in command_fingerprints:
+                if isinstance(item, str) and item:
+                    self._command_fingerprints.append(item)
+                    runtime_fp_count += 1
+            self._refresh_command_fingerprint_set()
+
+            command_retry_state = runtime_state.get("command_retry_state") or {}
+            if isinstance(command_retry_state, dict):
+                for fingerprint, state in command_retry_state.items():
+                    if not isinstance(fingerprint, str) or not fingerprint or not isinstance(state, dict):
+                        continue
+                    try:
+                        attempts = max(1, int(state.get("attempts") or 1))
+                    except (TypeError, ValueError):
+                        attempts = 1
+                    try:
+                        last_attempt_ts = float(state.get("last_attempt_ts") or 0.0)
+                    except (TypeError, ValueError):
+                        last_attempt_ts = 0.0
+                    self._command_retry_state[fingerprint] = {
+                        "status": str(state.get("status") or "").strip().lower() or "failed",
+                        "attempts": attempts,
+                        "last_attempt_ts": last_attempt_ts,
+                        "context_token": str(state.get("context_token") or ""),
+                    }
+                    runtime_retry_state_count += 1
+
+            decision_context = runtime_state.get("decision_context") or []
+            if isinstance(decision_context, list):
+                for signal_id in decision_context:
+                    if isinstance(signal_id, str) and signal_id:
+                        self._decision_context.append(signal_id)
+                if len(self._decision_context) > 400:
+                    self._decision_context = self._decision_context[-400:]
         self._log.info(
             "context_hydrated",
             findings_count=len(findings),
             has_strategy=strategy is not None,
+            runtime_findings_count=runtime_findings_count,
+            runtime_finding_detail_count=runtime_finding_detail_count,
+            runtime_results_count=runtime_results_count,
+            runtime_fingerprint_count=runtime_fp_count,
+            runtime_retry_state_count=runtime_retry_state_count,
         )
 
     @property
@@ -547,19 +1444,10 @@ class StigmergicAgent(Agent):
         
         strategy = EmergentStrategy.from_json(data)
         self.__active_strategy = strategy
-        
-        # Validate and warn about unknown ATT&CK technique IDs
-        if strategy.recommended_techniques:
-            unknown_techniques = [
-                t for t in strategy.recommended_techniques 
-                if t not in ATTCK_TECHNIQUE_TOOL_MAP
-            ]
-            if unknown_techniques:
-                self._log.warning(
-                    "unknown_attck_techniques",
-                    techniques=unknown_techniques,
-                    strategy_id=strategy.id,
-                )
+        self._warn_unknown_techniques_once(
+            strategy.id,
+            strategy.recommended_techniques,
+        )
         
         # Record in decision context (AC #5: type "director_strategy")
         if self._context_tracker:
@@ -598,19 +1486,10 @@ class StigmergicAgent(Agent):
         # Use module-level wrapper class for efficiency (avoids class recreation)
         strategy = _PublishedStrategyWrapper(data, strategy_id)
         self.__active_strategy = strategy  # type: ignore[assignment]
-        
-        # Validate and warn about unknown ATT&CK technique IDs
-        if strategy.recommended_techniques:
-            unknown_techniques = [
-                t for t in strategy.recommended_techniques 
-                if t not in ATTCK_TECHNIQUE_TOOL_MAP
-            ]
-            if unknown_techniques:
-                self._log.warning(
-                    "unknown_attck_techniques",
-                    techniques=unknown_techniques,
-                    strategy_id=strategy.id,
-                )
+        self._warn_unknown_techniques_once(
+            strategy.id,
+            strategy.recommended_techniques,
+        )
         
         # Record in decision context (AC #5: type "director_strategy")
         if self._context_tracker:
@@ -632,6 +1511,72 @@ class StigmergicAgent(Agent):
             recommended_techniques=strategy.recommended_techniques,
             contributing_roles=strategy.contributing_roles,
         )
+
+    def _warn_unknown_techniques_once(
+        self,
+        strategy_id: str,
+        recommended_techniques: list[str] | None,
+    ) -> None:
+        """Log unknown ATT&CK techniques once per strategy payload."""
+        if not recommended_techniques:
+            return
+
+        unknown_techniques: list[str] = []
+        for technique_value in recommended_techniques:
+            technique = str(technique_value).strip()
+            if not technique:
+                continue
+            if technique in ATTCK_TECHNIQUE_TOOL_MAP:
+                continue
+            base_technique = technique.split(".")[0]
+            if base_technique in ATTCK_TECHNIQUE_TOOL_MAP:
+                continue
+            unknown_techniques.append(technique)
+
+        if not unknown_techniques:
+            return
+
+        deduped_unknown = tuple(sorted(set(unknown_techniques)))
+        cache_key = (strategy_id, deduped_unknown)
+        if cache_key in StigmergicAgent._unknown_technique_warned:
+            return
+
+        StigmergicAgent._unknown_technique_warned.add(cache_key)
+        self._log.warning(
+            "unknown_attck_techniques",
+            techniques=list(deduped_unknown),
+            strategy_id=strategy_id,
+        )
+
+    def _get_scope_targets(self) -> list[str]:
+        """Load in-scope targets from the engagement scope file.
+
+        Reads the scope.yaml generated by the Orchestrator and returns
+        the allowed_targets list so the LLM prompt knows which hosts
+        are valid. This prevents agents from hallucinating out-of-scope
+        targets like github.com or random RFC1918 ranges.
+
+        Returns:
+            List of in-scope target strings (IPs, CIDRs, hostnames),
+            or empty list if scope file is unavailable.
+        """
+        try:
+            settings = get_settings()
+            scope_path = getattr(settings.engagement, "scope_path", "")
+            if not scope_path:
+                return []
+            from pathlib import Path
+            import yaml
+            p = Path(scope_path)
+            if not p.exists():
+                return []
+            with p.open() as f:
+                data = yaml.safe_load(f) or {}
+            scope = data.get("scope", data)
+            targets = scope.get("allowed_targets", [])
+            return targets[:50]  # Cap for token budget
+        except Exception:
+            return []
 
     def _get_strategy_context(self) -> str:
         """Build strategy context string for LLM prompt.
@@ -742,6 +1687,11 @@ class StigmergicAgent(Agent):
         for technique in techniques:
             if technique in ATTCK_TECHNIQUE_TOOL_MAP:
                 categories.update(ATTCK_TECHNIQUE_TOOL_MAP[technique])
+            else:
+                # Try base technique (e.g. T1059.001 -> T1059)
+                base_tech = technique.split('.')[0]
+                if base_tech in ATTCK_TECHNIQUE_TOOL_MAP:
+                    categories.update(ATTCK_TECHNIQUE_TOOL_MAP[base_tech])
         
         if not categories or not self._manifest:
             return []
@@ -774,6 +1724,7 @@ class StigmergicAgent(Agent):
         await self.event_bus.publish(channel, message)
         self._status = "idle"
         await self._publish_status(status)
+        await self._cleanup_runtime()
 
     # AgentProtocol Implementation
 
@@ -884,24 +1835,33 @@ class StigmergicAgent(Agent):
     async def shutdown(self) -> None:
         """Cleanup resources and release Redis connections."""
         self._status = "shutdown"
+        await self._cleanup_runtime()
+        self._log.info("agent_shutdown")
+
+    async def _cleanup_runtime(self) -> None:
+        """Cancel monitors and subscriptions for this agent instance."""
         if self._throttle_monitor_task:
             self._throttle_monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._throttle_monitor_task
             self._throttle_monitor_task = None
-        # Story 7.12: Cancel heartbeat task
+
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._heartbeat_task
             self._heartbeat_task = None
-        # Cancel all pubsub subscriptions to release Redis connections
+
         if self._subscriptions:
             for sub in self._subscriptions:
                 with contextlib.suppress(Exception):
-                    await sub.cancel()
+                    cancel_fn = getattr(sub, "cancel", None)
+                    unsubscribe_fn = getattr(sub, "unsubscribe", None)
+                    if callable(cancel_fn):
+                        await cancel_fn()
+                    elif callable(unsubscribe_fn):
+                        await unsubscribe_fn()
             self._subscriptions.clear()
-        self._log.info("agent_shutdown")
 
     async def _start_throttle_monitor(self):
         """Start the background throttle monitoring task."""
@@ -961,6 +1921,14 @@ class StigmergicAgent(Agent):
             checkpoint_manager: CheckpointManager instance for persistence.
         """
         from cyberred.storage.checkpoint import AgentState
+        retry_state_items = sorted(
+            self._command_retry_state.items(),
+            key=lambda item: float(item[1].get("last_attempt_ts") or 0.0),
+        )[-500:]
+        swarm_detail_items = sorted(
+            self._swarm_finding_details.items(),
+            key=lambda item: str(item[1].get("timestamp") or ""),
+        )[-300:]
         
         state = AgentState(
             agent_id=self.agent_id,
@@ -970,6 +1938,15 @@ class StigmergicAgent(Agent):
                 "status": self._status,
                 "tool_help_cache": self._tool_help_cache,
                 "current_task_id": getattr(self, "_current_task_id", None),
+                "recent_tool_results": list(self._recent_tool_results)[-60:],
+                "command_fingerprints": list(self._command_fingerprints)[-300:],
+                "swarm_findings": list(self._swarm_findings)[-self._swarm_findings_maxlen:],
+                "swarm_finding_details": {
+                    key: value for key, value in swarm_detail_items if isinstance(value, dict)
+                },
+                "command_retry_state": {
+                    key: value for key, value in retry_state_items if isinstance(value, dict)
+                },
             },
             last_action_id=getattr(self, "_last_action_id", None),
             decision_context=",".join(self._decision_context) if self._decision_context else None,
@@ -986,12 +1963,71 @@ class StigmergicAgent(Agent):
         self._status = agent_state.state.get("status", "active")
         self._tool_help_cache = agent_state.state.get("tool_help_cache", {})
         self._current_task_id = agent_state.state.get("current_task_id")
+        recent_tool_results = agent_state.state.get("recent_tool_results", [])
+        if isinstance(recent_tool_results, list):
+            self._recent_tool_results = deque(
+                [item for item in recent_tool_results if isinstance(item, dict)],
+                maxlen=80,
+            )
+        else:
+            self._recent_tool_results = deque(maxlen=80)
+        command_fingerprints = agent_state.state.get("command_fingerprints", [])
+        if isinstance(command_fingerprints, list):
+            self._command_fingerprints = deque(
+                [item for item in command_fingerprints if isinstance(item, str) and item],
+                maxlen=400,
+            )
+        else:
+            self._command_fingerprints = deque(maxlen=400)
+        self._refresh_command_fingerprint_set()
+        swarm_findings = agent_state.state.get("swarm_findings", [])
+        if isinstance(swarm_findings, list):
+            self._swarm_findings = deque(
+                [item for item in swarm_findings if isinstance(item, dict)],
+                maxlen=self._swarm_findings_maxlen,
+            )
+        else:
+            self._swarm_findings = deque(maxlen=self._swarm_findings_maxlen)
+        swarm_finding_details = agent_state.state.get("swarm_finding_details", {})
+        self._swarm_finding_details = {}
+        if isinstance(swarm_finding_details, dict):
+            for finding_id, details in swarm_finding_details.items():
+                if isinstance(finding_id, str) and finding_id and isinstance(details, dict):
+                    self._swarm_finding_details[finding_id] = dict(details)
+        command_retry_state = agent_state.state.get("command_retry_state", {})
+        self._command_retry_state = {}
+        if isinstance(command_retry_state, dict):
+            for fingerprint, state in command_retry_state.items():
+                if not isinstance(fingerprint, str) or not fingerprint or not isinstance(state, dict):
+                    continue
+                try:
+                    attempts = max(1, int(state.get("attempts") or 1))
+                except (TypeError, ValueError):
+                    attempts = 1
+                try:
+                    last_attempt_ts = float(state.get("last_attempt_ts") or 0.0)
+                except (TypeError, ValueError):
+                    last_attempt_ts = 0.0
+                self._command_retry_state[fingerprint] = {
+                    "status": str(state.get("status") or "").strip().lower() or "failed",
+                    "attempts": attempts,
+                    "last_attempt_ts": last_attempt_ts,
+                    "context_token": str(state.get("context_token") or ""),
+                }
         self._last_action_id = agent_state.last_action_id
         if agent_state.decision_context:
             self._decision_context = agent_state.decision_context.split(",")
         else:
             self._decision_context = []
-        self._log.info("agent_restored_from_checkpoint", last_action=self._last_action_id)
+        self._log.info(
+            "agent_restored_from_checkpoint",
+            last_action=self._last_action_id,
+            restored_results=len(self._recent_tool_results),
+            restored_fingerprints=len(self._command_fingerprints),
+            restored_swarm_findings=len(self._swarm_findings),
+            restored_swarm_finding_details=len(self._swarm_finding_details),
+            restored_retry_state=len(self._command_retry_state),
+        )
 
     async def _throttle_monitor_loop(self):
         """Monitor throttle status and log transitions."""
@@ -1041,12 +2077,10 @@ class StigmergicAgent(Agent):
 
         Logic:
         1. Get current queue depth from LLMGateway.
-        2. Get throttle configuration (threshold).
-        3. If threshold < 1.0, calculate max capacity based on `engagement.max_agents`.
-           - This assumes max_agents is a rough proxy for "full load".
-           - Threshold becomes `threshold * max_agents`.
-        4. If threshold >= 1.0, use as raw count.
-        5. Return True if queue_depth >= threshold.
+        2. Read throttle mode + threshold from settings.
+        3. `queue_depth` mode uses queue pressure thresholds directly.
+        4. `legacy_max_agents` mode preserves historic max_agents percentage behavior.
+        5. Return True if queue depth exceeds computed threshold.
 
         Fail-open: If gateway unavailable, return False.
 
@@ -1063,15 +2097,23 @@ class StigmergicAgent(Agent):
             settings = get_settings()
             throttle_config = settings.agents.throttle
 
+            mode = str(getattr(throttle_config, "mode", "queue_depth")).strip().lower()
             threshold = throttle_config.threshold
 
-            # Normalize threshold
-            if threshold < 1.0:
-                max_agents = settings.engagement.max_agents
-                # Ensure at least 1 if max_agents is small
-                target_depth = max(1, int(threshold * max_agents))
+            if mode == "legacy_max_agents":
+                # Legacy behavior retained for backwards compatibility.
+                if threshold < 1.0:
+                    max_agents = settings.engagement.max_agents
+                    target_depth = max(1, int(threshold * max_agents))
+                else:
+                    target_depth = max(1, int(threshold))
             else:
-                target_depth = int(threshold)
+                # Queue-depth mode: threshold is interpreted against queue pressure.
+                if threshold < 1.0:
+                    queue_capacity_hint = int(getattr(throttle_config, "queue_capacity_hint", 20))
+                    target_depth = max(1, int(threshold * max(1, queue_capacity_hint)))
+                else:
+                    target_depth = max(1, int(threshold))
 
             return queue_depth >= target_depth
 
@@ -1101,7 +2143,8 @@ class StigmergicAgent(Agent):
         """
         tools_list = ", ".join(context.available_tools[:50])  # Limit for token budget
         # Cap previous results to prevent prompt bloat over long engagements
-        capped_results = context.previous_results[-15:] if context.previous_results else []
+        selection_history = context.previous_results or self.get_recent_tool_results(limit=30)
+        capped_results = selection_history[-15:] if selection_history else []
         previous_results_str = json.dumps(capped_results) if capped_results else "None"
 
         base_prompt = f"""Select the best tool for this objective and generate a complete command.
@@ -1116,16 +2159,22 @@ class StigmergicAgent(Agent):
 
         # Stigmergic swarm awareness — inject findings from other agents
         if self._swarm_findings:
-            swarm_items = list(self._swarm_findings)[-20:]  # Last 20 only
+            swarm_items = self._select_swarm_findings_for_prompt(context)
+            expanded_count = min(self._swarm_auto_expand_count, len(swarm_items))
             swarm_summary = "\n".join(
-                f"- [{f['severity']}] {f['type']} on {f['target']} via {f['tool']}: {f['evidence']}"
-                for f in swarm_items
+                f"- {self._format_swarm_finding_for_prompt(item, expanded=index < expanded_count)}"
+                for index, item in enumerate(swarm_items)
             )
             base_prompt += f"\n\n**Swarm Findings (from other agents):**\n{swarm_summary}"
-            base_prompt += "\nAvoid duplicating work already done. Target services/vulnerabilities not yet covered."
+            base_prompt += (
+                "\nAvoid duplicating work already done."
+                " Treat lane=telemetry items as anti-repeat and pivot signals."
+                " Focus on targets/services with validated evidence and unresolved pivots."
+            )
             self._log.info(
                 "swarm_context_injected",
                 swarm_finding_count=len(swarm_items),
+                expanded_finding_count=expanded_count,
             )
 
         # Story 7.17: Include strategy context if active
@@ -1133,12 +2182,20 @@ class StigmergicAgent(Agent):
         if strategy_context:
             base_prompt += f"\n\n**Director Strategy:**\n{strategy_context}"
 
+        # Scope-aware target list — prevent LLM from hallucinating out-of-scope targets
+        scope_targets = self._get_scope_targets()
+        if scope_targets:
+            base_prompt += f"\n\n**IN-SCOPE TARGETS ONLY:** {', '.join(scope_targets)}"
+            base_prompt += "\nDo NOT target any hosts, IPs, or networks not listed above."
+
         base_prompt += """
 
 COMMAND RULES:
 - Generate a single tool command. You may pipe output through filters (e.g. | grep, | sort, | head).
 - Do NOT use semicolons (;) to chain unrelated commands.
 - Do NOT use $(), backticks, or variable substitution.
+- Do NOT use process substitution (<(...), >(...)).
+- Do NOT use curl/wget to public internet hosts unless explicitly authorized.
 - Quote arguments containing special characters with single quotes.
 
 Respond with JSON only:
@@ -1222,35 +2279,92 @@ Respond with JSON only:
                 previous_results=context.previous_results,
             )
 
-        # Build selection prompt
-        prompt = self._build_tool_selection_prompt(context)
-
         # Publish "thinking" status for TUI
         await self._publish_status("thinking")
+        selection: ToolSelection | None = None
+        attempt_context = context
+        max_attempts = 3
 
-        # Query LLM
-        if self._llm_gateway:
-            from cyberred.llm.provider import LLMRequest
+        for attempt in range(max_attempts):
+            prompt = self._build_tool_selection_prompt(attempt_context)
 
-            request = LLMRequest(
-                prompt=prompt,
-                model="default",  # Router will select appropriate model
-                system_prompt=self.system_prompt,
-                max_tokens=5000,  # Thinking models (MiniMax) need room for <think> + JSON
-            )
-            response = await self._llm_gateway.agent_complete(request)
-            # Detect gateway error responses (content="" with error finish_reason)
-            if response.finish_reason and response.finish_reason.startswith("error:"):
+            if self._llm_gateway:
+                from cyberred.llm.provider import LLMRequest
+
+                request = LLMRequest(
+                    prompt=prompt,
+                    model="default",
+                    system_prompt=self.system_prompt,
+                    max_tokens=5000,
+                )
+                response = await self._llm_gateway.agent_complete(request)
+                finish_reason = getattr(response, "finish_reason", None)
+                if isinstance(finish_reason, str) and finish_reason.startswith("error:"):
+                    raise ToolSelectionError(
+                        agent_id=self.agent_id,
+                        reason=f"LLM call failed: {finish_reason}",
+                    )
+                response_text = response.content
+            else:
+                raise ToolSelectionError(agent_id=self.agent_id, reason="No LLM gateway configured")
+
+            candidate = self._parse_tool_selection(response_text)
+            try:
+                candidate.command = self._validate_command(
+                    candidate.command,
+                    candidate.tool_name,
+                )
+            except ValueError as e:
                 raise ToolSelectionError(
                     agent_id=self.agent_id,
-                    reason=f"LLM call failed: {response.finish_reason}",
-                )
-            response_text = response.content
-        else:
-            raise ToolSelectionError(agent_id=self.agent_id, reason="No LLM gateway configured")
+                    reason=f"Invalid generated command: {e}",
+                ) from e
 
-        # Parse and validate response
-        selection = self._parse_tool_selection(response_text)
+            target_hint = self._selection_target_hint(attempt_context.target_info)
+            context_token = self._build_context_token(
+                attempt_context,
+                phase=attempt_context.phase,
+                target=target_hint,
+            )
+            if not self._is_recent_command(
+                candidate.tool_name,
+                candidate.command,
+                phase=attempt_context.phase,
+                target=target_hint,
+                context_token=context_token,
+            ):
+                selection = candidate
+                self._selection_context_token = context_token
+                break
+
+            self._log.warning(
+                "duplicate_tool_selection_rejected",
+                tool=candidate.tool_name,
+                attempt=attempt + 1,
+                phase=attempt_context.phase,
+                target=target_hint,
+            )
+            if attempt >= max_attempts - 1:
+                raise ToolSelectionError(
+                    agent_id=self.agent_id,
+                    reason="LLM repeatedly selected duplicate command",
+                )
+            retry_constraints = list(attempt_context.constraints)
+            retry_constraints.append("choose a materially different command than prior runs")
+            attempt_context = ToolSelectionContext(
+                objective=attempt_context.objective,
+                target_info=attempt_context.target_info,
+                available_tools=attempt_context.available_tools,
+                phase=attempt_context.phase,
+                constraints=retry_constraints,
+                previous_results=attempt_context.previous_results,
+            )
+
+        if selection is None:
+            raise ToolSelectionError(
+                agent_id=self.agent_id,
+                reason="LLM did not return a usable tool selection",
+            )
 
         # Track in decision_context (NFR37) - use tracker if available
         if self._context_tracker:
@@ -1296,9 +2410,109 @@ Respond with JSON only:
         Raises:
             ValueError: If command validation fails.
         """
+        import os
+        import re
+        import shlex
+
         command = command.strip()
-        if not command.startswith(tool):
-            raise ValueError(f"Generated command must start with '{tool}', got: {command[:50]}")
+        if not command:
+            raise ValueError("Generated command cannot be empty")
+
+        try:
+            tokens = shlex.split(command)
+        except ValueError as e:
+            raise ValueError(f"Generated command is not shell-parseable: {e}") from e
+
+        def _normalize_name(value: str) -> str:
+            normalized = os.path.basename((value or "").strip().lower())
+            if normalized.endswith(".py"):
+                normalized = normalized[:-3]
+            normalized = normalized.replace("impacket-", "")
+            return re.sub(r"[^a-z0-9]+", "", normalized)
+
+        def _resolve_executable(parts: list[str]) -> str:
+            index = 0
+            while index < len(parts):
+                token = parts[index]
+                executable = os.path.basename(token)
+                if executable in {"sudo", "nohup", "setsid", "command"}:
+                    index += 1
+                    continue
+                if executable == "env":
+                    index += 1
+                    while (
+                        index < len(parts)
+                        and "=" in parts[index]
+                        and not parts[index].startswith("-")
+                    ):
+                        index += 1
+                    continue
+                if executable == "timeout":
+                    index += 1
+                    while index < len(parts) and parts[index].startswith("-"):
+                        if parts[index] in {"-k", "--kill-after", "-s", "--signal"} and index + 1 < len(parts):
+                            index += 2
+                        else:
+                            index += 1
+                    if index < len(parts):
+                        index += 1
+                    continue
+                if executable in {"sh", "bash"} and index + 2 < len(parts) and parts[index + 1] in {"-c", "-lc"}:
+                    nested = parts[index + 2]
+                    try:
+                        nested_tokens = shlex.split(nested)
+                    except ValueError:
+                        nested_tokens = nested.split()
+                    if nested_tokens:
+                        return os.path.basename(nested_tokens[0])
+                    return ""
+                return executable
+            return ""
+
+        expected_exec = os.path.basename((tool or "").strip())
+        actual_exec = _resolve_executable(tokens)
+        expected_norm = _normalize_name(expected_exec)
+        actual_norm = _normalize_name(actual_exec)
+
+        valid = actual_norm == expected_norm
+        if not valid and expected_norm == "sleuthkit":
+            valid = actual_norm in {
+                "fls", "mmls", "icat", "tskrecover", "blkls", "ffind", "ifind",
+                "fsstat", "istat", "imgstat", "sigfind", "sorter", "jls", "jcat",
+                "mmcat", "mmstat", "hfind",
+            }
+        if (
+            not valid
+            and expected_norm
+            and actual_norm
+            and min(len(expected_norm), len(actual_norm)) >= 5
+        ):
+            valid = actual_norm in expected_norm or expected_norm in actual_norm
+
+        if not valid:
+            raise ValueError(
+                f"Generated command executable '{actual_exec or '<unknown>'}' "
+                f"is not compatible with tool '{tool}'"
+            )
+
+        # Guardrail: nmap expects time units for --max-rtt-timeout.
+        # Auto-fix bare integer values (e.g. 2000 -> 2000ms) which otherwise
+        # imply seconds and cause effectively stuck scans.
+        if tool == "nmap":
+            command = re.sub(
+                r"(--max-rtt-timeout\s+)(\d+)(?=\s|$)",
+                r"\1\2ms",
+                command,
+            )
+
+        # Guardrail: reject common placeholder host files that do not exist in
+        # worker containers and lead to immediate no-op errors.
+        if tool == "masscan":
+            if re.search(r"(?:^|\s)-iL\s+(targets\.txt|hosts\.txt|ips\.txt)(?:\s|$)", command):
+                raise ValueError(
+                    "masscan command references placeholder input file; use explicit targets instead"
+                )
+
         return command
 
     async def generate_command(
@@ -1343,7 +2557,7 @@ Return ONLY the command, no explanation."""
                 prompt=prompt,
                 model="default",  # Router will select appropriate model
                 system_prompt=self.system_prompt,
-                max_tokens=200,
+                max_tokens=5000,
             )
             response = await self._llm_gateway.agent_complete(request)
             command = response.content.strip()

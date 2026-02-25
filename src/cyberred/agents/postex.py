@@ -17,7 +17,9 @@ import structlog
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
 from cyberred.core.config import get_settings
+from cyberred.core.exceptions import ScopeViolationError
 from cyberred.core.events import EventBus
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.hashing import compute_hmac_signature
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
@@ -102,18 +104,19 @@ class PostExAgent(StigmergicAgent):
             if intel:
                 decision_context.append(f"intel:{intel.source}:{intel.cve_id or 'unknown'}")
             action_id, result_finding_id, tool_name = str(uuid.uuid4()), None, "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(context)
                 tool_name = selection.tool_name
                 self._log.info("executing_tool", tool=tool_name, command=selection.command[:80])
                 result = await self._kali_execute_and_publish(selection.command, selection.tool_name)
-                if result.success:
-                    finding = await self._process_postex_result(target, selection, result, access_data, intel)
-                    if finding:
-                        all_findings.append(finding)
-                        await self.on_finding(finding)
-                        result_finding_id = finding.id
+                finding = await self._process_postex_result(target, selection, result, access_data, intel)
+                if finding:
+                    all_findings.append(finding)
+                    await self.on_finding(finding)
+                    result_finding_id = finding.id
+                    iteration_findings += 1
                 else:
                     alt = await self._handle_postex_failure(tool_name)
                     if alt:
@@ -123,8 +126,33 @@ class PostExAgent(StigmergicAgent):
                     phase=context.phase, constraints=context.constraints,
                     previous_results=[asdict(f) for f in all_findings],
                 )
+            except ScopeViolationError as e:
+                decision_context.append(f"scope_blocked:{e.scope_rule}")
+                self._log.warning(
+                    "postex_scope_blocked",
+                    error=str(e),
+                    scope_rule=e.scope_rule,
+                    tool=tool_name,
+                )
             except Exception as e:
                 self._log.error("postex_iteration_error", error=str(e))
+
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_postex_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Postex no-yield streak triggered escalation",
+                    role="postex",
+                    tool=tool_name,
+                    target=target,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+            context = self._add_novelty_constraints(context, streak)
 
             all_actions.append(AgentAction(
                 id=action_id, agent_id=str(self.agent_id), action_type=f"postex:{tool_name}",
@@ -136,13 +164,50 @@ class PostExAgent(StigmergicAgent):
     async def _process_postex_result(
         self, target: str, selection: Any, result: Any, access_data: dict[str, Any], intel: "IntelResult | None"
     ) -> Finding | None:
+        processed = await self.output_processor.async_process(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            tool=selection.tool_name,
+            exit_code=result.exit_code,
+            agent_id=str(self.agent_id),
+            target=target,
+            error_type=getattr(result, "error_type", None),
+        )
+        parsed = processed.findings[0] if processed.findings else None
+        candidate_type = str(parsed.type if parsed else "postex")
+        candidate_severity = str(parsed.severity if parsed else "high")
+        parsed_evidence = str(parsed.evidence if parsed else "")
+        execution = self._execution_metadata(result, selection.command)
+        evidence_payload: dict[str, Any] = {
+            "raw_evidence": parsed_evidence or (result.stdout[:2000] if result.stdout else ""),
+            "summary": processed.summary,
+            "command": selection.command,
+            "execution": execution,
+            "cve_id": intel.cve_id if intel else None,
+            "os_type": access_data.get("os_type"),
+            "parser_tier": processed.tier,
+            "tool_output_stdout": (result.stdout or "")[:2000],
+            "tool_output_stderr": (result.stderr or "")[:1000],
+        }
+        assessment = assess_finding_payload(
+            {
+                "type": candidate_type,
+                "severity": candidate_severity,
+                "target": target,
+                "tool": selection.tool_name,
+                "evidence": evidence_payload,
+                "execution": execution,
+            }
+        )
+        evidence_payload["validation"] = assessment
+        if assessment["outcome_status"] == "failed":
+            return None
+
         finding_data = {
-            "id": str(uuid.uuid4()), "target": target, "type": "postex", "tool": selection.tool_name,
-            "severity": "high", "timestamp": datetime.now(UTC).isoformat(),
+            "id": str(uuid.uuid4()), "target": target, "type": candidate_type, "tool": selection.tool_name,
+            "severity": assessment["severity"], "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(self.agent_id), "topic": f"findings:{self._hash_target(target)}:postex",
-            "evidence": json.dumps({"stdout": result.stdout[:2000] if result.stdout else "",
-                                    "command": selection.command, "cve_id": intel.cve_id if intel else None,
-                                    "os_type": access_data.get("os_type")}),
+            "evidence": json.dumps(evidence_payload),
         }
         finding_data["signature"] = self._generate_finding_signature(finding_data)
         return Finding(**finding_data)
@@ -167,14 +232,27 @@ class PostExAgent(StigmergicAgent):
                 return ScopeValidator.from_file(settings.engagement.scope_path)
             except Exception:
                 pass
-        return ScopeValidator(ScopeConfig())
+        # Fallback: search engagement directory for scope.yaml
+        from pathlib import Path as _Path
+        eng_dir = _Path.home() / ".cyber-red" / "engagements"
+        if eng_dir.exists():
+            for scope_file in sorted(eng_dir.glob("*/scope.yaml"), reverse=True):
+                try:
+                    return ScopeValidator.from_file(scope_file)
+                except Exception:
+                    continue
+        return ScopeValidator(ScopeConfig(allow_private=True))
 
     async def _query_intelligence(self, os_type: str = "", access_type: str = "") -> list["IntelResult"]:
         if not self._intel_aggregator:
             return []
+        query_os = (os_type or self._current_os_type or "host").strip()
+        query_access = (access_type or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(os_type, access_type), timeout=INTELLIGENCE_TIMEOUT)
+                self._intel_aggregator.query(query_os, query_access),
+                timeout=INTELLIGENCE_TIMEOUT,
+            )
         except Exception:
             return []
 
@@ -224,17 +302,15 @@ class PostExAgent(StigmergicAgent):
         try:
             await self._publish_to_swarm(target_hash, "postex", message)
         except Exception:
-            channel = f"findings:{target_hash}:postex"
-            self._finding_buffer.append({"channel": channel, "message": message})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="postex",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
         await super().on_signal(channel, data)

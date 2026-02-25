@@ -15,6 +15,11 @@ from .router import ModelRouter, TaskComplexity, ModelConfig
 from .priority_queue import LLMPriorityQueue, RequestPriority, PriorityRequest
 from .gateway import LLMGateway, initialize_gateway, get_gateway, shutdown_gateway
 from .retry import RetryPolicy
+from .env import (
+    resolve_llm_api_key,
+    resolve_llm_api_key_with_source,
+    resolve_llm_api_base,
+)
 from .ensemble import (
     DirectorRole,
     DirectorModel,
@@ -74,6 +79,9 @@ __all__ = [
     "get_gateway",
     "shutdown_gateway",
     "RetryPolicy",
+    "resolve_llm_api_key",
+    "resolve_llm_api_key_with_source",
+    "resolve_llm_api_base",
     "LLMGatewayNotInitializedError",
     # Director Ensemble (Story 8.1)
     "DirectorRole",

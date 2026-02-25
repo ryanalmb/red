@@ -175,6 +175,18 @@ class TestLLMPriorityQueue:
         assert queue.total_queue_depth == 0
 
     @pytest.mark.asyncio
+    async def test_requeue_restores_depth(self):
+        """Test requeue() restores pending depth after dequeue."""
+        queue = LLMPriorityQueue()
+        await queue.enqueue_agent(LLMRequest(prompt="A", model="test"))
+        dequeued = await queue.dequeue()
+        assert queue.total_queue_depth == 0
+
+        await queue.requeue(dequeued)
+        assert queue.total_queue_depth == 1
+        assert queue.agent_queue_depth == 1
+
+    @pytest.mark.asyncio
     async def test_queue_statistics_properties(self):
         """Test that implementation exposes statistics properties (Task 8)."""
         queue = LLMPriorityQueue()

@@ -86,6 +86,7 @@ class AgentCrashMonitor:
         self._on_crash = on_crash_callback
         self._agents: dict[str, AgentHealthState] = {}
         self._monitor_task: Optional[asyncio.Task[None]] = None
+        self._heartbeat_subscription: Any = None
         self._log = log.bind(component="crash_monitor")
     
     async def start(self) -> None:
@@ -93,8 +94,20 @@ class AgentCrashMonitor:
         
         Subscribes to heartbeat events and starts the periodic check loop.
         """
-        # Subscribe to heartbeat pattern
-        await self._event_bus.subscribe("agent:*:heartbeat", self._handle_heartbeat)
+        # Subscribe to heartbeat pattern.
+        # Prefer pattern subscription when available (core.event_bus) so
+        # channels like agent:{id}:heartbeat are matched correctly.
+        if hasattr(self._event_bus, "psubscribe"):
+            self._heartbeat_subscription = await self._event_bus.psubscribe(
+                "agent:*:heartbeat",
+                self._handle_heartbeat,
+            )
+        else:
+            # Fallback for buses without psubscribe support.
+            self._heartbeat_subscription = await self._event_bus.subscribe(
+                "agent:heartbeat",
+                lambda data: self._handle_heartbeat("agent:heartbeat", data),
+            )
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         self._log.info("crash_monitor_started")
     
@@ -105,6 +118,15 @@ class AgentCrashMonitor:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._monitor_task
             self._monitor_task = None
+        if self._heartbeat_subscription is not None:
+            with contextlib.suppress(Exception):
+                cancel_fn = getattr(self._heartbeat_subscription, "cancel", None)
+                unsubscribe_fn = getattr(self._heartbeat_subscription, "unsubscribe", None)
+                if callable(cancel_fn):
+                    await cancel_fn()
+                elif callable(unsubscribe_fn):
+                    await unsubscribe_fn()
+            self._heartbeat_subscription = None
         self._log.info("crash_monitor_stopped")
     
     async def register_agent(self, agent_id: str, engagement_id: str) -> None:

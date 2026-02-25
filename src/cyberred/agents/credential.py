@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import uuid
 from collections import deque
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
@@ -143,6 +145,7 @@ class CredentialAgent(StigmergicAgent):
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(tool_context)
@@ -151,9 +154,15 @@ class CredentialAgent(StigmergicAgent):
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result)
-                    findings.append(finding)
-                    await self.on_finding(finding)
-                    result_finding_id = finding.id
+                    if finding:
+                        findings.append(finding)
+                        await self.on_finding(finding)
+                        result_finding_id = finding.id
+                        iteration_findings += 1
+                    else:
+                        alt = await self._handle_credential_failure(tool_name)
+                        if alt:
+                            decision_context.append(f"rag_escalation:{tool_name}:{alt}")
 
                     # Check for cracked credentials in output
                     await self._check_cracked_results(result, selection)
@@ -177,6 +186,22 @@ class CredentialAgent(StigmergicAgent):
                 ))
                 break
 
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_credential_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Credential no-yield streak triggered escalation",
+                    role="credential",
+                    tool=tool_name,
+                    target=target,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+
             actions.append(AgentAction(
                 id=action_id,
                 agent_id=self.agent_id,
@@ -191,11 +216,13 @@ class CredentialAgent(StigmergicAgent):
 
     async def _query_intelligence(self, service: str = "", hash_type: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for credential attack techniques."""
-        if not self._intel_aggregator or not service:
+        if not self._intel_aggregator:
             return []
+        query_service = (service or self._current_service or hash_type or "credential").strip()
+        query_hash_type = (hash_type or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(service, hash_type),
+                self._intel_aggregator.query(query_service, query_hash_type),
                 timeout=self.INTELLIGENCE_TIMEOUT
             )
         except Exception:
@@ -251,34 +278,59 @@ class CredentialAgent(StigmergicAgent):
                 "mimikatz", "impacket-secretsdump", "lsassy", "responder",
                 "ntlmrelayx", "hashid"
             ],
-            previous_results=[{"action": a.action_type, "id": a.id} for a in actions],
+            previous_results=self.get_recent_tool_results(limit=30),
         )
 
     def _get_constraints(self) -> list[str]:
         """Get constraints based on current strategy."""
+        constraints: list[str] = []
         if self.current_strategy == "stealth":
-            return [
+            constraints.extend([
                 "Limit password spraying to 1 attempt per user",
                 "Prefer offline cracking over online attacks",
                 "Avoid triggering account lockouts",
                 "Use stealth techniques"
-            ]
+            ])
         elif self.current_strategy == "aggressive":
-            return [
+            constraints.extend([
                 "Full password spraying allowed",
                 "All attack techniques permitted",
                 "Aggressive wordlist combinations enabled"
-            ]
-        return []
+            ])
+        if self._no_finding_streak >= 2:
+            constraints.append("pivot from repeated credential tactics that yielded no new access")
+        if self._no_finding_streak >= self._no_finding_streak_threshold:
+            constraints.append("select materially different credential workflow and target accounts")
+        return constraints
 
-    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding:
+    def _create_finding(self, target: str, selection: Any, result: Any) -> Finding | None:
         """Create a Finding from tool execution result."""
+        execution = self._execution_metadata(result, selection.command)
+        evidence_payload: dict[str, Any] = {
+            "raw_evidence": result.stdout[:1200] if result.stdout else "",
+            "command": selection.command,
+            "execution": execution,
+        }
+        assessment = assess_finding_payload(
+            {
+                "type": "credential",
+                "severity": "high",
+                "target": target,
+                "tool": selection.tool_name,
+                "evidence": evidence_payload,
+                "execution": execution,
+            }
+        )
+        evidence_payload["validation"] = assessment
+        if assessment["outcome_status"] == "failed":
+            return None
+
         return Finding(
             id=str(uuid.uuid4()),
             type="credential",
-            severity="high",
+            severity=assessment["severity"],
             target=target,
-            evidence=result.stdout[:500] if result.stdout else "",
+            evidence=json.dumps(evidence_payload),
             agent_id=self.agent_id,
             timestamp=self._get_timestamp(),
             tool=selection.tool_name,
@@ -557,24 +609,24 @@ class CredentialAgent(StigmergicAgent):
         message = {
             "id": finding.id,
             "type": finding.type,
+            "target": finding.target,
             "severity": finding.severity,
             "evidence": finding.evidence,
+            "tool": finding.tool,
         }
         try:
             await self._publish_to_swarm(target_hash, "credential", message)
         except Exception:
-            channel = f"findings:{target_hash}:credential"
-            self._finding_buffer.append({"channel": channel, "message": {"id": finding.id}})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="credential",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
         """Flush buffered findings on reconnect."""
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def stop(self) -> None:
         """Stop the agent gracefully."""

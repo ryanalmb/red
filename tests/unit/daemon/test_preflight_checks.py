@@ -19,6 +19,7 @@ from cyberred.daemon.preflight import (
     RedisCheck,
     LLMCheck,
     CertCheck,
+    ResourceAdmissionCheck,
     CheckStatus,
     CheckPriority,
     CERT_MIN_HOURS_REMAINING,
@@ -306,11 +307,18 @@ class TestLLMCheck:
     @pytest.mark.asyncio
     async def test_llm_check_pass(self) -> None:
         """LLMCheck should pass when API responds with 200."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
+        models_response = MagicMock()
+        models_response.status_code = 200
+        models_response.json.return_value = {
+            "data": [{"id": "mistralai/devstral-2-123b-instruct-2512"}]
+        }
+
+        completion_response = MagicMock()
+        completion_response.status_code = 200
         
         mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
+        mock_client.get.return_value = models_response
+        mock_client.post.return_value = completion_response
         mock_client.__aenter__.return_value = mock_client
         mock_client.__aexit__.return_value = None
         
@@ -324,8 +332,15 @@ class TestLLMCheck:
         assert "reachable" in result.message.lower()
 
     @pytest.mark.asyncio
-    async def test_llm_check_missing_key(self) -> None:
+    async def test_llm_check_missing_key(self, monkeypatch) -> None:
         """LLMCheck should fail if API key missing."""
+        for var in (
+            "NVIDIA_API_KEY",
+            "NVIDIA_NIM_API_KEY",
+            "CYBERRED_LLM__NIM_API_KEY",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
         check = LLMCheck()
         result = await check.execute({})  # No key in config or env
         
@@ -508,3 +523,85 @@ class TestCertCheck:
         
         assert result.status == CheckStatus.FAIL
         assert "Cert check failed" in result.message
+
+
+class TestResourceAdmissionCheck:
+    """Tests for ResourceAdmissionCheck with injected host metrics."""
+
+    VirtualMemory = namedtuple("VirtualMemory", ["available", "total", "percent"])
+    CpuTimes = namedtuple("CpuTimes", ["iowait"])
+
+    @pytest.mark.asyncio
+    async def test_resource_admission_pass_and_contract(self) -> None:
+        """Should pass and return a resource_contract when host has headroom."""
+
+        def mock_memory() -> TestResourceAdmissionCheck.VirtualMemory:
+            return TestResourceAdmissionCheck.VirtualMemory(
+                available=32 * 1024**3,
+                total=64 * 1024**3,
+                percent=50.0,
+            )
+
+        def mock_cpu_percent(interval: float | None = None) -> float:
+            return 10.0
+
+        def mock_cpu_times_percent(interval: float | None = None) -> TestResourceAdmissionCheck.CpuTimes:
+            return TestResourceAdmissionCheck.CpuTimes(iowait=2.0)
+
+        def mock_cpu_count() -> int:
+            return 8
+
+        def mock_loadavg() -> tuple[float, float, float]:
+            return (1.0, 1.0, 1.0)
+
+        check = ResourceAdmissionCheck(
+            memory_fn=mock_memory,
+            cpu_percent_fn=mock_cpu_percent,
+            cpu_times_percent_fn=mock_cpu_times_percent,
+            cpu_count_fn=mock_cpu_count,
+            loadavg_fn=mock_loadavg,
+        )
+        config = {
+            "target_agents": 600,
+            "worker_pool_size": 10,
+            "roe": {"max_concurrent_tools": 8},
+        }
+        result = await check.execute(config)
+
+        assert result.status in (CheckStatus.PASS, CheckStatus.WARN)
+        assert isinstance(result.details, dict)
+        contract = result.details.get("resource_contract")
+        assert isinstance(contract, dict)
+        assert contract.get("target_agents") == 600
+        assert contract.get("expected_workers") == 10
+        assert contract.get("max_agents_allowed_now") is not None
+        assert isinstance(contract.get("policy"), dict)
+
+    @pytest.mark.asyncio
+    async def test_resource_admission_fail_on_memory_shortage(self) -> None:
+        """Should fail when available memory is below required_memory_mb."""
+
+        def mock_memory() -> TestResourceAdmissionCheck.VirtualMemory:
+            return TestResourceAdmissionCheck.VirtualMemory(
+                available=2 * 1024**3,
+                total=4 * 1024**3,
+                percent=95.0,
+            )
+
+        def mock_cpu_percent(interval: float | None = None) -> float:
+            return 10.0
+
+        def mock_cpu_times_percent(interval: float | None = None) -> TestResourceAdmissionCheck.CpuTimes:
+            return TestResourceAdmissionCheck.CpuTimes(iowait=2.0)
+
+        check = ResourceAdmissionCheck(
+            memory_fn=mock_memory,
+            cpu_percent_fn=mock_cpu_percent,
+            cpu_times_percent_fn=mock_cpu_times_percent,
+            cpu_count_fn=lambda: 8,
+            loadavg_fn=lambda: (1.0, 1.0, 1.0),
+        )
+        result = await check.execute({"target_agents": 100, "worker_pool_size": 10})
+
+        assert result.status == CheckStatus.FAIL
+        assert "blocked" in result.message.lower() or "failed" in result.message.lower()

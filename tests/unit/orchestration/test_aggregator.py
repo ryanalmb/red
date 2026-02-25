@@ -1284,6 +1284,31 @@ class TestEdgeCases:
         assert len(exploit_findings) == 1
         assert exploit_findings[0].target == "10.0.0.5"
 
+    def test_format_for_director_includes_carry_forward_context(self) -> None:
+        """Carry-forward findings should appear after window reset."""
+        aggregator = FindingAggregator(
+            config=AggregatorConfig(
+                rolling_memory_enabled=True,
+                rolling_window_seconds=1800,
+                rolling_max_findings=50,
+            )
+        )
+        finding = AggregatedFinding(
+            target="10.0.0.77",
+            finding_type="credential",
+            severity=FindingSeverity.HIGH,
+            category=FindingCategory.POSTEX,
+            timestamp=time.time(),
+            agent_id="agent-1",
+        )
+        aggregator.add_finding(finding)
+        aggregator.reset_window()
+
+        output = aggregator.format_for_director()
+        assert "Carry-Forward Context" in output
+        assert "10.0.0.77" in output
+        assert "credential" in output
+
 
 # =============================================================================
 # Tests for include_info_severity Config (Code Review Fix)

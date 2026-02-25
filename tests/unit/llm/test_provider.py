@@ -43,7 +43,7 @@ class TestLLMRequest:
         assert request.prompt == "Hello"
         assert request.model == "test-model"
         assert request.temperature == 0.7  # default
-        assert request.max_tokens == 1024  # default
+        assert request.max_tokens == 5000  # default
         assert request.top_p == 1.0  # default
         assert request.frequency_penalty == 0.0  # default
 
@@ -462,4 +462,3 @@ class TestPackageImports:
         assert LLMRateLimitExceeded is not None
         assert LLMTimeoutError is not None
         assert LLMResponseError is not None
-

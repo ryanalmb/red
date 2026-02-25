@@ -16,6 +16,7 @@ Usage:
     manager.list_engagements()  # Returns EngagementSummary list
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ import re
 import secrets
 
 import structlog
+import psutil
 import yaml
 
 from cyberred.core.event_bus import EventBus
@@ -93,6 +95,7 @@ class EngagementContext:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     orchestrator: "Orchestrator | None" = None
     engagement_config: dict | None = None
+    resource_contract: dict | None = None
 
     @property
     def state(self) -> EngagementState:
@@ -107,10 +110,80 @@ class EngagementContext:
         return 0
 
     @property
+    def findings_total_cumulative(self) -> int:
+        """Cumulative validated findings (deduplicated)."""
+        if not self.orchestrator:
+            return 0
+        aggregator = getattr(self.orchestrator, "_finding_aggregator", None)
+        if not aggregator:
+            return 0
+        try:
+            outcomes = aggregator.get_outcome_totals()
+            return int(outcomes.get("validated", 0))
+        except Exception:
+            return 0
+
+    @property
+    def findings_cycle_current(self) -> int:
+        """Current director-cycle validated finding count."""
+        if not self.orchestrator:
+            return 0
+        aggregator = getattr(self.orchestrator, "_finding_aggregator", None)
+        if not aggregator:
+            return 0
+        try:
+            summary = aggregator.get_summary()
+            return int(summary.by_outcome.get("validated", 0))
+        except Exception:
+            return 0
+
+    @property
+    def findings_attempted_cumulative(self) -> int:
+        """Cumulative attempted findings (deduplicated)."""
+        if not self.orchestrator:
+            return 0
+        aggregator = getattr(self.orchestrator, "_finding_aggregator", None)
+        if not aggregator:
+            return 0
+        try:
+            outcomes = aggregator.get_outcome_totals()
+            return int(outcomes.get("attempted", 0))
+        except Exception:
+            return 0
+
+    @property
+    def findings_failed_cumulative(self) -> int:
+        """Cumulative failed findings (deduplicated)."""
+        if not self.orchestrator:
+            return 0
+        aggregator = getattr(self.orchestrator, "_finding_aggregator", None)
+        if not aggregator:
+            return 0
+        try:
+            outcomes = aggregator.get_outcome_totals()
+            return int(outcomes.get("failed", 0))
+        except Exception:
+            return 0
+
+    @property
+    def jobs_processed_total(self) -> int:
+        """Total jobs processed (fallback progress metric)."""
+        if not self.orchestrator:
+            return 0
+        try:
+            return int(getattr(self.orchestrator, "_jobs_processed", 0))
+        except Exception:
+            return 0
+
+    @property
     def finding_count(self) -> int:
-        """Current finding count (jobs processed by orchestrator)."""
-        if self.orchestrator:
-            return self.orchestrator._jobs_processed
+        """Legacy finding count alias (finding totals only)."""
+        total = self.findings_total_cumulative
+        if total > 0:
+            return total
+        cycle = self.findings_cycle_current
+        if cycle > 0:
+            return cycle
         return 0
 
     @property
@@ -138,6 +211,11 @@ class EngagementSummary:
     agent_count: int
     finding_count: int
     created_at: datetime
+    findings_total_cumulative: int = 0
+    findings_cycle_current: int = 0
+    findings_attempted_cumulative: int = 0
+    findings_failed_cumulative: int = 0
+    jobs_processed_total: int = 0
 
 
 class SessionManager:
@@ -426,6 +504,18 @@ class SessionManager:
         waiver_config = load_waiver_config(
             waiver_config_path if waiver_config_path.exists() else None
         )
+
+        # Daemon processes may not have a usable stdin (systemd, CI, background).
+        # Never block the event loop on input() in non-interactive contexts.
+        import sys
+        if not getattr(sys, "stdin", None) or not sys.stdin.isatty():
+            raise ConfigurationError(
+                config_path=str(config_path),
+                message=(
+                    "Waiver acceptance must be collected client-side in non-interactive mode. "
+                    "Provide waiver_data (waiver_hash, waiver_signature, waiver_timestamp) when creating the engagement."
+                ),
+            )
         
         acceptance = self._cli_waiver_prompt(waiver_config)
         
@@ -532,6 +622,11 @@ class SessionManager:
                 state=str(e.state),
                 agent_count=e.agent_count,
                 finding_count=e.finding_count,
+                findings_total_cumulative=e.findings_total_cumulative,
+                findings_cycle_current=e.findings_cycle_current,
+                findings_attempted_cumulative=e.findings_attempted_cumulative,
+                findings_failed_cumulative=e.findings_failed_cumulative,
+                jobs_processed_total=e.jobs_processed_total,
                 created_at=e.created_at,
             )
             for e in self._engagements.values()
@@ -600,6 +695,10 @@ class SessionManager:
 
         runner.validate_results(results, ignore_warnings=ignore_warnings)
 
+        resource_contract = self._extract_resource_contract(config, results)
+        context.resource_contract = resource_contract
+        await self._enforce_global_resource_budget(engagement_id, resource_contract)
+
         # Log check results summary
         log.info(
             "preflight_checks_completed",
@@ -657,6 +756,10 @@ class SessionManager:
         # Store engagement context in orchestrator
         orchestrator._engagement_id = engagement_id
         orchestrator._engagement_config = config
+        if hasattr(orchestrator, "apply_resource_contract"):
+            orchestrator.apply_resource_contract(resource_contract)
+        else:
+            orchestrator._resource_contract = resource_contract
 
         try:
             await orchestrator.start()
@@ -679,6 +782,117 @@ class SessionManager:
         )
 
         return context.state
+
+    def _extract_resource_contract(
+        self,
+        config: dict[str, Any],
+        results: list[Any],
+    ) -> dict[str, Any]:
+        """Extract or synthesize engagement resource contract from preflight."""
+        for result in results:
+            if getattr(result, "name", "") != "RESOURCE_ADMISSION_CHECK":
+                continue
+            details = getattr(result, "details", {}) or {}
+            contract = details.get("resource_contract")
+            if isinstance(contract, dict) and contract:
+                return contract
+        return self._fallback_resource_contract(config)
+
+    def _fallback_resource_contract(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Build conservative fallback contract when preflight omits one."""
+        infrastructure = config.get("infrastructure", {})
+        expected_workers = config.get("worker_pool_size")
+        if expected_workers is None and isinstance(infrastructure, dict):
+            expected_workers = infrastructure.get("worker_pool_size")
+        try:
+            expected_workers = max(1, int(expected_workers or 15))
+        except (TypeError, ValueError):
+            expected_workers = 15
+
+        target_agents = config.get("target_agents") or config.get("max_agents") or 100
+        try:
+            target_agents = max(1, int(target_agents))
+        except (TypeError, ValueError):
+            target_agents = 100
+
+        try:
+            requested_parallel_tools = int(
+                (config.get("roe", {}) or {}).get("max_concurrent_tools", 8)
+            )
+        except (TypeError, ValueError):
+            requested_parallel_tools = 8
+        requested_parallel_tools = max(1, requested_parallel_tools)
+        max_parallel_tools_now = max(1, min(requested_parallel_tools, expected_workers))
+
+        required_free_memory_mb = 4096.0
+        director_memory_mb = 512.0
+        headroom_mb = 1024.0
+        # 1MB per agent (default) to align with architecture sizing.
+        reserved_memory_mb = max(
+            director_memory_mb + headroom_mb + float(target_agents),
+            1024.0,
+        )
+
+        return {
+            "target_agents": target_agents,
+            "expected_workers": expected_workers,
+            "requested_parallel_tools": requested_parallel_tools,
+            "max_agents_allowed_now": target_agents,
+            "max_parallel_tools_now": max_parallel_tools_now,
+            "min_worker_reserve": 1,
+            "hardware_agent_cap": target_agents,
+            "required_free_memory_mb": required_free_memory_mb,
+            "required_memory_mb": reserved_memory_mb + required_free_memory_mb,
+            "reserved_memory_mb": reserved_memory_mb,
+            "global_memory_utilization_cap_pct": 90.0,
+            "director_budget_profile": {
+                "cycle_timeout_s": 1200.0,
+                "trigger_timeout_s": 1320.0,
+            },
+        }
+
+    async def _enforce_global_resource_budget(
+        self,
+        engagement_id: str,
+        resource_contract: dict[str, Any],
+    ) -> None:
+        """Prevent over-allocation across concurrently active engagements."""
+        requested_mb = float(resource_contract.get("reserved_memory_mb") or 0.0)
+        if requested_mb <= 0:
+            return
+        requested_free_mb = float(resource_contract.get("required_free_memory_mb") or 0.0)
+
+        active_reserved_mb = 0.0
+        required_free_mb = requested_free_mb
+        for context in self._engagements.values():
+            if context.id == engagement_id:
+                continue
+            if not context.is_active:
+                continue
+            if not context.resource_contract:
+                continue
+            active_reserved_mb += float(context.resource_contract.get("reserved_memory_mb") or 0.0)
+            required_free_mb = max(
+                required_free_mb,
+                float(context.resource_contract.get("required_free_memory_mb") or 0.0),
+            )
+
+        memory = await asyncio.to_thread(psutil.virtual_memory)
+        available_mb = memory.available / (1024 * 1024)
+        projected_reserved_mb = active_reserved_mb + requested_mb
+        budget_mb = max(0.0, available_mb - required_free_mb)
+        if projected_reserved_mb > budget_mb:
+            raise ResourceLimitError(
+                message=(
+                    "Resource budget exceeded for active engagements. "
+                    f"projected_reserved_mb={projected_reserved_mb:.1f}, "
+                    f"budget_mb={budget_mb:.1f}, available_mb={available_mb:.1f}, "
+                    f"required_free_mb={required_free_mb:.1f}"
+                ),
+                limit_type="resource_budget_memory_mb",
+                current_value=int(projected_reserved_mb),
+                max_value=int(budget_mb),
+            )
 
     async def _trigger_initial_jobs(
         self,
@@ -901,7 +1115,11 @@ class SessionManager:
 
         # Shutdown orchestrator before checkpointing
         if context.orchestrator:
-            await context.orchestrator.shutdown()
+            shutdown_fn = getattr(context.orchestrator, "shutdown", None)
+            if callable(shutdown_fn):
+                shutdown_result = shutdown_fn()
+                if hasattr(shutdown_result, "__await__"):
+                    await shutdown_result
             context.orchestrator = None
 
         # Create checkpoint before state transition
@@ -1389,4 +1607,3 @@ class ShutdownResult:
     paused_ids: list[str]
     checkpoint_paths: dict[str, Optional[Path]]
     errors: list[str]
-

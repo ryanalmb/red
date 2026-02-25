@@ -3,10 +3,24 @@ from typing import List
 from cyberred.core.models import Finding
 from cyberred.tools.parsers import common
 
-def nikto_parser(stdout: str, agent_id: str, target: str) -> List[Finding]:
+def nikto_parser(
+    stdout: str,
+    stderr: str = "",
+    exit_code: int | str = 0,
+    agent_id: str = "",
+    target: str = "",
+    error_type: str | None = None,
+) -> List[Finding]:
     """
     Parses Nikto stdout and returns a list of Findings.
     """
+    # Backward compatibility for legacy signature: (stdout, agent_id, target)
+    if not agent_id and not target and isinstance(exit_code, str):
+        agent_id = stderr
+        target = exit_code
+        stderr = ""
+        exit_code = 0
+
     findings: List[Finding] = []
     
     # Pattern: Optional[+ ](Ref): (Path): (Desc)

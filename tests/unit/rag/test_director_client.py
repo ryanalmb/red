@@ -5,6 +5,7 @@ Tests cover all acceptance criteria and data model behavior.
 """
 
 import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -151,6 +152,79 @@ class TestDirectorRAGClient:
         results, degraded = await client.query_with_fallback("q", timeout=0.001)
         assert results == []
         assert degraded is True
+
+    @pytest.mark.asyncio
+    async def test_config_defaults_applied_for_top_k_and_timeout(self, rag):
+        rag.query.return_value = [self._result()]
+        client = DirectorRAGClient(
+            rag,  # type: ignore[arg-type]
+            query_timeout_s=1.23,
+            max_results=7,
+        )
+        ctx = RAGQueryContext(trigger="operator_request", summary="Need pivot")
+
+        await client.query_strategy_pivot(ctx)
+
+        assert rag.query.await_count == 1
+        kwargs = rag.query.await_args.kwargs
+        assert kwargs["top_k"] == 7
+        assert pytest.approx(kwargs["timeout"], rel=0.05) == 1.23
+
+    @pytest.mark.asyncio
+    async def test_deadline_aware_timeout_clamps_budget(self, rag):
+        rag.query.return_value = [self._result()]
+        client = DirectorRAGClient(
+            rag,  # type: ignore[arg-type]
+            query_timeout_s=5.0,
+            deadline_guard_s=0.05,
+        )
+        ctx = RAGQueryContext(trigger="operator_request", summary="Need pivot")
+        deadline = time.monotonic() + 0.2
+
+        await client.query_strategy_pivot(ctx, deadline_monotonic_s=deadline)
+
+        kwargs = rag.query.await_args.kwargs
+        assert 0.05 <= kwargs["timeout"] <= 0.2
+
+    @pytest.mark.asyncio
+    async def test_deadline_exhausted_degrades_without_query_call(self, rag):
+        client = DirectorRAGClient(rag)  # type: ignore[arg-type]
+
+        results, degraded = await client.query_with_fallback(
+            "q",
+            deadline_monotonic_s=time.monotonic() - 1.0,
+        )
+        assert results == []
+        assert degraded is True
+        assert rag.query.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_when_fallback_disabled(self, rag):
+        rag.query.side_effect = RAGQueryTimeout("boom")
+        client = DirectorRAGClient(
+            rag,  # type: ignore[arg-type]
+            fallback_on_timeout=False,
+        )
+
+        with pytest.raises(RAGQueryTimeout):
+            await client.query_with_fallback("q", timeout=0.01)
+
+    @pytest.mark.asyncio
+    async def test_min_score_filters_low_confidence_results(self, rag):
+        rag.query.return_value = [
+            self._result(score=0.95, technique_ids=["T1110"]),
+            self._result(score=0.1, technique_ids=["T0001"]),
+        ]
+        client = DirectorRAGClient(
+            rag,  # type: ignore[arg-type]
+            min_score=0.5,
+        )
+        ctx = RAGQueryContext(trigger="operator_request", summary="Need pivot")
+
+        res = await client.query_strategy_pivot(ctx)
+
+        assert len(res.methodologies) == 1
+        assert res.technique_ids == ["T1110"]
 
     def test_format_for_director_synthesis_covers_branches(self, client):
         """Test synthesis formatting with all new context fields."""

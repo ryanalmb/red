@@ -37,12 +37,20 @@ class PhaseResult:
     @property
     def has_critical_findings(self) -> bool:
         """Check if phase found critical severity issues."""
-        return any(f.get("severity") == "critical" for f in self.findings)
+        return any(
+            f.get("severity") == "critical"
+            and str(f.get("outcome_status", "validated")).strip().lower() == "validated"
+            for f in self.findings
+        )
     
     @property
     def has_high_findings(self) -> bool:
         """Check if phase found high severity issues."""
-        return any(f.get("severity") == "high" for f in self.findings)
+        return any(
+            f.get("severity") == "high"
+            and str(f.get("outcome_status", "validated")).strip().lower() == "validated"
+            for f in self.findings
+        )
 
 
 @dataclass
@@ -198,6 +206,8 @@ class KillChain:
     def _update_context(self, tool_result):
         """Update attack context with tool findings."""
         for finding in tool_result.findings:
+            if not self._is_validated_finding(finding):
+                continue
             finding_type = finding.get("type", "")
             
             if finding_type == "port_scan":
@@ -223,6 +233,12 @@ class KillChain:
                 # Add discovered subdomains as potential hosts
                 for subdomain in finding.get("subdomains", []):
                     self.context.discovered_hosts.add(subdomain)
+
+    @staticmethod
+    def _is_validated_finding(finding: Dict[str, Any]) -> bool:
+        """Return True for findings marked as validated."""
+        outcome = str(finding.get("outcome_status", "validated")).strip().lower()
+        return outcome == "validated"
     
     def _determine_next_phase(self, findings: List[Dict]) -> Phase:
         """
@@ -244,10 +260,18 @@ class KillChain:
         
         elif current == Phase.VULNERABILITY:
             # Move to exploitation if we found high/critical vulns
-            if any(f.get("severity") in ["critical", "high"] for f in findings):
+            if any(
+                self._is_validated_finding(f)
+                and f.get("severity") in ["critical", "high"]
+                for f in findings
+            ):
                 return Phase.EXPLOITATION
             # Stay in vuln scanning if only found medium/low
-            if any(f.get("severity") in ["medium", "low"] for f in findings):
+            if any(
+                self._is_validated_finding(f)
+                and f.get("severity") in ["medium", "low"]
+                for f in findings
+            ):
                 return Phase.VULNERABILITY
             # Nothing found, try exploitation anyway (with credentials)
             if len(self.context.credentials) > 0:
@@ -256,10 +280,18 @@ class KillChain:
         
         elif current == Phase.EXPLOITATION:
             # Got shell? Move to post-exploit
-            if any(f.get("type") == "shell" for f in findings):
+            if any(
+                self._is_validated_finding(f)
+                and f.get("type") == "shell"
+                for f in findings
+            ):
                 return Phase.POST_EXPLOIT
             # Got credentials? Keep exploiting different services
-            if any(f.get("type") == "credential" for f in findings):
+            if any(
+                self._is_validated_finding(f)
+                and f.get("type") == "credential"
+                for f in findings
+            ):
                 return Phase.EXPLOITATION
             return Phase.EXPLOITATION
         

@@ -279,14 +279,20 @@ class EmergentStrategyAggregator:
         self._findings_buffer: deque[_BufferedFinding] = deque()
         self._running = False
         self._detection_task: asyncio.Task | None = None
+        self._subscription: Any | None = None
         self._log = log.bind(engagement_id=engagement_id)
     
     async def start(self) -> None:
         """Start the aggregator (subscribe to findings, start detection loop)."""
+        if self._running:
+            return
         self._running = True
-        
-        # Subscribe to findings channel
-        await self._event_bus.subscribe("findings:*", self._on_finding)
+
+        # Subscribe to all findings channels via Redis pattern subscription.
+        self._subscription = await self._event_bus.psubscribe(
+            "findings:*",
+            lambda channel, data: asyncio.ensure_future(self._on_finding(channel, data)),
+        )
         
         # Start background detection loop
         self._detection_task = asyncio.create_task(self._detection_loop())
@@ -297,6 +303,19 @@ class EmergentStrategyAggregator:
         """Stop the aggregator."""
         self._running = False
         
+        if self._subscription is not None:
+            try:
+                cancel_fn = getattr(self._subscription, "cancel", None)
+                unsubscribe_fn = getattr(self._subscription, "unsubscribe", None)
+                if callable(cancel_fn):
+                    await cancel_fn()
+                elif callable(unsubscribe_fn):
+                    await unsubscribe_fn()
+            except Exception:
+                pass
+            finally:
+                self._subscription = None
+
         if self._detection_task:
             self._detection_task.cancel()
             try:
@@ -321,15 +340,28 @@ class EmergentStrategyAggregator:
         """Get count of findings in buffer."""
         return len(self._findings_buffer)
     
-    async def _on_finding(self, message: dict | str) -> None:
+    async def _on_finding(self, channel: str, message: dict | str) -> None:
         """Handle incoming finding from EventBus."""
+        if ":aggregated:" in channel or ":intel_enriched" in channel:
+            return
+
         if isinstance(message, str):
             try:
                 message = json.loads(message)
             except json.JSONDecodeError:
                 return
-        
-        self.add_finding(message)
+
+        if not isinstance(message, dict):
+            return
+
+        data = dict(message)
+        if "data" in data and isinstance(data["data"], dict):
+            data = dict(data["data"])
+            if "agent_id" not in data and isinstance(message.get("agent_id"), str):
+                data["agent_id"] = message["agent_id"]
+
+        data["_source_channel"] = channel
+        self.add_finding(data)
     
     def _prune_expired_findings(self) -> None:
         """Remove findings outside the sliding window."""
@@ -361,15 +393,15 @@ class EmergentStrategyAggregator:
         if not self._findings_buffer:
             return
         
-        # Convert buffer to Finding objects
+        # Convert buffered findings to normalized Finding objects
         from cyberred.core.models import Finding
         
         findings: list[Finding] = []
         for buffered in self._findings_buffer:
-            try:
-                findings.append(Finding(**buffered.data))
-            except (TypeError, ValueError) as e:
-                self._log.debug("invalid_finding_data", error=str(e))
+            finding = self._coerce_finding(buffered.data)
+            if finding is None:
+                continue
+            findings.append(finding)
         
         if not findings:
             return
@@ -386,3 +418,70 @@ class EmergentStrategyAggregator:
             findings_count=len(findings),
             patterns_detected=len(patterns),
         )
+
+    def _stable_uuid(self, raw_value: Any, namespace: str) -> str:
+        """Return a valid UUID string, synthesizing deterministic UUIDs when needed."""
+        text = str(raw_value or "").strip()
+        if not text:
+            text = f"{namespace}:unknown"
+        try:
+            return str(uuid.UUID(text))
+        except Exception:
+            return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{namespace}:{text}"))
+
+    def _coerce_finding(self, raw_data: dict[str, Any]):
+        """Best-effort normalization into core Finding model."""
+        from cyberred.core.models import Finding
+
+        data = dict(raw_data)
+        target = str(data.get("target") or data.get("domain") or "").strip()
+        if not target:
+            return None
+
+        finding_type = str(data.get("type") or data.get("finding_type") or "unknown").strip().lower()
+        if not finding_type:
+            finding_type = "unknown"
+
+        severity = str(data.get("severity") or "info").strip().lower()
+        if severity not in {"critical", "high", "medium", "low", "info"}:
+            severity = "info"
+
+        timestamp_raw = data.get("timestamp")
+        timestamp = datetime.now(UTC).isoformat()
+        if isinstance(timestamp_raw, (int, float)):
+            try:
+                timestamp = datetime.fromtimestamp(float(timestamp_raw), UTC).isoformat()
+            except Exception:
+                pass
+        elif isinstance(timestamp_raw, str) and timestamp_raw.strip():
+            try:
+                timestamp = datetime.fromisoformat(timestamp_raw).isoformat()
+            except Exception:
+                timestamp = datetime.now(UTC).isoformat()
+
+        evidence = str(
+            data.get("evidence")
+            or data.get("output")
+            or data.get("description")
+            or data.get("username")
+            or ""
+        )[:1000]
+
+        finding_payload = {
+            "id": self._stable_uuid(data.get("id") or data.get("finding_id"), "finding"),
+            "type": finding_type,
+            "severity": severity,
+            "target": target,
+            "evidence": evidence,
+            "agent_id": self._stable_uuid(data.get("agent_id"), "agent"),
+            "timestamp": timestamp,
+            "tool": str(data.get("tool") or data.get("tool_name") or "unknown")[:120],
+            "topic": str(data.get("topic") or data.get("_source_channel") or "findings:unknown"),
+            "signature": str(data.get("signature") or "generated"),
+        }
+
+        try:
+            return Finding(**finding_payload)
+        except (TypeError, ValueError) as e:
+            self._log.debug("invalid_finding_data", error=str(e), payload=finding_payload)
+            return None

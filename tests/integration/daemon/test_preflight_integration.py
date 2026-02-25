@@ -185,8 +185,18 @@ class TestPreFlightRunnerIntegration:
             
             results = await runner.run_all(config)
             
-            # Should have results for all 6 checks
-            assert len(results) == 6
+            # Runner may include additional platform checks; ensure the core ones exist.
+            assert len(results) >= 6
+            names = {r.name for r in results}
+            assert "REDIS_CHECK" in names
+            assert "SCOPE_CHECK" in names
+            assert "CERT_CHECK" in names
+            assert "DISK_CHECK" in names
+            assert "MEMORY_CHECK" in names
+            assert "LLM_CHECK" in names
+            assert "WORKER_POOL_CHECK" in names
+            assert "RESOURCE_ADMISSION_CHECK" in names
+            assert any("waiver" in name.lower() for name in names)
             
             # Find specific results
             redis_result = next(r for r in results if r.name == "REDIS_CHECK")

@@ -140,9 +140,21 @@ class SqlmapAdapter(BaseToolAdapter):
         findings = []
         
         if parsed_data.get("injectable"):
+            injection_types = [
+                str(param.get("type", "")).lower()
+                for param in parsed_data.get("parameters", [])
+                if isinstance(param, dict)
+            ]
+            severity = "high"
+            if any(
+                marker in inj_type
+                for inj_type in injection_types
+                for marker in ("stacked", "union")
+            ):
+                severity = "critical"
             finding = {
                 "type": "sqli",
-                "severity": "critical",
+                "severity": severity,
                 "name": "SQL Injection Vulnerability",
                 "description": f"SQL injection found via: {', '.join(p['name'] for p in parsed_data['parameters'])}",
                 "dbms": parsed_data.get("dbms"),

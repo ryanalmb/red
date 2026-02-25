@@ -135,6 +135,30 @@ async def test_scale_up(mock_router, mock_event_bus):
 
 
 @pytest.mark.asyncio
+async def test_top_up_spawns_requested_count(mock_router, mock_event_bus):
+    from cyberred.orchestration.spawner import DynamicSpawner
+    from unittest.mock import ANY
+
+    spawner = DynamicSpawner(mock_router, mock_event_bus, "test-engagement")
+    agents = await spawner.top_up(7, reason="reconcile_deficit")
+
+    assert mock_router.spawn_swarm.call_count == 1
+    call_args = mock_router.spawn_swarm.call_args
+    assert call_args[1]["count"] == 7
+
+    mock_event_bus.publish.assert_called_with(
+        "audit:spawner",
+        {
+            "action": "top_up",
+            "count": 7,
+            "rationale": "reconcile_deficit",
+            "decision_context": [],
+            "timestamp": ANY,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_scale_up_with_domain_and_wireless(mock_router, mock_event_bus):
     """Test scale_up handles domain and wireless target types."""
     from cyberred.orchestration.spawner import DynamicSpawner, SCOPE_HEURISTICS

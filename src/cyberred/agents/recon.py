@@ -12,6 +12,7 @@ Story 7.3-v2 Refactor:
 
 import asyncio
 import hashlib
+import json
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -22,7 +23,9 @@ import structlog
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
 from cyberred.core.config import get_settings
+from cyberred.core.exceptions import ScopeViolationError
 from cyberred.core.events import EventBus
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 from cyberred.tools.output import OutputProcessor
@@ -159,6 +162,7 @@ class ReconAgent(StigmergicAgent):
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(context)
@@ -184,8 +188,33 @@ class ReconAgent(StigmergicAgent):
                 )
 
                 for finding in processed.findings:
+                    execution = self._execution_metadata(result, selection.command)
+                    evidence_payload: dict[str, Any] = {
+                        "raw_evidence": finding.evidence,
+                        "summary": processed.summary,
+                        "command": selection.command,
+                        "execution": execution,
+                        "parser_tier": processed.tier,
+                    }
+                    assessment = assess_finding_payload(
+                        {
+                            "type": finding.type,
+                            "severity": finding.severity,
+                            "target": target,
+                            "tool": tool_name,
+                            "evidence": evidence_payload,
+                            "execution": execution,
+                        }
+                    )
+                    evidence_payload["validation"] = assessment
+                    if assessment["outcome_status"] == "failed":
+                        continue
+
+                    finding.severity = assessment["severity"]
+                    finding.evidence = json.dumps(evidence_payload)
                     await self.on_finding(target, finding.type, asdict(finding))
                     all_findings.append(finding)
+                    iteration_findings += 1
                     if result_finding_id is None:
                         result_finding_id = finding.id
 
@@ -198,8 +227,34 @@ class ReconAgent(StigmergicAgent):
                     previous_results=[asdict(f) for f in all_findings],
                 )
 
+            except ScopeViolationError as e:
+                decision_context.append(f"scope_blocked:{e.scope_rule}")
+                self._log.warning(
+                    "recon_scope_blocked",
+                    error=str(e),
+                    scope_rule=e.scope_rule,
+                    iteration=iteration,
+                    tool=tool_name,
+                )
             except Exception as e:
                 self._log.error("recon_iteration_error", error=str(e), iteration=iteration)
+
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_recon_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Recon no-yield streak triggered escalation",
+                    role="recon",
+                    tool=tool_name,
+                    target=target,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+            context = self._add_novelty_constraints(context, streak)
 
             action = AgentAction(
                 id=action_id,
@@ -216,11 +271,13 @@ class ReconAgent(StigmergicAgent):
 
     async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for service fingerprinting info."""
-        if not self._intel_aggregator or not service:
+        if not self._intel_aggregator:
             return []
+        query_service = (service or self._current_service or "network").strip()
+        query_version = (version or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(service, version),
+                self._intel_aggregator.query(query_service, query_version),
                 timeout=self.INTELLIGENCE_TIMEOUT
             )
         except Exception:
@@ -250,7 +307,7 @@ class ReconAgent(StigmergicAgent):
         validator.validate(target=target)
 
     def _get_scope_validator(self) -> ScopeValidator:
-        """Load scope validator from configured file."""
+        """Load scope validator from configured file or engagement directory."""
         settings = get_settings()
         path = settings.engagement.scope_path
         if path:
@@ -258,7 +315,16 @@ class ReconAgent(StigmergicAgent):
                 return ScopeValidator.from_file(path)
             except Exception as e:
                 self._log.warning("failed_to_load_scope_file", path=path, error=str(e))
-        return ScopeValidator(ScopeConfig())
+        # Fallback: search engagement directory for scope.yaml
+        from pathlib import Path as _Path
+        eng_dir = _Path.home() / ".cyber-red" / "engagements"
+        if eng_dir.exists():
+            for scope_file in sorted(eng_dir.glob("*/scope.yaml"), reverse=True):
+                try:
+                    return ScopeValidator.from_file(scope_file)
+                except Exception:
+                    continue
+        return ScopeValidator(ScopeConfig(allow_private=True))
 
     async def _handle_recon_failure(self, technique_id: str) -> str | None:
         """Handle tool failure via RAG escalation."""
@@ -305,18 +371,18 @@ class ReconAgent(StigmergicAgent):
         except Exception as e:
             channel = f"findings:{target_hash}:{finding_type}"
             self._log.warning("publish_failed_buffering", error=str(e), channel=channel)
-            self._finding_buffer.append({"channel": channel, "message": content})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type=finding_type,
+                message=content,
+            )
 
     async def _flush_buffer(self) -> None:
         """Attempt to flush buffered findings."""
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-
-        flushed_count = len(self._finding_buffer) - len(remaining)
+        pending_count = len(self._finding_buffer)
+        remaining = await self._flush_buffered_findings(self._finding_buffer)
+        flushed_count = pending_count - len(remaining)
         if flushed_count > 0:
             self._log.info("buffer_flushed", count=flushed_count)
         self._finding_buffer = remaining

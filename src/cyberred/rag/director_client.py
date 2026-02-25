@@ -189,15 +189,30 @@ class DirectorRAGClient:
         "impact": (Phase.EXFIL,),
     }
 
-    def __init__(self, rag: RAGQueryInterface) -> None:
+    def __init__(
+        self,
+        rag: RAGQueryInterface,
+        *,
+        query_timeout_s: float = DEFAULT_TIMEOUT_S,
+        max_results: int = DEFAULT_TOP_K,
+        fallback_on_timeout: bool = True,
+        min_score: float = 0.0,
+        deadline_guard_s: float = 0.05,
+    ) -> None:
         self._rag = rag
+        self._query_timeout_s = max(0.05, float(query_timeout_s))
+        self._max_results = max(1, int(max_results))
+        self._fallback_on_timeout = bool(fallback_on_timeout)
+        self._min_score = max(0.0, min(1.0, float(min_score)))
+        self._deadline_guard_s = max(0.0, float(deadline_guard_s))
 
     async def query_strategy_pivot(
         self,
         context: RAGQueryContext,
         *,
-        top_k: int = DEFAULT_TOP_K,
-        timeout: float = DEFAULT_TIMEOUT_S,
+        top_k: int | None = None,
+        timeout: float | None = None,
+        deadline_monotonic_s: float | None = None,
     ) -> StrategyPivotResult:
         """Query RAG for methodology suggestions for a strategy pivot.
 
@@ -206,8 +221,10 @@ class DirectorRAGClient:
         
         Args:
             context: The query context describing the pivot trigger and state.
-            top_k: Maximum number of results to return.
-            timeout: Query timeout in seconds (default: 5.0 for Director responsiveness).
+            top_k: Maximum number of results to return (defaults to configured max_results).
+            timeout: Query timeout in seconds (defaults to configured query timeout).
+            deadline_monotonic_s: Optional absolute monotonic deadline. If provided,
+                query timeout is clamped to remaining time budget.
             
         Returns:
             StrategyPivotResult with methodologies grouped by tactic and timing info.
@@ -219,6 +236,7 @@ class DirectorRAGClient:
             query_text,
             top_k=top_k,
             timeout=timeout,
+            deadline_monotonic_s=deadline_monotonic_s,
         )
 
         # Calculate query time
@@ -259,26 +277,45 @@ class DirectorRAGClient:
         self,
         text: str,
         *,
-        top_k: int = DEFAULT_TOP_K,
-        timeout: float = DEFAULT_TIMEOUT_S,
+        top_k: int | None = None,
+        timeout: float | None = None,
+        deadline_monotonic_s: float | None = None,
     ) -> tuple[List[RAGSearchResult], bool]:
         """Query RAG with graceful degradation on timeout.
 
         Returns (results, degraded) where degraded indicates a timeout or other
         non-fatal error.
         """
+        resolved_top_k = max(1, int(top_k)) if top_k is not None else self._max_results
+        effective_timeout = self._resolve_effective_timeout(timeout, deadline_monotonic_s)
+        if effective_timeout <= 0.0:
+            if self._fallback_on_timeout:
+                return [], True
+            raise RAGQueryTimeout("Director RAG deadline exhausted before query started")
 
         try:
             # RAGQueryInterface already enforces its own timeout; we wrap it in
             # an outer wait_for as an additional safety net.
             results = await asyncio.wait_for(
-                self._rag.query(text, top_k=top_k, timeout=timeout),
-                timeout=timeout,
+                self._rag.query(text, top_k=resolved_top_k, timeout=effective_timeout),
+                timeout=effective_timeout,
             )
+            if self._min_score > 0.0:
+                filtered: list[RAGSearchResult] = []
+                for result in results:
+                    try:
+                        score = float(getattr(result, "score", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        score = 0.0
+                    if score >= self._min_score:
+                        filtered.append(result)
+                results = filtered
             return results, False
         except (RAGQueryTimeout, asyncio.TimeoutError) as e:
-            log.info("director_rag_timeout", query=text[:80], timeout=timeout, error=str(e))
-            return [], True
+            log.info("director_rag_timeout", query=text[:80], timeout=effective_timeout, error=str(e))
+            if self._fallback_on_timeout:
+                return [], True
+            raise
         except Exception as e:  # defensive: never break Director flow
             log.warning("director_rag_error", query=text[:80], error=str(e))
             return [], True
@@ -287,15 +324,36 @@ class DirectorRAGClient:
         self,
         context: RAGQueryContext,
         *,
-        top_k: int = DEFAULT_TOP_K,
-        timeout: float = DEFAULT_TIMEOUT_S,
+        top_k: int | None = None,
+        timeout: float | None = None,
+        deadline_monotonic_s: float | None = None,
     ) -> "asyncio.Task[StrategyPivotResult]":
         """Launch a background RAG query.
 
         Director can continue execution while this runs.
         """
+        return asyncio.create_task(
+            self.query_strategy_pivot(
+                context,
+                top_k=top_k,
+                timeout=timeout,
+                deadline_monotonic_s=deadline_monotonic_s,
+            )
+        )
 
-        return asyncio.create_task(self.query_strategy_pivot(context, top_k=top_k, timeout=timeout))
+    def _resolve_effective_timeout(
+        self,
+        timeout: float | None,
+        deadline_monotonic_s: float | None,
+    ) -> float:
+        """Resolve timeout budget from config + optional absolute deadline."""
+        resolved = self._query_timeout_s if timeout is None else max(0.05, float(timeout))
+        if deadline_monotonic_s is None:
+            return resolved
+        remaining = deadline_monotonic_s - time.monotonic() - self._deadline_guard_s
+        if remaining <= 0.0:
+            return 0.0
+        return max(0.05, min(resolved, remaining))
 
     @staticmethod
     def build_swarm_failure_context(

@@ -631,7 +631,11 @@ class PreFlightCheckError(CyberRedError):
         """
         self.results = results
         if message is None:
-            failed_checks = [r.name for r in results if r.status == "FAIL"]
+            failed_checks = []
+            for result in results:
+                status = str(result.status)
+                if status == "FAIL":
+                    failed_checks.append(f"{result.name} ({result.message})")
             message = f"Pre-flight checks failed: {', '.join(failed_checks)}"
         super().__init__(message)
 

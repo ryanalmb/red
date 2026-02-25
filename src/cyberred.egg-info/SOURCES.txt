@@ -24,6 +24,12 @@ src/cyberred/agents/recon.py
 src/cyberred/agents/roles.py
 src/cyberred/agents/webapp.py
 src/cyberred/agents/wireless.py
+src/cyberred/api/__init__.py
+src/cyberred/api/auth.py
+src/cyberred/api/server.py
+src/cyberred/api/token_store.py
+src/cyberred/api/routes/__init__.py
+src/cyberred/api/routes/health.py
 src/cyberred/c2/__init__.py
 src/cyberred/c2/abort.py
 src/cyberred/c2/cert_manager.py
@@ -65,6 +71,7 @@ src/cyberred/daemon/authorization_queue.py
 src/cyberred/daemon/deputy_escalation.py
 src/cyberred/daemon/ipc.py
 src/cyberred/daemon/preflight.py
+src/cyberred/daemon/preflight_waiver.py
 src/cyberred/daemon/server.py
 src/cyberred/daemon/session_manager.py
 src/cyberred/daemon/state_machine.py
@@ -84,6 +91,7 @@ src/cyberred/intelligence/sources/nuclei.py
 src/cyberred/intelligence/sources/nvd.py
 src/cyberred/llm/__init__.py
 src/cyberred/llm/ensemble.py
+src/cyberred/llm/env.py
 src/cyberred/llm/gateway.py
 src/cyberred/llm/nim.py
 src/cyberred/llm/priority_queue.py
@@ -154,6 +162,7 @@ src/cyberred/storage/redis_client.py
 src/cyberred/storage/report_generator.py
 src/cyberred/storage/sarif_exporter.py
 src/cyberred/storage/schema.py
+src/cyberred/storage/statistics.py
 src/cyberred/storage/stix_exporter.py
 src/cyberred/storage/alembic/__init__.py
 src/cyberred/storage/alembic/env.py
@@ -216,6 +225,7 @@ src/cyberred/tui/screens/dropbox_wizard.py
 src/cyberred/tui/screens/help.py
 src/cyberred/tui/screens/kill_confirm.py
 src/cyberred/tui/screens/scope_editor.py
+src/cyberred/tui/screens/waiver.py
 src/cyberred/tui/widgets/__init__.py
 src/cyberred/tui/widgets/agent_list.py
 src/cyberred/tui/widgets/attach_progress.py

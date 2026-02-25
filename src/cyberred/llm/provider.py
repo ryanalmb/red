@@ -49,21 +49,30 @@ class LLMRequest:
         prompt: Input prompt for the LLM (required).
         model: Model identifier (required).
         temperature: Sampling temperature (0.0-2.0, default 0.7).
-        max_tokens: Maximum response tokens (1-32768, default 1024).
+        max_tokens: Maximum response tokens (1-32768, default 5000).
         top_p: Nucleus sampling probability (0.0-1.0, default 1.0).
         frequency_penalty: Frequency penalty (-2.0-2.0, default 0.0).
         system_prompt: Optional system prompt.
         stop_sequences: Optional list of stop sequences.
+        timeout_budget_s: Optional total end-to-end timeout budget in seconds.
+            This is a full request budget across queue wait, retries, and backoff.
+        deadline_monotonic_s: Optional absolute monotonic deadline.
+            If set, gateway respects it as the source of truth for timeout.
+        provider_timeout_s: Optional per-attempt provider/network timeout in seconds.
+            Set by gateway to align HTTP timeout with remaining request deadline.
     """
 
     prompt: str
     model: str
     temperature: float = 0.7
-    max_tokens: int = 1024
+    max_tokens: int = 5000
     top_p: float = 1.0
     frequency_penalty: float = 0.0
     system_prompt: Optional[str] = None
     stop_sequences: Optional[List[str]] = field(default=None)
+    timeout_budget_s: Optional[float] = None
+    deadline_monotonic_s: Optional[float] = None
+    provider_timeout_s: Optional[float] = None
 
     def __post_init__(self) -> None:
         """Validate fields after initialization."""
@@ -77,6 +86,12 @@ class LLMRequest:
             raise ValueError("top_p must be between 0.0 and 1.0")
         if not -2.0 <= self.frequency_penalty <= 2.0:
             raise ValueError("frequency_penalty must be between -2.0 and 2.0")
+        if self.timeout_budget_s is not None and self.timeout_budget_s <= 0:
+            raise ValueError("timeout_budget_s must be > 0 when provided")
+        if self.deadline_monotonic_s is not None and self.deadline_monotonic_s <= 0:
+            raise ValueError("deadline_monotonic_s must be > 0 when provided")
+        if self.provider_timeout_s is not None and self.provider_timeout_s <= 0:
+            raise ValueError("provider_timeout_s must be > 0 when provided")
 
 
 @dataclass
@@ -235,7 +250,7 @@ class LLMProvider(ABC):
         """
         model = kwargs.pop("model", self.get_model_name())
         temperature = kwargs.pop("temperature", 0.7)
-        max_tokens = kwargs.pop("max_tokens", 1024)
+        max_tokens = kwargs.pop("max_tokens", 5000)
         top_p = kwargs.pop("top_p", 1.0)
         frequency_penalty = kwargs.pop("frequency_penalty", 0.0)
 

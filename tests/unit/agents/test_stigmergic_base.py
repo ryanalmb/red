@@ -62,7 +62,7 @@ class TestStigmergicAgentBase:
         # Arrange
         target_hash = "abc123hash"
         finding_type = "sqli"
-        content = {"detail": "found vuln"}
+        content = {"detail": "found vuln", "target": "10.0.0.5"}
         
         # Act
         await agent.on_finding(target_hash, finding_type, content)
@@ -73,7 +73,9 @@ class TestStigmergicAgentBase:
         call_args = event_bus.publish.call_args
         assert call_args[0][0] == expected_channel
         message = call_args[0][1]
-        assert message['data'] == content
+        assert message["data"]["target"] == "10.0.0.5"
+        assert message["data"]["type"] == "sqli"
+        assert message["data"]["detail"] == "found vuln"
         assert message['agent_id'] == agent.agent_id
         assert message['engagement_id'] == agent.engagement_id
 
@@ -1154,7 +1156,7 @@ class TestStigmergicAgentSharding:
         """Test on_finding uses ShardedEventBus when provided (AC: 4.1)."""
         target_hash = "abc123"
         finding_type = "sqli"
-        content = {"vuln": "SQL injection"}
+        content = {"vuln": "SQL injection", "target": "10.0.0.8"}
 
         await agent_with_sharding.on_finding(target_hash, finding_type, content)
 
@@ -1163,14 +1165,16 @@ class TestStigmergicAgentSharding:
         call_args = sharded_event_bus.publish_finding.call_args
         assert call_args[0][0] == target_hash
         assert call_args[0][1] == finding_type
-        assert call_args[0][2]["data"] == content
+        assert call_args[0][2]["data"]["target"] == "10.0.0.8"
+        assert call_args[0][2]["data"]["type"] == "sqli"
+        assert call_args[0][2]["data"]["vuln"] == "SQL injection"
 
     @pytest.mark.asyncio
     async def test_on_finding_fallback_to_non_sharded(self, agent_without_sharding, event_bus):
         """Test on_finding falls back to non-sharded when no ShardedEventBus."""
         target_hash = "abc123"
         finding_type = "xss"
-        content = {"vuln": "XSS"}
+        content = {"vuln": "XSS", "target": "10.0.0.9"}
 
         await agent_without_sharding.on_finding(target_hash, finding_type, content)
 
@@ -1178,6 +1182,19 @@ class TestStigmergicAgentSharding:
         event_bus.publish.assert_called_once()
         call_args = event_bus.publish.call_args
         assert call_args[0][0] == f"findings:{target_hash}:{finding_type}"
+
+    @pytest.mark.asyncio
+    async def test_on_finding_publishes_objective_event(self, agent_without_sharding, event_bus):
+        """Credential finding should also emit objective event."""
+        await agent_without_sharding.on_finding(
+            "target-hash",
+            "credential",
+            {"target": "10.0.0.10", "evidence": "hashdump"},
+        )
+
+        channels = [call[0][0] for call in event_bus.publish.call_args_list]
+        assert "findings:target-hash:credential" in channels
+        assert f"objectives:{agent_without_sharding.engagement_id}" in channels
 
     @pytest.mark.asyncio
     async def test_setup_subscriptions_uses_sharded_when_available(self, agent_with_sharding, sharded_event_bus, event_bus):

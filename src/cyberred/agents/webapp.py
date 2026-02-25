@@ -12,6 +12,7 @@ from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
 from cyberred.core.config import get_settings
 from cyberred.core.events import EventBus
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.hashing import compute_hmac_signature
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
@@ -104,6 +105,7 @@ class WebAppAgent(StigmergicAgent):
             action_id = str(uuid.uuid4())
             result_finding_id: str | None = None
             tool_name = "unknown"
+            iteration_findings = 0
 
             try:
                 selection = await self.select_tool(context)
@@ -113,9 +115,15 @@ class WebAppAgent(StigmergicAgent):
 
                 if result.success and result.stdout:
                     finding = self._create_finding(target, selection, result, intel)
-                    all_findings.append(finding)
-                    await self.on_finding(finding)
-                    result_finding_id = finding.id
+                    if finding:
+                        all_findings.append(finding)
+                        await self.on_finding(finding)
+                        result_finding_id = finding.id
+                        iteration_findings += 1
+                    else:
+                        alt = await self._handle_webapp_failure(selection.tool_name)
+                        if alt:
+                            decision_context.append(f"rag_escalation:{selection.tool_name}:{alt}")
                 elif not result.success:
                     alt = await self._handle_webapp_failure(selection.tool_name)
                     if alt:
@@ -132,6 +140,23 @@ class WebAppAgent(StigmergicAgent):
             except Exception as e:
                 self._log.error("webapp_iteration_error", error=str(e))
 
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_webapp_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "Webapp no-yield streak triggered escalation",
+                    role="webapp",
+                    tool=tool_name,
+                    target=target,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
+            context = self._add_novelty_constraints(context, streak)
+
             all_actions.append(AgentAction(
                 id=action_id,
                 agent_id=str(self.agent_id),
@@ -146,11 +171,13 @@ class WebAppAgent(StigmergicAgent):
 
     async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for web application CVEs."""
-        if not self._intel_aggregator or not service:
+        if not self._intel_aggregator:
             return []
+        query_service = (service or self._current_service or "http").strip()
+        query_version = (version or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(service, version),
+                self._intel_aggregator.query(query_service, query_version),
                 timeout=INTELLIGENCE_TIMEOUT
             )
         except Exception:
@@ -162,18 +189,38 @@ class WebAppAgent(StigmergicAgent):
             return None
         return sorted(results, key=lambda r: r.priority)[0]
 
-    def _create_finding(self, target: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding:
+    def _create_finding(self, target: str, selection: Any, result: Any, intel: "IntelResult | None" = None) -> Finding | None:
         import json
+        execution = self._execution_metadata(result, selection.command)
+        evidence_payload: dict[str, Any] = {
+            "raw_evidence": result.stdout[:2000] if result.stdout else "",
+            "cve_id": intel.cve_id if intel else None,
+            "command": selection.command,
+            "execution": execution,
+            "waf_detected": self._waf_detected,
+            "waf_type": self._waf_type,
+        }
+        assessment = assess_finding_payload(
+            {
+                "type": "webapp",
+                "severity": "medium",
+                "target": target,
+                "tool": selection.tool_name,
+                "evidence": evidence_payload,
+                "execution": execution,
+            }
+        )
+        evidence_payload["validation"] = assessment
+        if assessment["outcome_status"] == "failed":
+            return None
+
         finding_data = {
             "id": str(uuid.uuid4()), "target": target, "type": "webapp",
-            "tool": selection.tool_name, "severity": "medium",
+            "tool": selection.tool_name, "severity": assessment["severity"],
             "timestamp": datetime.now(UTC).isoformat(),
             "agent_id": str(self.agent_id),
             "topic": f"findings:{self._hash_target(target)}:webapp",
-            "evidence": json.dumps({
-                "stdout": result.stdout[:2000] if result.stdout else "",
-                "cve_id": intel.cve_id if intel else None
-            }),
+            "evidence": json.dumps(evidence_payload),
         }
         finding_data["signature"] = compute_hmac_signature(
             {k: v for k, v in finding_data.items() if k != "signature"}, self._hmac_key
@@ -248,7 +295,16 @@ class WebAppAgent(StigmergicAgent):
                 return ScopeValidator.from_file(settings.engagement.scope_path)
             except Exception:
                 pass
-        return ScopeValidator(ScopeConfig())
+        # Fallback: search engagement directory for scope.yaml
+        from pathlib import Path as _Path
+        eng_dir = _Path.home() / ".cyber-red" / "engagements"
+        if eng_dir.exists():
+            for scope_file in sorted(eng_dir.glob("*/scope.yaml"), reverse=True):
+                try:
+                    return ScopeValidator.from_file(scope_file)
+                except Exception:
+                    continue
+        return ScopeValidator(ScopeConfig(allow_private=True))
 
     def _hash_target(self, target: str) -> str:
         return hashlib.md5(target.encode()).hexdigest()[:8]
@@ -261,17 +317,15 @@ class WebAppAgent(StigmergicAgent):
         try:
             await self._publish_to_swarm(target_hash, "webapp", message)
         except Exception:
-            channel = f"findings:{target_hash}:webapp"
-            self._finding_buffer.append({"channel": channel, "message": message})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="webapp",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
         await super().on_signal(channel, data)

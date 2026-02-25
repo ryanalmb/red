@@ -38,6 +38,10 @@ Requires-Dist: qrcode>=7.4.0
 Requires-Dist: Jinja2>=3.1.0
 Requires-Dist: pandas>=2.0.0
 Requires-Dist: openpyxl>=3.1.0
+Requires-Dist: fastapi>=0.109.0
+Requires-Dist: uvicorn[standard]>=0.27.0
+Requires-Dist: PyJWT[crypto]>=2.8.0
+Requires-Dist: aiosqlite>=0.19.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
@@ -140,6 +144,19 @@ allowed_ips:
 forbidden_ports:
   - 21
 aggression_level: "HIGH"
+```
+
+## 🧠 Director RAG Runtime Policy
+Director RAG behavior is configured in `config/models.yaml` under `rag.director`:
+
+```yaml
+rag:
+  director:
+    query_timeout: 5.0
+    max_results: 10
+    fallback_on_timeout: true
+    deadline_guard_s: 0.05
+    min_score: 0.3
 ```
 
 ## 🏗️ Architecture

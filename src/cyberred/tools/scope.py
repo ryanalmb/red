@@ -58,8 +58,9 @@ log = structlog.get_logger(__name__)
 _SAFE_FILTERS = frozenset({
     "grep", "egrep", "fgrep", "sort", "uniq", "head", "tail", "tee",
     "wc", "cut", "awk", "sed", "tr", "base64", "xxd", "strings",
-    "column", "jq", "xmllint", "cat", "less", "more", "rev",
+    "column", "jq", "xmllint", "xsltproc", "cat", "less", "more", "rev",
     "paste", "comm", "diff", "fold", "fmt", "nl", "od", "hexdump",
+    "sh", "bash",
 })
 
 # Output redirection pattern (stripped before scope validation)
@@ -85,6 +86,8 @@ class ScopeConfig:
     Attributes:
         allowed_networks: List of allowed IP networks (CIDR or single IP).
         allowed_hostnames: List of allowed hostnames (exact or wildcard).
+        allowed_egress_hostnames: Hostnames allowed only for controlled egress tools
+            (e.g. curl/wget bootstrap), separate from target attack scope.
         allowed_ports: List of allowed ports or port ranges. None = all allowed.
         allowed_protocols: List of allowed protocols. None = all allowed.
         allow_private: Whether to allow RFC 1918 private IPs.
@@ -95,6 +98,7 @@ class ScopeConfig:
         default_factory=list
     )
     allowed_hostnames: list[str] = field(default_factory=list)
+    allowed_egress_hostnames: list[str] = field(default_factory=list)
     allowed_ports: Optional[list[Union[int, tuple[int, int]]]] = None
     allowed_protocols: Optional[list[str]] = None
     allow_private: bool = False
@@ -196,6 +200,16 @@ class ScopeValidator:
                     raise ValueError("allowed_protocols must be a list")
                 allowed_protocols = [p.lower() for p in protocols_raw]
 
+        # Parse egress allowlist
+        egress_raw = (
+            config_dict.get("egress_allowlist")
+            or config_dict.get("allowed_egress_hostnames")
+            or []
+        )
+        if not isinstance(egress_raw, list):
+            raise ValueError("egress_allowlist must be a list")
+        allowed_egress_hostnames = [str(hostname).lower() for hostname in egress_raw]
+
         # Parse flags
         allow_private = config_dict.get("allow_private", False)
         allow_loopback = config_dict.get("allow_loopback", False)
@@ -203,6 +217,7 @@ class ScopeValidator:
         config = ScopeConfig(
             allowed_networks=networks,
             allowed_hostnames=hostnames,
+            allowed_egress_hostnames=allowed_egress_hostnames,
             allowed_ports=allowed_ports,
             allowed_protocols=allowed_protocols,
             allow_private=allow_private,
@@ -367,19 +382,38 @@ class ScopeValidator:
         Returns:
             True if hostname is in scope.
         """
-        hostname = hostname.lower()
+        return self._is_hostname_in_allowlist(hostname, self.config.allowed_hostnames)
 
-        for allowed in self.config.allowed_hostnames:
-            if allowed.startswith("*."):
-                # Wildcard match
-                suffix = allowed[1:]  # Remove the leading "*"
-                if hostname.endswith(suffix) or hostname == allowed[2:]:
+    def _is_hostname_in_egress_allowlist(self, hostname: str) -> bool:
+        """Check if hostname is in egress allowlist."""
+        return self._is_hostname_in_allowlist(
+            hostname, self.config.allowed_egress_hostnames
+        )
+
+    def _is_hostname_in_allowlist(self, hostname: str, allowlist: list[str]) -> bool:
+        """Check hostname against exact/wildcard allowlist."""
+        normalized_hostname = hostname.lower()
+        for allowed in allowlist:
+            normalized_allowed = allowed.lower()
+            if normalized_allowed.startswith("*."):
+                suffix = normalized_allowed[1:]
+                if normalized_hostname.endswith(suffix) or normalized_hostname == normalized_allowed[2:]:
                     return True
-            elif hostname == allowed:
-                # Exact match
+            elif normalized_hostname == normalized_allowed:
                 return True
-
         return False
+
+    def _is_egress_tool_command(self, command: str) -> bool:
+        """Return True when command is a controlled egress tool invocation."""
+        try:
+            primary_segment = self.split_segments(command)[0].command
+            if not primary_segment:
+                return False
+            first_token = shlex.split(primary_segment)[0]
+            tool_name = first_token.rsplit("/", 1)[-1].lower()
+            return tool_name in {"curl", "wget"}
+        except (ValueError, IndexError):
+            return False
 
     def _is_port_allowed(self, port: int) -> bool:
         """Check if port is allowed.
@@ -672,7 +706,11 @@ class ScopeValidator:
             r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?|"
             r"[0-9a-fA-F]*:[0-9a-fA-F:]+(?:/\d{1,3})?)$"
         )
-        url_pattern = re.compile(r"^(https?|ftp|tcp|udp)://")
+        url_pattern = re.compile(r"^(https?|ftp|tcp|udp|ldap|ldaps)://", re.IGNORECASE)
+        host_value_flags = {
+            "-H", "--host", "--hostname", "--dc-ip",
+            "--domain-controller", "--domaincontroller", "--server", "--target", "-h",
+        }
         # Bare protocol/service names that are NOT hostnames
         _known_services = frozenset({
             "ssh", "ftp", "telnet", "smtp", "http", "https", "rdp", "vnc",
@@ -680,9 +718,53 @@ class ScopeValidator:
             "postgres", "oracle", "redis", "mongodb", "dns", "ntp", "tftp",
         })
 
+        def _consume_host_candidate(candidate: str) -> None:
+            nonlocal target, port, protocol
+            candidate = (candidate or "").strip().strip("'\"")
+            if not candidate or candidate.startswith("-"):
+                return
+            if url_pattern.match(candidate):
+                parsed = urlparse(candidate)
+                target = parsed.hostname
+                if parsed.port:
+                    port = parsed.port
+                if parsed.scheme in ("tcp", "udp"):
+                    protocol = parsed.scheme
+                return
+            if ":" in candidate and candidate.count(":") == 1:
+                host_part, port_part = candidate.rsplit(":", 1)
+                target = host_part
+                try:
+                    port = int(port_part)
+                except ValueError:
+                    pass
+                return
+            target = candidate
+
         i = 0
         while i < len(args):
             arg = args[i]
+
+            # Host flags commonly used by LDAP/AD tools (including inline forms).
+            if arg in host_value_flags:
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    _consume_host_candidate(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if arg.startswith((
+                "--host=", "--hostname=", "--dc-ip=", "--domain-controller=",
+                "--domaincontroller=", "--server=", "--target=",
+            )):
+                _, host_value = arg.split("=", 1)
+                _consume_host_candidate(host_value)
+                i += 1
+                continue
+            if arg.startswith("-H") and len(arg) > 2:
+                _consume_host_candidate(arg[2:])
+                i += 1
+                continue
 
             # Skip bare protocol/service names (e.g. "ssh" in "hydra ... ssh")
             if arg.lower() in _known_services:
@@ -832,7 +914,7 @@ class ScopeValidator:
         target = self._normalize_input(target)
 
         # Handle URL targets
-        if target.startswith("http://") or target.startswith("https://"):
+        if target.startswith(("http://", "https://", "ftp://", "tcp://", "udp://", "ldap://", "ldaps://")):
             parsed = urlparse(target)
             target = parsed.hostname or target
             if parsed.port and port is None:
@@ -872,6 +954,8 @@ class ScopeValidator:
                 )
         else:
             if not self._is_hostname_in_scope(target):
+                if self._is_egress_tool_command(command) and self._is_hostname_in_egress_allowlist(target):
+                    return
                 raise ScopeViolationError(
                     target=target, command=command,
                     scope_rule="hostname_out_of_scope",
@@ -950,7 +1034,9 @@ class ScopeValidator:
 
             # Handle URL in target
             if target and (
-                target.startswith("http://") or target.startswith("https://")
+                target.startswith(
+                    ("http://", "https://", "ftp://", "tcp://", "udp://", "ldap://", "ldaps://")
+                )
             ):
                 parsed = urlparse(target)
                 target = parsed.hostname
@@ -1016,13 +1102,16 @@ class ScopeValidator:
             # Validate hostnames
             elif not is_ip:  # pragma: no branch
                 if not self._is_hostname_in_scope(target):
-                    self._log_validation(target, "DENY", "Hostname not in scope")
-                    raise ScopeViolationError(
-                        target=target,
-                        command=command or "",
-                        scope_rule="hostname_out_of_scope",
-                        message=f"Hostname {target} not in allowed list",
-                    )
+                    if self._is_egress_tool_command(command or "") and self._is_hostname_in_egress_allowlist(target):
+                        self._log_validation(target, "ALLOW", "Hostname allowed via egress allowlist")
+                    else:
+                        self._log_validation(target, "DENY", "Hostname not in scope")
+                        raise ScopeViolationError(
+                            target=target,
+                            command=command or "",
+                            scope_rule="hostname_out_of_scope",
+                            message=f"Hostname {target} not in allowed list",
+                        )
 
             # Validate port if provided
             if port is not None:

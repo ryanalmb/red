@@ -28,6 +28,7 @@ from typing import Optional, Set, Callable
 
 from cyberred.core.config import get_settings
 from cyberred.core.exceptions import (
+    ConfigurationError,
     EngagementNotFoundError,
     InvalidStateTransition,
     IPCProtocolError,
@@ -50,6 +51,7 @@ from cyberred.daemon.state_machine import EngagementState
 from cyberred.daemon.streaming import StreamEvent, StreamEventType, encode_stream_event
 from cyberred.rag import RAGScheduler
 from cyberred.rag.director_client import DirectorRAGClient
+from cyberred.daemon.network_guard import ensure_ssh_ingress_guard
 
 
 READ_TIMEOUT = 30.0  # seconds - prevents hung clients
@@ -167,6 +169,15 @@ class DaemonServer:
         # Ensure parent directory exists
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Re-apply ingress guard rules on every daemon start so controls survive
+        # host reboot/service restarts.
+        try:
+            guard_result = ensure_ssh_ingress_guard()
+            if guard_result.get("enabled"):
+                log.info("ssh_ingress_guard_checked", **guard_result)
+        except Exception as e:
+            log.warning("ssh_ingress_guard_check_failed", error=str(e))
+
         # Start server
         self._server = await asyncio.start_unix_server(
             self._handle_client,
@@ -183,16 +194,20 @@ class DaemonServer:
         self._running = True
 
         # Initialize shared worker pool for all engagements
+        try:
+            worker_pool_size = max(1, int(os.getenv("CYBERRED_WORKER_POOL_SIZE", "15")))
+        except ValueError:
+            worker_pool_size = 15
         self._worker_pool = WorkerPool(
             event_bus=self._event_bus,
-            pool_size=10,
+            pool_size=worker_pool_size,
             container_prefix="red-kali-worker"
         )
         try:
             await self._worker_pool.initialize()
             # Pass to session manager for use by orchestrators
             self._session_manager._worker_pool = self._worker_pool
-            log.info("worker_pool_initialized", pool_size=10)
+            log.info("worker_pool_initialized", pool_size=worker_pool_size)
         except Exception as e:
             log.warning("worker_pool_init_failed", error=str(e))
             # Continue without Docker - agents can still do LLM work
@@ -385,6 +400,11 @@ class DaemonServer:
                         "state": s.state,
                         "agent_count": s.agent_count,
                         "finding_count": s.finding_count,
+                        "findings_total_cumulative": getattr(s, "findings_total_cumulative", s.finding_count),
+                        "findings_cycle_current": getattr(s, "findings_cycle_current", 0),
+                        "findings_attempted_cumulative": getattr(s, "findings_attempted_cumulative", 0),
+                        "findings_failed_cumulative": getattr(s, "findings_failed_cumulative", 0),
+                        "jobs_processed_total": getattr(s, "jobs_processed_total", 0),
                         "created_at": s.created_at.isoformat(),
                     }
                     for s in summaries
@@ -418,6 +438,8 @@ class DaemonServer:
                 {"id": engagement_id, "state": str(new_state)},
                 request.request_id,
             )
+        except (ConfigurationError, ResourceLimitError, FileNotFoundError) as e:
+            return IPCResponse.create_error(str(e), request.request_id)
         except (PreFlightCheckError, PreFlightWarningError) as e:
             return IPCResponse.create_error(str(e), request.request_id)
 
@@ -463,11 +485,27 @@ class DaemonServer:
             "state": str(context.state),
             "agent_count": context.agent_count,
             "finding_count": context.finding_count,
+            "findings_total_cumulative": context.findings_total_cumulative,
+            "findings_cycle_current": context.findings_cycle_current,
+            "findings_attempted_cumulative": context.findings_attempted_cumulative,
+            "findings_failed_cumulative": context.findings_failed_cumulative,
+            "jobs_processed_total": context.jobs_processed_total,
             "subscription_id": subscription_id,
             "agents": [],
             "findings": [],
             "scope_targets": scope_targets,
+            "resource_contract": context.resource_contract or {},
         }
+
+        if context.orchestrator and hasattr(context.orchestrator, "get_status"):
+            try:
+                snapshot["orchestrator_status"] = context.orchestrator.get_status()
+            except Exception as e:
+                log.warning(
+                    "attach_orchestrator_status_failed",
+                    engagement_id=engagement_id,
+                    error=str(e),
+                )
 
         log.info(
             "client_attached",
@@ -594,9 +632,17 @@ class DaemonServer:
         except asyncio.CancelledError:
             log.info("streaming_cancelled", engagement_id=engagement_id)
         finally:
-            # Cancel subscription tasks
+            # Cancel subscription handles (supports both async handles and Tasks)
+            cancel_coroutines = []
             for task in subscription_tasks:
-                task.cancel()
+                try:
+                    result = task.cancel()
+                    if asyncio.iscoroutine(result):
+                        cancel_coroutines.append(result)
+                except Exception:
+                    pass
+            if cancel_coroutines:
+                await asyncio.gather(*cancel_coroutines, return_exceptions=True)
             # Cleanup: remove from streaming clients
             self._streaming_clients.pop(writer, None)
             log.info("streaming_stopped", engagement_id=engagement_id)
@@ -939,4 +985,3 @@ async def run_daemon(foreground: bool = False) -> None:
         await shutdown_event.wait()
     finally:
         await server.stop()
-

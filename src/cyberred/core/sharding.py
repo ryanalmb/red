@@ -338,7 +338,12 @@ class ShardAggregator:
         # Cancel shard subscriptions to release Redis connections
         for sub in self._shard_subscriptions:
             try:
-                await sub.cancel()
+                cancel_fn = getattr(sub, "cancel", None)
+                unsubscribe_fn = getattr(sub, "unsubscribe", None)
+                if callable(cancel_fn):
+                    await cancel_fn()
+                elif callable(unsubscribe_fn):
+                    await unsubscribe_fn()
             except Exception:
                 pass
         self._shard_subscriptions.clear()

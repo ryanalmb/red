@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import uuid
 from collections import deque
@@ -16,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 from cyberred.agents.base import StigmergicAgent
 from cyberred.agents.roles import AgentRole
+from cyberred.core.exceptions import ScopeViolationError
+from cyberred.core.finding_policy import assess_finding_payload
 from cyberred.core.models import AgentAction, Finding, ToolSelectionContext
 from cyberred.tools.kali_executor import kali_execute
 
@@ -80,8 +83,12 @@ class ADAgent(StigmergicAgent):
             if await self._phase_complete(tool_context):
                 break
             iteration += 1
+            tool_name = "unknown"
+            decision_context = [f"initial_spawn:{self.agent_id}"]
+            iteration_findings = 0
             try:
                 tool_selection = await self.select_tool(tool_context)
+                tool_name = tool_selection.tool_name
                 decision_context = self._build_decision_context(tool_selection, intel)
                 result = await self._kali_execute_and_publish(tool_selection.command, tool_selection.tool_name)
                 action = AgentAction(
@@ -92,35 +99,92 @@ class ADAgent(StigmergicAgent):
                 )
                 actions.append(action)
                 if result.success and result.stdout:
-                    findings.append(Finding(
-                        id=str(uuid.uuid4()), type="ad", severity="medium",
-                        target=domain_controller, evidence=result.stdout[:500], agent_id=self.agent_id,
-                        timestamp=self._get_timestamp(), tool=tool_selection.tool_name,
-                        topic=f"findings:{self._hash_target(domain_controller)}:ad",
-                        signature=f"ad-{tool_selection.tool_name}-{iteration}",
-                    ))
+                    execution = self._execution_metadata(result, tool_selection.command)
+                    evidence_payload: dict[str, Any] = {
+                        "raw_evidence": result.stdout[:1000],
+                        "command": tool_selection.command,
+                        "execution": execution,
+                        "domain": self._domain_info.get("domain_name"),
+                    }
+                    assessment = assess_finding_payload(
+                        {
+                            "type": "ad",
+                            "severity": "medium",
+                            "target": domain_controller,
+                            "tool": tool_selection.tool_name,
+                            "evidence": evidence_payload,
+                            "execution": execution,
+                        }
+                    )
+                    evidence_payload["validation"] = assessment
+                    if assessment["outcome_status"] != "failed":
+                        finding = Finding(
+                            id=str(uuid.uuid4()), type="ad", severity=assessment["severity"],
+                            target=domain_controller, evidence=json.dumps(evidence_payload), agent_id=self.agent_id,
+                            timestamp=self._get_timestamp(), tool=tool_selection.tool_name,
+                            topic=f"findings:{self._hash_target(domain_controller)}:ad",
+                            signature=f"ad-{tool_selection.tool_name}-{iteration}",
+                        )
+                        findings.append(finding)
+                        await self.on_finding(finding)
+                        iteration_findings += 1
+                    else:
+                        alt = await self._handle_ad_failure(tool_selection.tool_name)
+                        if alt:
+                            decision_context.append(f"rag_escalation:{tool_selection.tool_name}:{alt}")
                 elif not result.success:
                     alt = await self._handle_ad_failure(tool_selection.tool_name)
                     if alt:
                         decision_context.append(f"rag_escalation:{tool_selection.tool_name}:{alt}")
                 await self._check_kerberos_results(result, tool_selection)
                 await self._check_credential_results(result, tool_selection)
-            except Exception as e:
+            except ScopeViolationError as e:
+                self._log.warning(
+                    "ad_scope_blocked",
+                    error=str(e),
+                    scope_rule=e.scope_rule,
+                    iteration=iteration,
+                    tool=tool_name,
+                )
                 actions.append(AgentAction(
-                    id=str(uuid.uuid4()), agent_id=self.agent_id, action_type="ad:unknown",
+                    id=str(uuid.uuid4()), agent_id=self.agent_id, action_type="ad:scope_blocked",
                     target=domain_controller, timestamp=self._get_timestamp(),
-                    decision_context=[f"initial_spawn:{self.agent_id}", f"error:{e}"],
+                    decision_context=decision_context + [f"scope_blocked:{e.scope_rule}"],
                 ))
-                break
+            except Exception as e:
+                self._log.error("ad_iteration_error", error=str(e), iteration=iteration, tool=tool_name)
+                actions.append(AgentAction(
+                    id=str(uuid.uuid4()), agent_id=self.agent_id, action_type=f"ad:{tool_name}",
+                    target=domain_controller, timestamp=self._get_timestamp(),
+                    decision_context=decision_context + [f"error:{type(e).__name__}:{e}"],
+                ))
+
+            streak = self._record_iteration_findings(iteration_findings)
+            if streak >= self._no_finding_streak_threshold:
+                decision_context.append(f"yield_streak:{streak}")
+                alt = await self._handle_ad_failure("yield_no_finding")
+                if alt:
+                    decision_context.append(f"rag_escalation:yield_no_finding:{alt}")
+                await self._publish_swarm_log(
+                    "YIELD_GUARD",
+                    "AD no-yield streak triggered escalation",
+                    role="ad",
+                    tool=tool_name,
+                    target=domain_controller,
+                    streak=streak,
+                    agent_id=str(self.agent_id),
+                )
         return findings, actions
 
     async def _query_intelligence(self, service: str = "", version: str = "") -> list["IntelResult"]:
         """Query intelligence aggregator for AD/Kerberos attack techniques."""
-        if not self._intel_aggregator or not service:
+        if not self._intel_aggregator:
             return []
+        query_service = (service or self._current_service or "ldap").strip()
+        query_version = (version or self._current_target or "").strip()
         try:
             return await asyncio.wait_for(
-                self._intel_aggregator.query(service, version),
+                self._intel_aggregator.query(query_service, query_version),
                 timeout=self.INTELLIGENCE_TIMEOUT
             )
         except Exception:
@@ -197,7 +261,22 @@ class ADAgent(StigmergicAgent):
 
     async def _publish_domain_admin_finding(self, domain: str, username: str) -> None:
         try:
-            await self.event_bus.publish(f"findings:{self._hash_target(domain)}:domainadmin", {"domain": domain, "username": username, "agent_id": self.agent_id, "severity": "critical"})
+            target_hash = self._hash_target(domain)
+            await self._publish_to_swarm(
+                target_hash,
+                "domainadmin",
+                {
+                    "target": domain,
+                    "type": "domainadmin",
+                    "severity": "critical",
+                    "domain": domain,
+                    "username": username,
+                    "evidence": f"domain admin credential candidate: {username}@{domain}",
+                    "tool": "adagent",
+                    "outcome_status": "validated",
+                    "validation_reason": "credential_pattern_matched",
+                },
+            )
         except Exception as e:
             self._log.warning("domain_admin_publish_failed", error=str(e))
 
@@ -215,11 +294,30 @@ class ADAgent(StigmergicAgent):
         return ctx
 
     def _build_tool_context(self, dc: str, context: dict[str, Any], actions: list[AgentAction]) -> ToolSelectionContext:
+        discovered_users = list(self._discovered_users)
+        discovered_spns = list(self._discovered_spns)
+        previous_results = self.get_recent_tool_results(limit=30)
+        if not previous_results and actions:
+            previous_results = [
+                {
+                    "id": action.id,
+                    "action": action.action_type,
+                    "target": action.target,
+                    "timestamp": action.timestamp,
+                }
+                for action in actions[-30:]
+            ]
         return ToolSelectionContext(
             objective=f"Compromise AD domain via {dc}", phase="ad", constraints=self._get_constraints(),
-            target_info={"domain_controller": dc, "domain_info": self._domain_info, "discovered_users": self._discovered_users, "discovered_spns": self._discovered_spns, **context},
+            target_info={
+                "domain_controller": dc,
+                "domain_info": self._domain_info,
+                "discovered_users": discovered_users,
+                "discovered_spns": discovered_spns,
+                **context,
+            },
             available_tools=["ldapsearch", "bloodhound-python", "enum4linux-ng", "rpcclient", "impacket-GetUserSPNs", "impacket-GetNPUsers", "impacket-getTGT", "impacket-ticketer", "impacket-secretsdump", "crackmapexec", "impacket-psexec", "impacket-wmiexec", "evil-winrm"],
-            previous_results=[{"action": a.action_type, "id": a.id} for a in actions],
+            previous_results=previous_results,
         )
 
     async def _handle_ad_failure(self, technique_id: str) -> str | None:
@@ -249,11 +347,21 @@ class ADAgent(StigmergicAgent):
         return None
 
     def _get_constraints(self) -> list[str]:
+        constraints: list[str] = []
         if self.current_strategy == "stealth":
-            return ["Avoid password spraying", "Prefer passive enumeration", "Use stealth techniques"]
+            constraints.extend(
+                ["Avoid password spraying", "Prefer passive enumeration", "Use stealth techniques"]
+            )
         elif self.current_strategy == "aggressive":
-            return ["All attack techniques allowed", "Password spraying permitted", "Aggressive enumeration enabled"]
-        return []
+            constraints.extend(
+                ["All attack techniques allowed", "Password spraying permitted", "Aggressive enumeration enabled"]
+            )
+
+        if self._no_finding_streak >= 2:
+            constraints.append("switch technique family from recent no-yield AD attempts")
+        if self._no_finding_streak >= self._no_finding_streak_threshold:
+            constraints.append("prioritize materially different AD pathways and targets")
+        return constraints
 
     async def on_signal(self, channel: str, data: dict[str, Any]) -> None:
         await super().on_signal(channel, data)
@@ -264,21 +372,26 @@ class ADAgent(StigmergicAgent):
         if self._finding_buffer:
             await self._flush_buffer()
         target_hash = self._hash_target(finding.target)
-        message = {"id": finding.id, "type": finding.type, "severity": finding.severity, "evidence": finding.evidence}
+        message = {
+            "id": finding.id,
+            "type": finding.type,
+            "target": finding.target,
+            "severity": finding.severity,
+            "evidence": finding.evidence,
+            "tool": finding.tool,
+        }
         try:
             await self._publish_to_swarm(target_hash, "ad", message)
         except Exception:
-            channel = f"findings:{target_hash}:ad"
-            self._finding_buffer.append({"channel": channel, "message": {"id": finding.id}})
+            self._buffer_finding_retry(
+                self._finding_buffer,
+                target_hash=target_hash,
+                finding_type="ad",
+                message=message,
+            )
 
     async def _flush_buffer(self) -> None:
-        remaining = []
-        for item in self._finding_buffer:
-            try:
-                await self.event_bus.publish(item["channel"], item["message"])
-            except Exception:
-                remaining.append(item)
-        self._finding_buffer = remaining
+        self._finding_buffer = await self._flush_buffered_findings(self._finding_buffer)
 
     async def stop(self) -> None:
         if self._finding_buffer:
@@ -289,8 +402,8 @@ class ADAgent(StigmergicAgent):
         return len(context.previous_results) >= self.phase_complete_threshold
 
     def _hash_target(self, target: str) -> str:
-        """Hash target string for channel naming (8-char SHA256 prefix)."""
-        return hashlib.sha256(target.encode()).hexdigest()[:8]
+        """Hash target string for channel naming (8-char MD5 prefix)."""
+        return hashlib.md5(target.encode()).hexdigest()[:8]
 
     def _get_timestamp(self) -> str:
         """Get current UTC timestamp in ISO format."""

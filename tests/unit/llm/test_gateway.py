@@ -101,7 +101,7 @@ class TestGatewaySingleton:
         with pytest.raises(RuntimeError):
             get_gateway()
 
-from cyberred.llm.provider import LLMRequest, LLMResponse
+from cyberred.llm.provider import LLMRequest, LLMResponse, TokenUsage
 
 class TestRequestEntryPoints:
     @pytest.mark.asyncio
@@ -110,7 +110,12 @@ class TestRequestEntryPoints:
         gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
         
         request = LLMRequest(prompt="strategy", model="auto")
-        expected_response = LLMResponse(content="plan", model="test-model", usage=None, latency_ms=100.0)
+        expected_response = LLMResponse(
+            content="plan",
+            model="test-model",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=100,
+        )
         
         # Mock the queue returning a future that resolves only when awaited
         future = asyncio.Future()
@@ -129,7 +134,12 @@ class TestRequestEntryPoints:
         """Test agent_complete enqueues with agent priority."""
         gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
         request = LLMRequest(prompt="task", model="auto")
-        expected_response = LLMResponse(content="result", model="test", usage=None, latency_ms=50.0)
+        expected_response = LLMResponse(
+            content="result",
+            model="test",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=50,
+        )
         
         future = asyncio.Future()
         future.set_result(expected_response)
@@ -145,7 +155,12 @@ class TestRequestEntryPoints:
         """Test generic complete delegates correctly."""
         gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
         request = LLMRequest(prompt="generic", model="auto")
-        expected_response = LLMResponse(content="generic", model="test", usage=None, latency_ms=10.0)
+        expected_response = LLMResponse(
+            content="generic",
+            model="test",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=10,
+        )
         
         future = asyncio.Future()
         future.set_result(expected_response)
@@ -172,7 +187,12 @@ class TestBackgroundWorker:
         mock_rate_limiter.acquire_async.return_value = True
         
         provider = AsyncMock()
-        expected_response = LLMResponse(content="done", model="test", usage=None, latency_ms=10.0)
+        expected_response = LLMResponse(
+            content="done",
+            model="test",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=10,
+        )
         provider.complete_async.return_value = expected_response
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
@@ -211,6 +231,34 @@ class TestBackgroundWorker:
         mock_queue.complete_request.assert_any_call(preq1, expected_response)
         mock_queue.complete_request.assert_any_call(preq2, expected_response)
 
+    @pytest.mark.asyncio
+    async def test_worker_requeues_agent_when_slots_saturated(
+        self, mock_rate_limiter, mock_router, mock_queue
+    ):
+        """Agent requests are requeued when reserved director capacity is exhausted."""
+        gateway = LLMGateway(mock_rate_limiter, mock_router, mock_queue)
+        gateway._max_agent_inflight = 1
+        gateway._agent_inflight = 1
+
+        req = LLMRequest(prompt="agent", model="auto")
+        preq = PriorityRequest(request=req, priority=1, sequence=0, future=asyncio.Future())
+        mock_queue.dequeue.side_effect = [preq, asyncio.CancelledError()]
+        mock_queue.requeue = AsyncMock()
+
+        provider = AsyncMock()
+        mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
+        mock_router.select_model.return_value = provider
+        mock_rate_limiter.acquire_async.return_value = True
+
+        gateway._running = True
+        try:
+            await gateway._process_requests()
+        except asyncio.CancelledError:
+            pass
+
+        mock_queue.requeue.assert_called_once_with(preq)
+        assert provider.complete_async.call_count == 0
+
 class TestGatewayLifecycle:
     @pytest.mark.asyncio
     async def test_gateway_lifecycle(self, mock_rate_limiter, mock_router, mock_queue):
@@ -235,6 +283,52 @@ class TestGatewayLifecycle:
         assert gateway._running is False
         assert gateway._worker_tasks == []
 
+
+class TestGatewayInflightCap:
+    def test_dynamic_director_reserve_reclaims_capacity(
+        self,
+        monkeypatch,
+        mock_rate_limiter,
+        mock_router,
+        mock_queue,
+    ):
+        """Agent cap can reclaim director reserve when director queue is empty."""
+        monkeypatch.setenv("CYBERRED_LLM_DYNAMIC_DIRECTOR_RESERVE", "true")
+        monkeypatch.setenv("CYBERRED_LLM_DIRECTOR_RESERVED_WORKERS", "2")
+        monkeypatch.setenv("CYBERRED_LLM_MIN_DIRECTOR_RESERVE", "0")
+
+        mock_queue.director_queue_depth = 0
+        gateway = LLMGateway(
+            mock_rate_limiter,
+            mock_router,
+            mock_queue,
+            num_workers=16,
+        )
+        assert gateway.max_agent_inflight == 16
+
+        mock_queue.director_queue_depth = 1
+        assert gateway.max_agent_inflight == 14
+
+    def test_dynamic_director_reserve_can_be_disabled(
+        self,
+        monkeypatch,
+        mock_rate_limiter,
+        mock_router,
+        mock_queue,
+    ):
+        """Disabled dynamic reserve keeps static in-flight cap."""
+        monkeypatch.setenv("CYBERRED_LLM_DYNAMIC_DIRECTOR_RESERVE", "false")
+        monkeypatch.setenv("CYBERRED_LLM_DIRECTOR_RESERVED_WORKERS", "2")
+
+        mock_queue.director_queue_depth = 0
+        gateway = LLMGateway(
+            mock_rate_limiter,
+            mock_router,
+            mock_queue,
+            num_workers=16,
+        )
+        assert gateway.max_agent_inflight == 14
+
 from cyberred.core.exceptions import LLMTimeoutError, LLMProviderUnavailable, LLMRateLimitExceeded
 
 class TestRetryLogic:
@@ -248,7 +342,12 @@ class TestRetryLogic:
         async def delay(*args, **kwargs):
             await asyncio.sleep(0.5)
             # Should not be reached if timeout works
-            return LLMResponse(content="slow", model="test", usage=None)
+            return LLMResponse(
+                content="slow",
+                model="test",
+                usage=TokenUsage(0, 0, 0),
+                latency_ms=500,
+            )
             
         provider.complete_async.side_effect = delay
         
@@ -273,7 +372,12 @@ class TestRetryLogic:
         provider.complete_async.side_effect = [
             asyncio.TimeoutError(),
             asyncio.TimeoutError(),
-            LLMResponse(content="success", model="test", usage=None, latency_ms=10.0),
+            LLMResponse(
+                content="success",
+                model="test",
+                usage=TokenUsage(0, 0, 0),
+                latency_ms=10,
+            ),
         ]
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
@@ -628,7 +732,12 @@ class TestCircuitBreaker:
         mock_rate_limiter.acquire_async.side_effect = [False, True]
         
         provider = AsyncMock()
-        provider.complete_async.return_value = LLMResponse(content="ok", model="test", usage=None, latency_ms=10.0)
+        provider.complete_async.return_value = LLMResponse(
+            content="ok",
+            model="test",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=10,
+        )
         
         mock_router.select_model.return_value = provider
         
@@ -668,7 +777,12 @@ class TestCircuitBreaker:
         
         # 2. Succeed
         provider.complete_async.side_effect = None
-        provider.complete_async.return_value = LLMResponse(content="ok", model="test-model", usage=None, latency_ms=10.0)
+        provider.complete_async.return_value = LLMResponse(
+            content="ok",
+            model="test-model",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=10,
+        )
         
         await gateway._execute_with_retry(request)
         
@@ -691,7 +805,12 @@ class TestCircuitBreaker:
         
         provider.complete_async.side_effect = [
             rate_limit_error,
-            LLMResponse(content="success", model="test", usage=None, latency_ms=10.0)
+            LLMResponse(
+                content="success",
+                model="test",
+                usage=TokenUsage(0, 0, 0),
+                latency_ms=10,
+            )
         ]
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
@@ -722,7 +841,12 @@ class TestCircuitBreaker:
         
         provider.complete_async.side_effect = [
             rate_limit_error,
-            LLMResponse(content="success", model="test", usage=None, latency_ms=10.0)
+            LLMResponse(
+                content="success",
+                model="test",
+                usage=TokenUsage(0, 0, 0),
+                latency_ms=10,
+            )
         ]
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
@@ -761,7 +885,12 @@ class TestMetrics:
         
         async def side_effect(request):
             if request.prompt == "success":
-                return LLMResponse(content="ok", model="test-model", usage=None, latency_ms=10.0)
+                return LLMResponse(
+                    content="ok",
+                    model="test-model",
+                    usage=TokenUsage(0, 0, 0),
+                    latency_ms=10,
+                )
             raise ValueError("Fail")
             
         provider.complete_async.side_effect = side_effect
@@ -787,7 +916,12 @@ class TestMetrics:
         provider = AsyncMock()
         provider.complete_async.side_effect = [
             asyncio.TimeoutError(),
-            LLMResponse(content="ok", model="test", usage=None, latency_ms=10.0)
+            LLMResponse(
+                content="ok",
+                model="test",
+                usage=TokenUsage(0, 0, 0),
+                latency_ms=10,
+            )
         ]
         
         mock_router.select_model.return_value = provider
@@ -827,7 +961,12 @@ class TestMetrics:
         # If provider.model_name = None, getattr returns None.
         provider = AsyncMock() 
         provider.model_name = None
-        provider.complete_async.return_value = LLMResponse(content="ok", model="unknown", usage=None, latency_ms=10.0)
+        provider.complete_async.return_value = LLMResponse(
+            content="ok",
+            model="unknown",
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=10,
+        )
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
         mock_router.select_model.return_value = provider
@@ -848,8 +987,8 @@ class TestMetrics:
         mock_nim_instance.complete_async.return_value = LLMResponse(
             content="explicit model response",
             model="deepseek-ai/deepseek-v3.2",
-            usage=None,
-            latency_ms=50.0
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=50,
         )
         
         mock_nim_class = MagicMock(return_value=mock_nim_instance)
@@ -882,8 +1021,8 @@ class TestMetrics:
         provider.complete_async.return_value = LLMResponse(
             content="routed response",
             model="standard-model",
-            usage=None,
-            latency_ms=30.0
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=30,
         )
         
         mock_router.infer_complexity.return_value = TaskComplexity.STANDARD
@@ -909,8 +1048,8 @@ class TestMetrics:
         provider.complete_async.return_value = LLMResponse(
             content="routed response",
             model="standard-model",
-            usage=None,
-            latency_ms=30.0
+            usage=TokenUsage(0, 0, 0),
+            latency_ms=30,
         )
         
         mock_router.infer_complexity.return_value = TaskComplexity.FAST
@@ -924,4 +1063,3 @@ class TestMetrics:
         # Verify router was used
         mock_router.infer_complexity.assert_called()
         mock_router.select_model.assert_called()
-
